@@ -216,16 +216,15 @@ if command -v curl >/dev/null 2>&1; then
     warn "$URL responded HTTP $CODE"
   fi
 
-  # The isolation headers. IMPORTANT: crossOriginIsolated requires BOTH
-  # COOP: same-origin AND COEP: require-corp|credentialless. Checking only one
-  # of them gives a false all-clear — which an earlier version of this script
-  # did. If either is missing, crossOriginIsolated is false in EVERY browser,
-  # and a false probe result would be about the deployment rather than about
-  # WKWebView. Establish that before interpreting the probe.
-  HDRS="$(curl -s -I -m 10 "$URL" 2>/dev/null | tr 'A-Z' 'a-z')"
+  # NOTE: `tr -d '\r'` is load-bearing. HTTP headers are CRLF-terminated and
+  # xargs does not strip the CR, so COOP_VAL came out as "same-origin\r" and
+  # the equality test below failed against an invisible byte — reporting
+  # INCOMPLETE on an origin that was correctly configured. The ok lines above
+  # still looked right because a trailing CR is invisible in terminal output.
+  HDRS="$(curl -s -I -m 10 "$URL" 2>/dev/null | tr -d '\r' | tr 'A-Z' 'a-z')"
 
-  COEP_VAL="$(grep 'cross-origin-embedder-policy' <<<"$HDRS" | head -n1 | cut -d: -f2- | xargs || true)"
-  COOP_VAL="$(grep 'cross-origin-opener-policy'   <<<"$HDRS" | head -n1 | cut -d: -f2- | xargs || true)"
+  COEP_VAL="$(grep 'cross-origin-embedder-policy' <<<"$HDRS" | head -n1 | cut -d: -f2- | cut -d';' -f1 | xargs || true)"
+  COOP_VAL="$(grep 'cross-origin-opener-policy'   <<<"$HDRS" | head -n1 | cut -d: -f2- | cut -d';' -f1 | xargs || true)"
 
   if [[ -n "$COEP_VAL" ]]; then
     ok "COEP: $COEP_VAL"
@@ -239,16 +238,22 @@ if command -v curl >/dev/null 2>&1; then
     warn "no Cross-Origin-Opener-Policy header"
   fi
 
-  if [[ -n "$COEP_VAL" && "$COOP_VAL" == "same-origin" ]]; then
-    ok "both isolation headers present — a false crossOriginIsolated in the"
-    info "probe would therefore be a genuine WKWebView finding, not a"
-    info "deployment gap. This is what makes the probe interpretable."
+  # EXACT match after stripping any `; report-to=...` parameters. Not a prefix
+  # glob: `same-origin-allow-popups` starts with `same-origin` but does NOT
+  # grant cross-origin isolation, and a prefix match reported it as valid.
+  COEP_OK=0; COOP_OK=0
+  [[ "$COEP_VAL" == "require-corp" || "$COEP_VAL" == "credentialless" ]] && COEP_OK=1
+  [[ "$COOP_VAL" == "same-origin" ]] && COOP_OK=1
+
+  if (( COEP_OK && COOP_OK )); then
+    ok "both isolation headers valid — crossOriginIsolated SHOULD be true."
+    info "So if the probe reports it false, that is a genuine WKWebView"
+    info "finding, not a deployment gap. This is what makes it interpretable."
   else
-    warn "isolation headers INCOMPLETE at the deployed origin."
+    warn "isolation headers incomplete or invalid at the deployed origin."
     info "crossOriginIsolated needs COOP: same-origin AND COEP:"
-    info "require-corp|credentialless. With one missing it is false in every"
-    info "browser, so the probe cannot tell you anything about WKWebView."
-    info "Fix the deployment first, or treat that probe field as unusable."
+    info "require-corp|credentialless. With either missing it is false in"
+    info "every browser, so the probe says nothing about WKWebView."
   fi
 else
   warn "curl not found — skipping reachability check"
