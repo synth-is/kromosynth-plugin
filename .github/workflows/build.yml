@@ -1,0 +1,47 @@
+name: build
+
+# KEEPABLE.
+#
+# macOS only, AU + VST3 only — matching the Stage 0 constraints. No Windows or
+# Linux matrix (Stage 3), no notarisation (Stage 1's gate), no CLAP.
+#
+# The point of CI at Stage 0 is narrow but real: it proves the vendoring and
+# target configuration work on a machine that is not Björn's, which is the one
+# property of the build layer that cannot be verified locally.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14   # Apple silicon
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      # Runs the JUCE licence assertion in cmake/JuceLicenceCheck.cmake as a
+      # side effect. A licence mismatch fails the build here, loudly, before
+      # anything is published.
+      - name: Configure
+        run: cmake --preset stage0-release
+
+      - name: Build
+        run: cmake --build --preset stage0-release
+
+      - name: Show what was built
+        run: find build/stage0-release -name '*.vst3' -o -name '*.component' | sort
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kromosynth-plugin-macos
+          path: |
+            build/stage0-release/**/*.vst3
+            build/stage0-release/**/*.component
+          if-no-files-found: error

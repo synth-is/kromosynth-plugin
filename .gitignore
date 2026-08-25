@@ -1,0 +1,15 @@
+# Build artefacts
+build/
+cmake-build-*/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.xcodeproj
+*.xcworkspace
+
+# Stage 0 logs, if anyone copies them into the repo
+*.log

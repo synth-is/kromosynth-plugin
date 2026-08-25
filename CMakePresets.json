@@ -1,0 +1,60 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "stage0",
+      "displayName": "Stage 0 — webview only (Makefiles, no extra deps)",
+      "description": "Task 1. WebBrowserComponent on the deployed web app. No audio engine. Uses Unix Makefiles so nothing beyond the Xcode Command Line Tools is required.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/stage0",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "KROMOSYNTH_BUILD_SAMPLER": "OFF",
+        "KROMOSYNTH_WEBVIEW_PROBE": "ON",
+        "KROMOSYNTH_UNIVERSAL_BINARY": "OFF"
+      }
+    },
+    {
+      "name": "stage0-ninja",
+      "inherits": "stage0",
+      "displayName": "Stage 0 — same, but Ninja (faster; needs `brew install ninja`)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/stage0-ninja"
+    },
+    {
+      "name": "stage0-xcode",
+      "inherits": "stage0",
+      "displayName": "Stage 0 — Xcode generator (for debugging inside a host)",
+      "description": "Use when you need to attach Xcode's debugger to Logic/Live and step into the editor.",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/stage0-xcode",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "" }
+    },
+    {
+      "name": "release",
+      "inherits": "stage0",
+      "displayName": "Release — universal binary, anything that leaves this machine",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "KROMOSYNTH_UNIVERSAL_BINARY": "ON"
+      }
+    },
+    {
+      "name": "sampler",
+      "inherits": "stage0",
+      "displayName": "Task 2 — sfizz sampler enabled",
+      "description": "Gated on Task 1 passing. Requires the third_party/sfizz submodule.",
+      "binaryDir": "${sourceDir}/build/sampler",
+      "cacheVariables": { "KROMOSYNTH_BUILD_SAMPLER": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "stage0", "configurePreset": "stage0", "jobs": 0 },
+    { "name": "stage0-ninja", "configurePreset": "stage0-ninja" },
+    { "name": "stage0-xcode", "configurePreset": "stage0-xcode", "configuration": "Debug" },
+    { "name": "release", "configurePreset": "release", "jobs": 0 },
+    { "name": "sampler", "configurePreset": "sampler", "jobs": 0 }
+  ]
+}
