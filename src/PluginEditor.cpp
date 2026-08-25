@@ -8,6 +8,9 @@
 #ifndef KROMOSYNTH_WEBVIEW_PROBE
   #define KROMOSYNTH_WEBVIEW_PROBE 1
 #endif
+#ifndef KROMOSYNTH_PROBE_DELAY_MS
+  #define KROMOSYNTH_PROBE_DELAY_MS 3000
+#endif
 
 // ── Stage 0 environment probe ────────────────────────────────────────────────
 //
@@ -61,6 +64,33 @@ static const char* kProbeScript = R"JS(
     r.localStorage = (localStorage.getItem('__synthis_probe__') === '1') ? 'writable' : 'silently-dropped';
     localStorage.removeItem('__synthis_probe__');
   } catch (e) { r.localStorage = 'THREW ' + e; }
+  // Persistence across page loads. The intra-session write above proves the API
+  // works; it says nothing about whether the store SURVIVES an editor close or
+  // a host restart, which is the question §5's auth design actually depends on.
+  // Written on first load, reported on every subsequent one, so the answer
+  // falls out of the log without needing a JS console.
+  try {
+    var k = 'synthis_persist_probe';
+    var prev = localStorage.getItem(k);
+    if (prev === null) {
+      localStorage.setItem(k, String(Date.now()));
+      r.persist = 'created';
+    } else {
+      var ageMs = Date.now() - Number(prev);
+      r.persist = 'SURVIVED age=' + Math.round(ageMs / 1000) + 's';
+    }
+  } catch (e) { r.persist = 'THREW ' + e; }
+  try {
+    var sk = 'synthis_session_probe';
+    r.sessionStorage = (sessionStorage.getItem(sk) === null) ? 'fresh' : 'reused';
+    sessionStorage.setItem(sk, '1');
+  } catch (e) { r.sessionStorage = 'THREW ' + e; }
+  // Distinguishes "one plugin instance" from "one plugin WINDOW": each editor
+  // gets its own page, so a per-page random id shows whether a second insert
+  // created a second webview or reused the first.
+  try {
+    r.pageId = Math.random().toString(36).slice(2, 8);
+  } catch (e) { r.pageId = 'ERR'; }
   try { r.opfs = (navigator.storage && navigator.storage.getDirectory) ? 'present' : 'absent'; } catch (e) { r.opfs = 'ERR ' + e; }
   try {
     var AC = window.AudioContext || window.webkitAudioContext;
@@ -142,15 +172,65 @@ void KromosynthAudioProcessorEditor::InstrumentedBrowser::pageFinishedLoading (c
 #if KROMOSYNTH_WEBVIEW_PROBE
     // Delayed so React has actually mounted — pageFinishedLoading fires on
     // document load, not on app render, and rootChildren would always read 0.
-    juce::Timer::callAfterDelay (3000, [this]
+    //
+    // ---------------------------------------------------------------------
+    // BUG FIX 2026-08-25. The first version of this captured a raw `this`:
+    //
+    //     juce::Timer::callAfterDelay (3000, [this] { evaluateJavascript(...) });
+    //
+    // If the editor is destroyed inside that 3-second window — closing the
+    // plugin window, switching tracks, removing an instance — the timer fires
+    // into freed memory. Use-after-free, in a process the host watchdogs.
+    // The inner evaluateJavascript callback had the same defect: it captures
+    // `this` and touches `proc_` after an asynchronous round-trip into
+    // WebKit, which can easily outlive the editor.
+    //
+    // This is OUR bug, not a WKWebView or JUCE finding. It is exactly the
+    // failure mode that would have been misattributed to the framework and
+    // used to wrongly change the WP.
+    //
+    // Component::SafePointer nulls itself when the component is deleted.
+    // ---------------------------------------------------------------------
+    juce::Component::SafePointer<InstrumentedBrowser> safeThis (this);
+
+    // Captured BY VALUE. juce::File is a path string, not a handle to a live
+    // object, so the destroyed-editor branch below can log without touching
+    // anything that may have been freed.
+    const juce::File logFile = proc_.getLogFile();
+
+    auto logRaw = [logFile] (const juce::String& line)
     {
-        evaluateJavascript (kProbeScript,
-            [this] (juce::WebBrowserComponent::EvaluationResult result)
+        logFile.appendText (juce::Time::getCurrentTime().toISO8601 (true)
+                            + "  " + line + "\n", false, false, "\n");
+    };
+
+    juce::Timer::callAfterDelay (KROMOSYNTH_PROBE_DELAY_MS, [safeThis, logRaw]() mutable
+    {
+        if (safeThis == nullptr)
+        {
+            // The guard firing is the RESULT of the lifetime test, so it must
+            // be visible. Previously this returned silently, which made a
+            // working guard indistinguishable from a crash: both produce "no
+            // PROBE line". Now the log says which happened.
+            logRaw ("probe_skipped_editor_gone (SafePointer guard held)");
+            return;
+        }
+
+        safeThis->evaluateJavascript (kProbeScript,
+            [safeThis, logRaw] (juce::WebBrowserComponent::EvaluationResult result) mutable
             {
+                if (safeThis == nullptr)
+                {
+                    logRaw ("probe_result_dropped_editor_gone (SafePointer guard held)");
+                    return;
+                }
+
                 if (const auto* value = result.getResult())
-                    proc_.logEvent ("PROBE " + value->toString());
+                    safeThis->proc_.logEvent ("PROBE " + value->toString());
+                else if (const auto* error = result.getError())
+                    safeThis->proc_.logEvent ("PROBE failed: " + error->message);
                 else
-                    proc_.logEvent ("PROBE failed: " + result.getError()->message);
+                    safeThis->proc_.logEvent ("PROBE failed: no result, no error");
             });
     });
 #endif

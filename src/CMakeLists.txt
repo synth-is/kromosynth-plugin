@@ -52,6 +52,7 @@ target_compile_definitions(KromosynthPlugin PRIVATE
     # measuring the deployed origin as it actually is.
     KROMOSYNTH_WEB_APP_URL="${KROMOSYNTH_WEB_APP_URL}"
     KROMOSYNTH_WEBVIEW_PROBE=$<BOOL:${KROMOSYNTH_WEBVIEW_PROBE}>
+    KROMOSYNTH_PROBE_DELAY_MS=${KROMOSYNTH_PROBE_DELAY_MS}
 )
 
 target_link_libraries(KromosynthPlugin

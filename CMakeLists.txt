@@ -19,6 +19,19 @@ project(KromosynthPlugin VERSION 0.0.1 LANGUAGES C CXX)
 option(KROMOSYNTH_BUILD_SAMPLER  "Build the sfizz sampler engine (Task 2)" OFF)
 option(KROMOSYNTH_WEBVIEW_PROBE  "Inject the Stage 0 environment probe JS"  ON)
 
+# How long after page load the probe fires. Default 3000 ms is enough for React
+# to mount.
+#
+# Raise it to run the editor-lifetime test. The probe schedules a timer against
+# the editor; the bug it guards against is the editor being destroyed while
+# that timer is pending. With a 3 s delay, reproducing that means closing the
+# plugin window within 3 seconds by hand, which is a flaky test that a human
+# will usually fail to hit. With -DKROMOSYNTH_PROBE_DELAY_MS=30000, any normal
+# open-then-close reliably lands inside the window and the guard is exercised
+# every time.
+set(KROMOSYNTH_PROBE_DELAY_MS "3000" CACHE STRING
+    "Milliseconds after page load before the Stage 0 probe fires")
+
 # The origin the WebBrowserComponent points at. Sourced from kromosynth-auth's
 # .env.example (APP_PUBLIC_URL=https://synth.is), not guessed.
 set(KROMOSYNTH_WEB_APP_URL "https://synth.is" CACHE STRING

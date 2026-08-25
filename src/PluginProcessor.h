@@ -53,6 +53,12 @@ public:
     // is to survive the editor being destroyed and recreated.
     void logEvent (const juce::String& event);
 
+    // Exposed so async callbacks can capture the File BY VALUE and still log
+    // after this processor is gone. juce::File is a value type holding a path
+    // string — appending to it touches no live object, which is exactly what
+    // the probe's editor-destroyed path needs.
+    const juce::File& getLogFile() const noexcept { return logFile_; }
+
 private:
     juce::File logFile_;
 

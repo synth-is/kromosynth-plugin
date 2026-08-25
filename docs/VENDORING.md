@@ -16,15 +16,25 @@ specific failure, which is common enough to be worth designing against.
 
 ## Adding JUCE
 
+**Currently vendored: JUCE 9.0.1**, pinned at commit `e18f7f50`.
+
+Note the actual cost: `--depth 1 --branch <tag>` pulled **17 MiB**, not the
+~1.5 GB a full-history clone would take. Earlier drafts of this document
+quoted the full-clone figure; the shallow-at-tag figure is three orders of
+magnitude smaller and is what you should expect.
+
 ```sh
 cd kromosynth-plugin
+git clone --depth 1 --branch 9.0.1 \
+  https://github.com/juce-framework/JUCE.git third_party/JUCE
 git submodule add https://github.com/juce-framework/JUCE.git third_party/JUCE
-git -C third_party/JUCE checkout <TAG>     # a TAG, never a branch
-git add third_party/JUCE .gitmodules
+git add .gitmodules third_party/JUCE
 ```
 
-Pin to a tag. `agentic-synth`'s `.gitmodules` has no branch or tag pin, so
-`git submodule update --remote` would silently move it.
+`git submodule add` on a directory that is already a git repo adopts it
+("Adding existing repo at 'third_party/JUCE' to the index") rather than
+re-cloning. The tag is not recorded in `.gitmodules` — the **commit SHA in the
+index** is the pin, which is the correct mechanism.
 
 **The first configure after this will tell you the licence.**
 `cmake/JuceLicenceCheck.cmake` reads
@@ -42,8 +52,24 @@ disk**. The only two JUCE copies on this machine at the time were:
 | `apps/kromosynth-evoruns-plugin/native/juce` | 7.0.5 | `GPL v3` |
 | `vendor/srvb/native/juce` | 7.0.5 | `GPL v3` |
 
-Both are JUCE 7, which was genuinely GPLv3, so they neither confirm nor refute
-the claim about JUCE 8. They just mean nobody had checked. Now the build checks.
+**RESOLVED — 2026-08-25.** First configure against the vendored submodule:
+
+```
+-- JUCE 9.0.1 — module declares license: AGPLv3/Commercial
+-- JUCE licence assertion passed: module header mentions AGPL
+```
+
+| path | version | header says |
+|---|---|---|
+| `third_party/JUCE` (this repo) | **9.0.1** | **`AGPLv3/Commercial`** |
+
+So WP §0's assumption holds, and it holds for the 9.x line specifically. The
+two GPLv3 copies above were JUCE 7, which genuinely was GPLv3 — they never
+contradicted the claim, they just meant nobody had checked.
+
+The check stays. It costs nothing on subsequent configures and it will catch a
+licence change on a future version bump, which is exactly when nobody would
+think to look.
 
 **If the assertion fires, that is a finding for the WP, not a check to delete.**
 It would also reopen WP §9's deferred question about pairing JUCE with libfaust

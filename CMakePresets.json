@@ -32,6 +32,22 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "" }
     },
     {
+      "name": "stage0-lifetime",
+      "inherits": "stage0-ninja",
+      "displayName": "Stage 0 — editor-lifetime test (30 s probe delay)",
+      "description": "Widens the probe timer so any normal open-then-close destroys the editor while the timer is pending, exercising the SafePointer guard without hand-timing a 3-second close. SEPARATE build dir on purpose: passing -DKROMOSYNTH_PROBE_DELAY_MS on the shared preset writes 30000 into the normal build's cache, and then every later log has 30-second gaps until someone remembers to reset it.",
+      "binaryDir": "${sourceDir}/build/stage0-lifetime",
+      "cacheVariables": { "KROMOSYNTH_PROBE_DELAY_MS": "30000" }
+    },
+    {
+      "name": "stage0-noprobe",
+      "inherits": "stage0-ninja",
+      "displayName": "Stage 0 — probe compiled out",
+      "description": "For isolating whether a fault is ours or the framework's: if a crash reproduces with the probe gone, it is not our instrumentation.",
+      "binaryDir": "${sourceDir}/build/stage0-noprobe",
+      "cacheVariables": { "KROMOSYNTH_WEBVIEW_PROBE": "OFF" }
+    },
+    {
       "name": "release",
       "inherits": "stage0",
       "displayName": "Release — universal binary, anything that leaves this machine",
@@ -53,6 +69,8 @@
   "buildPresets": [
     { "name": "stage0", "configurePreset": "stage0", "jobs": 0 },
     { "name": "stage0-ninja", "configurePreset": "stage0-ninja" },
+    { "name": "stage0-lifetime", "configurePreset": "stage0-lifetime" },
+    { "name": "stage0-noprobe", "configurePreset": "stage0-noprobe" },
     { "name": "stage0-xcode", "configurePreset": "stage0-xcode", "configuration": "Debug" },
     { "name": "release", "configurePreset": "release", "jobs": 0 },
     { "name": "sampler", "configurePreset": "sampler", "jobs": 0 }
