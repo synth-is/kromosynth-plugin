@@ -2,89 +2,150 @@
 
 ---
 
-# TASK 1 VERDICT — the webview assumption holds, with three caveats
+# TASK 1 VERDICT — the webview assumption holds. Six things change the WP.
 
-**Tested:** GarageBand only (via `AUHostingServiceXPC`). macOS 26.3.1, Apple
-clang 21.0.0, JUCE 9.0.1, AU + VST3, ad-hoc signed Debug build.
+**Environment:** macOS 26.3.1, Apple clang 21.0.0, SDK 26.5, JUCE 9.0.1,
+AU + VST3, ad-hoc signed Debug build.
 
-**One host is not a matrix.** Everything below is a GarageBand result. Reaper,
-Live 12 Beta, Bitwig and Logic remain untested.
+**Hosts tested:** GarageBand (AU, out-of-process via `AUHostingServiceXPC`),
+Reaper 7.79 (AU **and** VST3, in-process), Live 12 Beta (AU **and** VST3),
+plus Safari as a rendering control.
+
+**Not tested:** Logic, Bitwig.
 
 ## The WP §7 gate
 
-| gate question | GarageBand | |
+| gate question | verdict | |
 |---|---|---|
-| Does it load? | **YES** | ~1.2 s, React mounts (`rootChildren: 1`) |
-| Does it stay loaded? | **YES** | no crashes once our own bug was fixed |
-| Does it resize? | **NO** | §A3.1 — cause unresolved |
+| Does it load? | **YES** everywhere | ~1.2 s; React mounts (`rootChildren: 1`) |
+| Does it stay loaded? | **YES** | after fixing a use-after-free of our own — §A4 |
+| Does it resize? | **VST3 yes / AU no** | occlusion, mitigable — §A3.1c |
 | Does the host steal keyboard focus? | **NO** | space types a space; transport stays put |
-| Does routing work outside a browser tab? | **YES** | `BrowserRouter` on the remote origin |
-| Survives window close → reopen? | **YES** | but the page fully reloads — §A3.3 |
-| Survives host quit → relaunch? | **YES** | `localStorage` persisted, age=105 s |
-| Multiple instances? | **YES** | two processors, distinct pages — §A3.2 |
+| Does routing work outside a browser tab? | **YES** | `BrowserRouter` against the remote origin |
+
+Plus, beyond the written gate: survives close→reopen and host quit→relaunch,
+runs multiple instances with independent pages, and passes `auval` cleanly at
+every sample rate from 11 025 to 192 000 Hz.
 
 **The riskiest assumption in the WP survives.** A WKWebView pointed at the
-deployed origin loads, renders the real app, keeps state across host restarts,
-accepts keyboard input, and runs multiple instances — inside a sandboxed,
-hardened Apple host that loads plugins out-of-process.
-
-## Three things that change the WP
-
-**1. Signing is load-blocking, not a Stage 1 formality (§A2).**
-GarageBand refused the ad-hoc signed plugin until the user granted a
-"Lower Security Settings" exception. §7 schedules signing for Stage 1; for
-Apple hosts it belongs earlier, and no real user can ever be shown that dialog.
-
-**2. Audition audio does not go through the plugin (§C).**
-Confirmed by probe: the page has its own `AudioContext` (`state=suspended
-sr=44100`), separate from the plugin bus. §5's "auditioning inside the plugin is
-interaction and free" assumes audition behaves like a plugin. It does not — it
-exits the system output, unrouted and unrecordable by the host. This is a
-design decision the WP has not made.
-
-**3. The app cold-starts on every window open (§A3.3).**
-New page, fresh `sessionStorage`, ~1.2 s reload, all in-memory UI state lost.
-`withKeepPageLoadedWhenBrowserIsHidden()` does not help because the host
-*destroys* rather than hides. §4's "one UI codebase" premise assumes tab-like
-persistence; the plugin window is a cold start. Mitigable by persisting UI
-state to `localStorage` (proven to survive), but that is plugin-specific work
-the web app does not do today.
-
-## Two things that turned out fine
-
-- **`localStorage` works and persists** (§B2). The `kromosynth-live` precedent
-  suggested it would fail in a sandboxed host. It did not. §5's entitlement and
-  token design is viable.
-- **`crossOriginIsolated: false` is a non-finding** (§B1). Real WKWebView
-  behaviour, but only three call sites depend on it and two actively prefer it
-  false. No action needed.
-
-## One new constraint discovered
-
-**The embedded-webview User-Agent is detectable** (§B3) — no `Safari`/`Version`
-token. OAuth providers block embedded webviews on exactly this signal. §5
-already mandates RFC 8252 (system browser + PKCE); this is empirical
-confirmation that the design is **forced, not merely preferred**.
-
-## Outstanding before Task 2
-
-1. **Reaper, Live 12 Beta, Bitwig.** Reaper matters most: it loads in-process,
-   so it separates "webview in a plugin" from "webview in Apple's XPC sandbox",
-   and it will settle whether §A3.1's resize failure is ours or GarageBand's.
-2. **Resize cause** (§A3.1) — host limitation or our AU wrapper not advertising
-   resizability. Unresolved, and it constrains UI design if it holds broadly.
-3. **Release-build cold-open time.** Debug measured 1532 ms cold under `auval`.
-   Hosts time out during scans.
-4. **No Web Inspector** (§B6). JUCE 9 does not expose `isInspectable`. A known
-   ergonomics cost for Stage 1's bridge; decide whether to carry a JUCE patch.
-
-**Recommendation: do not start Task 2 yet.** The gate passes on one host. Reaper
-is a 20 MB download and answers two open questions at once.
+deployed origin loads and renders the real application inside a sandboxed,
+hardened Apple host that runs plugins out-of-process.
 
 ---
 
-Status: **GarageBand tested — see the Task 1 verdict above. Four hosts
-outstanding.**
+## Six things that change the WP
+
+**1. Signing is load-blocking on Apple hosts, not a Stage 1 formality (§A2).**
+GarageBand refused the ad-hoc signed plugin until the user granted a "Lower
+Security Settings" exception. §7 schedules signing for Stage 1; for Apple hosts
+it belongs earlier, and no real user can ever be shown that dialog. Non-Apple
+hosts are unaffected, so a clean Reaper result does not generalise here.
+
+**2. Audition audio does not go through the plugin (§C).**
+Probe-confirmed: the page has its own `AudioContext`, following the *system
+default output device* rather than the host. §5's "auditioning inside the plugin
+is interaction and free" assumes audition behaves like a plugin. It does not —
+it exits the system output, unrouted and unrecordable. **This is a design
+decision the WP has not made**, and it is the most consequential item here.
+
+**3. Storage is per-host-application (§A3.1d).**
+Reaper's VST3 wrote a key and Reaper's AU read it; GarageBand never saw it. So
+the container is scoped to the **host application**, not the plugin or format.
+Sign-in and entitlement are **per-DAW** — three DAWs, three logins, and
+revoking in one leaves the others live. Argues for the token living in the
+plugin's own storage, which is also the RFC 8252 shape §5 already mandates.
+
+**4. The app cold-starts on every window open (§A3.3).**
+New page, fresh `sessionStorage`, ~1.2 s reload, all in-memory UI state lost.
+`withKeepPageLoadedWhenBrowserIsHidden()` does not help because hosts *destroy*
+rather than hide. §4 assumes tab-like persistence; the DAW-native pattern is
+open → search → close → work → reopen, and the search is gone each time.
+Mitigable by persisting UI state to `localStorage` — but that is plugin-specific
+work the web app does not do today.
+
+**5. AU editor resize is broken in two distinct ways (§A3.1c).**
+Every VST3 resizes and reflows. Every AU fails. Two separate defects:
+
+| path | JUCE component resizes | WKWebView follows |
+|---|---|---|
+| JUCE's own grip | ✅ | ✅ reflows |
+| Host-driven (Reaper AU) | ✅ | ❌ crops |
+
+The dead corners in Live and GarageBand are **occlusion** — a native `NSView`
+composites above JUCE's `ResizableCornerComponent` and buries the only resize
+affordance an AU host offers. Proven by A/B: a plain `juce::Component` in the
+same editor resizes fine, and insetting the browser 24 px restores it. The
+host-driven crop is a *different* bug that insetting does not fix. AU is the
+only format Logic and GarageBand accept, so §4's "one UI codebase" currently
+means **"a UI that lays out correctly in VST3 hosts."**
+
+**6. The embedded-webview User-Agent is detectable (§B3).**
+No `Safari`/`Version` token. OAuth providers block embedded webviews on exactly
+this signal. §5 already mandates RFC 8252 — this is empirical confirmation that
+the design is **forced, not merely preferred**.
+
+---
+
+## Four things that turned out fine
+
+- **`localStorage` works and persists** across editor close/reopen and host
+  restart (§B2). The `kromosynth-live` precedent suggested it would fail. It
+  did not.
+- **`crossOriginIsolated: false` is a non-finding** (§B1). Real WKWebView
+  behaviour, but three call sites depend on it and two actively prefer it
+  false. No action.
+- **Multiple instances work** (§A3.2), with independent pages.
+- **Out-of-process AU hosting is transparent** (§A1). The plugin does not run
+  in the DAW's address space at all, and nothing broke because of it.
+
+## Three development costs discovered
+
+- **No Web Inspector** (§B6). JUCE 9 never sets `isInspectable`, so no devtools
+  in the plugin webview. Print-debugging via `evaluateJavascript` works, but
+  Stage 1's bridge will feel this.
+- **Async lifetime hazards are easy to hit** (§A4). Four lines of
+  instrumentation produced a host-level "may cause the system to become
+  unstable" modal. `SafePointer`-or-equivalent on every async callback should
+  be a stated rule in the bridge design.
+- **Non-ASCII in C++ string literals is mangled.** Any C++-side user-facing
+  text needs `juce::CharPointer_UTF8` or must stay ASCII.
+
+---
+
+## Recommendation on Task 2
+
+**The gate passes; Task 2 is unblocked. But do two things first, and decide a
+third.**
+
+**Do first — generate a suitable VI.** Every one of the 17 artefacts on disk is
+XY-morph or single-velocity-layer with zero round-robins (§D). Task 2's stated
+question — *"whether round-robins and velocity layers behaved"* — **cannot be
+answered with existing material.** A fresh render with `velocityLayers > 1` and
+`roundRobins > 1` is a prerequisite, not part of the task.
+
+**Do first — fix the audio device.** The test machine is running at **24 kHz**
+(§A3.1e). Judging sfizz playback, round-robins and velocity layers through a
+12 kHz Nyquist would waste the session.
+
+**Decide, do not test — §C's audition routing.** This changes what Task 2 is
+*for*. If audition stays in the webview, the sampler is a playback engine for
+downloaded artefacts. If audition moves to the plugin (§C option 3 — "the
+webview browses, the plugin plays"), the sampler becomes the primary audition
+path, load-bearing far earlier than Stage 1 assumes, with different latency and
+voice-count requirements. **"Does sfizz work" has two different answers
+depending on which.** Worth settling before embedding a library.
+
+**Also worth doing, cheaply:** Logic. It is the one untested host that matters,
+it is AU-only (so it inherits finding 5 at its worst), and it shares
+`AUHostingServiceXPC` with GarageBand — so it would settle whether the storage
+boundary in finding 3 is the DAW or the hosting process.
+
+---
+
+
+Status: **Task 1 complete.** GarageBand, Reaper 7.79 and Live 12 Beta tested
+across AU and VST3, with Safari as control. Logic and Bitwig outstanding.
+Task 2 not started.
 
 Corresponds to `WP_SYNTHIS_PLUGIN.md` §7, Stage 0. The gate there reads:
 
