@@ -11,6 +11,12 @@
 #ifndef KROMOSYNTH_PROBE_DELAY_MS
   #define KROMOSYNTH_PROBE_DELAY_MS 3000
 #endif
+#ifndef KROMOSYNTH_EDITOR_STUB
+  #define KROMOSYNTH_EDITOR_STUB 0
+#endif
+#ifndef KROMOSYNTH_BROWSER_INSET
+  #define KROMOSYNTH_BROWSER_INSET 0
+#endif
 
 // ── Stage 0 environment probe ────────────────────────────────────────────────
 //
@@ -112,6 +118,15 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
 {
     proc_.logEvent ("editor_constructed");
 
+#if KROMOSYNTH_EDITOR_STUB
+    // §A3.1c discriminator. Everything below this block — setResizable,
+    // setResizeLimits, setSize, resized() logging — is byte-identical to the
+    // real build. The ONLY difference is that the editor contains a plain
+    // juce::Component instead of a native NSView.
+    stub_ = std::make_unique<StubContent>();
+    addAndMakeVisible (*stub_);
+    proc_.logEvent ("EDITOR_STUB build — no WebBrowserComponent created");
+#else
     using Options = juce::WebBrowserComponent::Options;
 
     auto options = Options{}
@@ -122,6 +137,7 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
 
     browser_ = std::make_unique<InstrumentedBrowser> (options, proc_);
     addAndMakeVisible (*browser_);
+#endif
 
     // Resizable with a wide range, because "does it resize" is a gate
     // question and a fixed-size editor cannot answer it. Lower bound is
@@ -131,8 +147,10 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     setResizeLimits (640, 400, 3840, 2400);
     setSize (1280, 800);
 
+#if ! KROMOSYNTH_EDITOR_STUB
     proc_.logEvent ("navigating to " KROMOSYNTH_WEB_APP_URL);
     browser_->goToURL (KROMOSYNTH_WEB_APP_URL);
+#endif
 }
 
 KromosynthAudioProcessorEditor::~KromosynthAudioProcessorEditor()
@@ -146,16 +164,80 @@ void KromosynthAudioProcessorEditor::paint (juce::Graphics& g)
     // webview fails to create at all — in which case a plain dark rectangle
     // with nothing in it is itself the finding.
     g.fillAll (juce::Colour::fromRGB (0x10, 0x12, 0x14));
+
+#if KROMOSYNTH_BROWSER_INSET > 0
+    // §A3.1c occlusion test. Strip reserved along the bottom and right so
+    // JUCE's ResizableCornerComponent (18x18, bottom-right) is not covered by
+    // the native WKWebView NSView. Coloured so it is immediately obvious the
+    // inset actually applied.
+    g.setColour (juce::Colour::fromRGB (0xd9, 0x7a, 0x1e));
+    g.fillRect (getLocalBounds().removeFromBottom (KROMOSYNTH_BROWSER_INSET));
+    g.fillRect (getLocalBounds().removeFromRight  (KROMOSYNTH_BROWSER_INSET));
+#endif
 }
 
 void KromosynthAudioProcessorEditor::resized()
 {
     if (browser_ != nullptr)
-        browser_->setBounds (getLocalBounds());
+    {
+        auto area = getLocalBounds();
+
+#if KROMOSYNTH_BROWSER_INSET > 0
+        // §A3.1c occlusion test — DIAGNOSTIC ONLY, not a kept workaround.
+        //
+        // Hypothesis: AU hosts do not supply their own resize affordance, so
+        // JUCE's ResizableCornerComponent is the only one — and a native
+        // NSView (WKWebView) composites above JUCE's software-rendered content
+        // regardless of z-order, burying it. Pulling the browser back from the
+        // bottom-right exposes the grip. If the AU then resizes in Live, the
+        // mechanism is confirmed.
+        area = area.withTrimmedBottom (KROMOSYNTH_BROWSER_INSET)
+                   .withTrimmedRight  (KROMOSYNTH_BROWSER_INSET);
+#endif
+
+        browser_->setBounds (area);
+    }
+
+    if (stub_ != nullptr)
+        stub_->setBounds (getLocalBounds());
 
     proc_.logEvent ("editor_resized w=" + juce::String (getWidth())
                     + " h=" + juce::String (getHeight()));
 }
+
+// §A3.1c discriminator content. DISPOSABLE — delete with the stub.
+//
+// Gated, unlike the first version. Previously this definition was compiled
+// unconditionally (only the *construction* was `#if`-ed), so the literal
+// "EDITOR STUB" ended up in EVERY binary — which made
+//   strings <binary> | grep -c "EDITOR STUB"
+// return 1 for stub and non-stub builds alike, i.e. a check that could not
+// distinguish the thing it was written to distinguish.
+#if KROMOSYNTH_EDITOR_STUB
+void KromosynthAudioProcessorEditor::StubContent::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour::fromRGB (0x1e, 0x3a, 0x5f));
+
+    // A border drawn at getLocalBounds() makes the answer visible without
+    // reading the log: if all four edges are on screen, this component is
+    // tracking the window. If the right and bottom edges are missing, it is
+    // being clipped exactly as the webview was.
+    g.setColour (juce::Colours::orange);
+    g.drawRect (getLocalBounds(), 4);
+
+    g.setColour (juce::Colours::white);
+    g.setFont (26.0f);
+    g.drawText ("EDITOR STUB - no WebBrowserComponent",
+                getLocalBounds(), juce::Justification::centred, false);
+
+    g.setFont (20.0f);
+    g.drawText (juce::String (getWidth()) + " x " + juce::String (getHeight()),
+                getLocalBounds().reduced (16),
+                juce::Justification::centredBottom, false);
+}
+#else
+void KromosynthAudioProcessorEditor::StubContent::paint (juce::Graphics&) {}
+#endif
 
 // ── Lifecycle hooks ──────────────────────────────────────────────────────────
 

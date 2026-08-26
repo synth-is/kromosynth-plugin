@@ -47,5 +47,24 @@ private:
     KromosynthAudioProcessor& proc_;
     std::unique_ptr<InstrumentedBrowser> browser_;
 
+    // ---------------------------------------------------------------------
+    // DISPOSABLE DIAGNOSTIC — delete once §A3.1c has an owner.
+    //
+    // Built only when KROMOSYNTH_EDITOR_STUB=1. Replaces the
+    // WebBrowserComponent with a plain juce::Component while leaving
+    // setResizable / setResizeLimits / setSize and all logging byte-identical,
+    // so the ONLY variable is whether the editor contains a native NSView.
+    //
+    //   AU stub resizes in Live  -> WebBrowserComponent is the problem (upstream JUCE)
+    //   AU stub still dead       -> our AU editor configuration (ours to fix)
+    // ---------------------------------------------------------------------
+    class StubContent : public juce::Component
+    {
+    public:
+        void paint (juce::Graphics&) override;
+    };
+
+    std::unique_ptr<StubContent> stub_;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KromosynthAudioProcessorEditor)
 };

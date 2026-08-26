@@ -32,6 +32,20 @@ option(KROMOSYNTH_WEBVIEW_PROBE  "Inject the Stage 0 environment probe JS"  ON)
 set(KROMOSYNTH_PROBE_DELAY_MS "3000" CACHE STRING
     "Milliseconds after page load before the Stage 0 probe fires")
 
+# §A3.1c discriminator. Replaces the WebBrowserComponent with a plain
+# juce::Component, leaving resize configuration identical, to determine whether
+# the AU editor's refusal to resize is caused by the native NSView embedding
+# (upstream JUCE) or by our own editor configuration (ours). See
+# docs/STAGE0_FINDINGS.md §A3.1c.
+option(KROMOSYNTH_EDITOR_STUB "Build editor with a plain component instead of the webview" OFF)
+
+# §A3.1c occlusion test. Pixels trimmed from the bottom and right of the
+# browser's bounds so JUCE's ResizableCornerComponent (18x18) is not covered by
+# the native WKWebView NSView. 0 = off. 24 exposes the grip with margin.
+# Diagnostic only — not a workaround being adopted.
+set(KROMOSYNTH_BROWSER_INSET "0" CACHE STRING
+    "Pixels to reserve at bottom/right so JUCE's resize grip is not occluded")
+
 # The origin the WebBrowserComponent points at. Sourced from kromosynth-auth's
 # .env.example (APP_PUBLIC_URL=https://synth.is), not guessed.
 set(KROMOSYNTH_WEB_APP_URL "https://synth.is" CACHE STRING

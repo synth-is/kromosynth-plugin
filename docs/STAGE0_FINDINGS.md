@@ -239,15 +239,19 @@ Per host. Record the outcome, not an impression.
 | | GarageBand | Live 12 Beta | Reaper | Bitwig | Logic |
 |---|---|---|---|---|---|
 | AU validates (`auval`) | ✅ **PASS** (host-independent) | n/a | n/a | n/a | ✅ same binary |
-| Plugin scan succeeds | | | | | |
-| Editor opens, page renders | | | | | |
-| Survives close → reopen (page state intact?) | | | | | |
-| Survives host project save → reload | | | | ⚠️ demo can't save | |
-| Resize: page reflows, no clipping | | | | | |
-| Typing into a web input reaches the page | | | | | |
-| Host steals keyboard focus (spacebar → transport?) | | | | | |
-| Two instances in one project | | | | | |
-| Host still alive after removing the plugin | | | | | |
+| Plugin scan succeeds | ✅ † | | | | |
+| Editor opens, page renders | ✅ ~1.2 s | | | | |
+| Survives close → reopen (page state intact?) | ⚠️ opens, but **full reload** — §A3.3 | | | | |
+| Survives host project save → reload | ✅ 2 instances restored | | | ⚠️ demo can't save | |
+| Resize: page reflows, no clipping | ❌ **cannot resize** — §A3.1 | | | | |
+| Typing into a web input reaches the page | ✅ | | | | |
+| Host steals keyboard focus (spacebar → transport?) | ✅ **no** | | | | |
+| Two instances in one project | ✅ — §A3.2 | | | | |
+| Host still alive after removing the plugin | — not tested | | | | |
+
+† only after granting the "Lower Security Settings" exception (§A2). A clean
+machine would be blocked. Reaper, Live and Bitwig are not hardened this way and
+will not reproduce that condition — so a pass there says nothing about §A2.
 
 ### On GarageBand as a Logic proxy
 
@@ -639,6 +643,386 @@ applies only to H4. It does not cover a bug in our own code.
 | **Two instances in one project** | ⚠️ **unclear** | see A3.2 |
 
 ### A3.1 GarageBand will not resize the plugin window
+
+**UPDATE 2026-08-26 — Reaper resizes it. Cause 2 is unlikely; cause 1 leading.**
+
+In Reaper 7.79 the plugin window resizes normally. So the editor *is*
+advertising resizability and the mechanism works somewhere.
+
+**The comparison is not yet clean, though.** GarageBand loaded the **AU**;
+Reaper loaded the **VST3**. Format and host both changed at once, so this does
+not yet distinguish:
+
+| | still possible? |
+|---|---|
+| GarageBand does not offer resizable plugin windows | **yes** — leading |
+| Our **AU** wrapper does not advertise resize, while VST3 does | **yes** — not excluded |
+
+**The isolating test is one click:** Reaper loads AudioUnits too. Add
+`AU: Synth.is` to a track in Reaper and try to resize it.
+
+- **AU resizes in Reaper** → the wrapper is fine in both formats; GarageBand is
+  the limitation. Record as a host quirk, no work needed, and expect Logic
+  (whose plugin windows are far more capable than GarageBand's) to behave
+  differently.
+- **AU does not resize in Reaper** → it is our AU wrapper, it is ours to fix,
+  and it would have been wrongly blamed on GarageBand.
+
+Until that runs, do not write "GarageBand limitation" into the WP.
+
+### A3.1c RESOLVED — the AU editor does not resize. Confirmed across three hosts.
+
+| host | format | window resizes | page reflows |
+|---|---|---|---|
+| Safari (control) | — | — | ✅ |
+| Reaper 7.79 | **VST3** | ✅ | ✅ |
+| Live 12 Beta | **VST3** | ✅ | ✅ |
+| Reaper 7.79 | **AU** | ✅ | ❌ **crops** |
+| Live 12 Beta | **AU** | ❌ **corners dead** | n/a |
+| GarageBand | **AU** | ❌ **corners dead** | n/a |
+
+**Every VST3 works. Every AU fails.** Host, page, CSS and rendering engine are
+held constant across the Reaper and Live pairs, so the web app is excluded
+(Safari and both VST3s reflow) and the host is excluded (each host succeeds in
+one format and fails in the other).
+
+#### One cause explains both failure modes
+
+The two AU symptoms look different but fit a single explanation: **the AU
+editor is not advertising itself as resizable.**
+
+- **Live and GarageBand honour that** and disable the resize affordance
+  entirely — dead corners.
+- **Reaper is permissive** and resizes the window regardless. The JUCE
+  component follows (`editor_resized w=993 h=554` in the log), but because the
+  AU view is not participating in a resize protocol, the embedded `WKWebView`'s
+  native `NSView` frame never updates — so the page keeps laying out at its
+  original width and is clipped.
+
+That accounts for dead corners in strict hosts and cropping in a permissive one
+without needing two separate bugs.
+
+#### What is NOT established
+
+Whether this is:
+
+1. **`WebBrowserComponent`-specific** — the native `NSView` embedding does not
+   cooperate with JUCE's AU editor resize path; or
+2. **our configuration** — something about `setResizable`/`setResizeLimits`/
+   `setSize` ordering, or the AU wrapper's preferred-size reporting.
+
+This matters for ownership: (1) is an upstream JUCE report, (2) is ours to fix.
+JUCE AU plugins with resizable editors are common and work in Logic, so a
+blanket "JUCE AU cannot resize" is too strong a reading of this evidence.
+
+**Decisive discriminator — RUN 2026-08-26. Cause 1 confirmed.**
+
+`KROMOSYNTH_EDITOR_STUB` replaces the `WebBrowserComponent` with a plain
+`juce::Component`, leaving `setResizable`, `setResizeLimits`, `setSize` and the
+`resized()` logging byte-identical.
+
+**Result: the stub AU resizes normally in Live 12.** All four border edges stay
+visible and the printed dimensions track the drag. It reported `640 x 461` —
+clamped at exactly the 640 px minimum from `setResizeLimits (640, 400, …)`, so
+the limits are being honoured as well.
+
+| | AU in Live 12 |
+|---|---|
+| Editor containing a plain `juce::Component` | ✅ resizes, limits honoured |
+| Editor containing a `WebBrowserComponent` | ❌ corners dead |
+
+**Conclusion: JUCE's AU editor resize machinery works. The
+`WebBrowserComponent` is what breaks it.** Our `setResizable` /
+`setResizeLimits` / `setSize` configuration is exonerated — identical code
+resizes fine with a non-native child. This is upstream territory, not ours.
+
+**Cheap test — RUN 2026-08-26. Occlusion hypothesis CONFIRMED.**
+
+`KROMOSYNTH_BROWSER_INSET=24` pulls the browser 24 px back from the bottom and
+right, exposing JUCE's `ResizableCornerComponent`. AU in Live 12:
+
+- **The corners drag.** The same AU that had dead corners is now resizable.
+- **And the page reflows.** At the resized width the nav collapsed to
+  icons-only, the hero fitted, and the cards stacked — no cropping.
+
+So the AU resize failure was **occlusion**: a native `WKWebView` `NSView`
+composites above JUCE's software-rendered content regardless of z-order, and
+JUCE's `toFront()` on the corner cannot beat that. AU hosts do not supply their
+own resize affordance, so burying JUCE's grip removes the only one.
+
+#### A nuance worth keeping: there are two resize paths, and only one is broken
+
+| path | JUCE component resizes | WKWebView follows |
+|---|---|---|
+| **JUCE's own grip** (inset build, Live AU) | ✅ | ✅ **reflows** |
+| **Host-driven** (Reaper AU, host window resize) | ✅ (`editor_resized w=993`) | ❌ **crops** |
+
+When the resize originates inside JUCE, the native child follows correctly and
+the page relayouts. When the *host* drives the AU view's size, the JUCE
+component updates but the native child's frame does not.
+
+That is a sharper bug report than "AU can't resize", and it means the earlier
+Reaper cropping is a **separate defect** from the dead corners — not one cause
+with two faces, as §A3.1c originally proposed. That proposal was wrong.
+
+#### Stage 1 implication
+
+There is a viable mitigation: reserve a strip so JUCE's grip is not covered.
+The 24 px orange band used here is diagnostic and ugly, but a thin styled
+handle in a corner would work and costs nothing architecturally.
+
+Still worth an upstream report, because the host-driven path (row 2) is not
+fixed by insetting and will affect any host that resizes AU windows itself.
+
+**Not adopted.** Per the session brief this is recorded as a finding with a
+known mitigation, not merged into the shipping editor. `KROMOSYNTH_BROWSER_INSET`
+defaults to 0.
+
+#### A bad check, recorded so it is not repeated
+
+```sh
+strings <binary> | grep -c "EDITOR STUB"     # returned 1 for BOTH builds
+```
+
+`StubContent::paint` was compiled unconditionally — only its *construction* was
+`#if`-ed — so the string literal was present in every binary. The check could
+not distinguish the thing it existed to distinguish, and briefly suggested the
+inset build had not installed when in fact **Live was caching the previously
+loaded binary**; a restart was all that was needed.
+
+Fixed: `StubContent::paint` is now inside `#if KROMOSYNTH_EDITOR_STUB`. The
+reliable discriminators are the log line (`EDITOR_STUB build …` vs
+`navigating to https://synth.is`) and, visually, the solid orange strip.
+
+#### Candidate mechanism — the resize corner is buried under the native view
+
+A hypothesis that fits every observation, stated as one:
+
+AU host windows generally size themselves to the plugin's view rather than
+providing their own resize affordance, so JUCE supplies its own
+`ResizableCornerComponent` (added by `setResizable (true, true)`). The stub is
+software-rendered by JUCE, so that corner draws and hit-tests on top of it —
+visible as the grip in the bottom-right of the screenshot.
+
+A `WebBrowserComponent` on macOS is a real Cocoa `NSView` (`WKWebView`).
+Native views composite **above** JUCE's software-rendered content regardless of
+JUCE's z-order, so the resize corner is covered: invisible and unclickable.
+
+That explains both failure modes without needing two causes:
+
+- **Live / GarageBand AU** — JUCE's corner is the only affordance and it is
+  buried → dead corners.
+- **Reaper AU** — Reaper supplies host-level window resizing, so the window and
+  the JUCE component do resize (`editor_resized w=993` in the log), but the
+  `WKWebView`'s `NSView` frame does not follow → crop.
+- **VST3 everywhere** — VST3 hosts provide their own resize affordance and
+  JUCE's VST3 wrapper propagates size into the native child, so both work.
+
+**Cheap test, ~5 min, not yet run.** Inset the browser inside the editor so
+JUCE's corner is exposed — in `resized()`, use
+`browser_->setBounds (getLocalBounds().withTrimmedBottom (24).withTrimmedRight (24))`
+instead of the full bounds. Load the AU in Live.
+
+- **Corners now work** → mechanism confirmed. It is an occlusion problem, and
+  Stage 1 has a cheap mitigation (reserve a strip for the grip) as well as a
+  precise upstream bug report.
+- **Corners still dead** → the hypothesis is wrong and the cause is deeper in
+  JUCE's AU view handling. Report upstream with the stub A/B as evidence.
+
+Note this is diagnosis, not a workaround being adopted — the finding stands
+either way, and the trimmed-bounds change is not being kept.
+
+#### Unrelated minor: non-ASCII in C++ string literals is mangled
+
+The stub rendered `EDITOR STUB â€ no WebBrowserComponent` — the em-dash in the
+source literal came through as mojibake, i.e. UTF-8 bytes being interpreted as
+single-byte characters somewhere between the compiler and `juce::String`.
+
+Cosmetic here, in code that is being deleted. Worth recording only because it
+means **any non-ASCII text originating on the C++ side will be corrupted** —
+error strings, labels, anything user-facing from the plugin rather than the
+webview. Use `juce::CharPointer_UTF8 ("…")` explicitly, or stay ASCII, once
+Stage 1 has C++-side text.
+
+#### Why this matters more than a cosmetic bug
+
+**AU is the only format Logic and GarageBand accept.** On Apple hosts the
+plugin UI is a fixed-size window; in Reaper's AU it is a cropped one. Combined
+with §A2 (Apple hosts also refuse unsigned builds), the Apple-host path is the
+worst-supported one — and Logic is a large share of the target market.
+
+§4's "one UI codebase" currently means **"a UI that lays out correctly in VST3
+hosts."** Recorded as a finding, not worked around, per the session brief — but
+it needs an owner before Stage 1.
+
+### A3.1c (superseded) — it is the AU wrapper. VST3 reflows, AU crops, same host.
+
+Controlled comparison, Reaper 7.79, same page, same WebKit:
+
+| | window resizes | page reflows |
+|---|---|---|
+| Safari (control) | — | ✅ |
+| Reaper, **VST3** | ✅ | ✅ |
+| Reaper, **AU** | ✅ | ❌ **crops** |
+| GarageBand, AU | ❌ | n/a |
+
+Only the plugin format varies between rows 2 and 3. Host, page, CSS and
+rendering engine are all held constant, so **the web app's CSS is excluded**
+(Safari and the VST3 both reflow) and **the host is excluded** (same Reaper).
+
+The log confirms the JUCE side is working in the AU too:
+
+```
+17:28:19.498  editor_resized w=993 h=554
+17:28:19.565  editor_resized w=993 h=553
+17:28:19.702  editor_resized w=993 h=552
+```
+
+So `resized()` runs and `browser_->setBounds (getLocalBounds())` executes — JUCE
+believes the component is 993 px wide — while the WKWebView keeps laying out at
+its original width and is clipped.
+
+**Likely mechanism, stated as a hypothesis.** `WebBrowserComponent` on macOS
+wraps a native `NSView` (the `WKWebView`). The AU wrapper hosts the editor
+inside `JUCE_AUCocoaViewClass`, and the JUCE-side bounds update appears not to
+reach the embedded native view's frame in that path, whereas the VST3 wrapper's
+view hierarchy propagates it. Not verified — confirming it means stepping
+through JUCE's AU view resize path.
+
+#### Why this matters more than a cosmetic bug
+
+**AU is the only format Logic and GarageBand accept.** So on Apple hosts — the
+ones §A2 already showed are strictest, and the ones a large share of the target
+market uses — the plugin UI cannot reflow. Combined with GarageBand refusing to
+resize at all, the Apple-host experience is a fixed-size window showing a
+cropped responsive web app.
+
+This is a **finding, not a task**: per the session brief it is recorded rather
+than worked around. It does need an owner before Stage 1, because "one UI
+codebase" (§4) currently means "a UI that only lays out correctly in VST3
+hosts".
+
+Open: whether this is AU-generic or specific to Reaper's AU hosting. Live 12
+loads both formats and would settle it with the same A/B.
+
+### A3.1c (superseded) UPDATE — the editor IS being resized. The PAGE is not reflowing.
+
+Reaper, AU. The log settles what the screenshots could not:
+
+```
+17:28:19.498  editor_resized w=993 h=554
+17:28:19.565  editor_resized w=993 h=553
+17:28:19.702  editor_resized w=993 h=552
+```
+
+`resized()` is being called with live drag values, so
+`browser_->setBounds (getLocalBounds())` is running and the JUCE component is
+tracking the window. **Yet the content crops instead of reflowing.**
+
+That rules out the framing used up to now. This is not "the host refuses to
+resize" — in Reaper the host resizes fine and we receive the events. The
+question is narrower: **does the WKWebView re-lay-out the document when its
+bounds change?**
+
+Revised candidate causes:
+
+| | status |
+|---|---|
+| GarageBand does not offer resizable plugin windows | still true **for GarageBand**, separate issue |
+| Our AU wrapper does not advertise resize | **superseded** — see A3.1c: it advertises and receives resize, but the page does not reflow |
+| WKWebView's viewport is not following the component bounds | **open** |
+| synth.is has a CSS min-width and would crop in any browser | **open** |
+
+#### The decisive test takes thirty seconds
+
+Open `https://synth.is` in **Safari** and narrow the window to roughly 990 px.
+
+- **Safari reflows** (nav collapses, text rewraps) **but the plugin crops** →
+  the viewport is not propagating. A real plugin-side finding, and ours.
+- **Safari crops the same way** → the web app has a min-width and this is a CSS
+  matter, not a plugin one. Nothing to fix in the plugin; the UI simply needs a
+  usable layout at plugin-window widths.
+
+Safari is the right comparison rather than Chrome: same WebKit engine, so a
+difference isolates the embedding rather than the renderer.
+
+### A3.1d FINDING — storage is per-host-application, not shared
+
+`persist: SURVIVED age=224s` in Reaper.
+
+**224 seconds, not a day.** The GarageBand value was written 2026-08-25 at
+~21:32; had Reaper seen the same store, the age would read roughly 72,000 s.
+Instead the key was absent and freshly created — ~17:24 today, during the
+earlier Reaper VST3 session — and then read back by the Reaper **AU** instance
+at 17:28.
+
+Two things follow:
+
+1. **Different hosts have different stores.** GarageBand (via
+   `AUHostingServiceXPC`) and Reaper do not share `localStorage`.
+2. **Plugin format does not matter.** Reaper's VST3 wrote it and Reaper's AU
+   read it, so the container is scoped to the **host application**, not the
+   plugin binary or format.
+
+**§5 consequence.** Sign-in and the entitlement record are **per-DAW**. A user
+running Logic, Live and Reaper signs in three times, and revoking access in one
+leaves the others authenticated until their own tokens expire. That is a
+product decision the WP has not made, and it argues for the token living in the
+plugin's own storage (a file the plugin owns, shared across hosts) rather than
+in the webview's `localStorage` — which is also the RFC 8252 shape §5 already
+mandates, so the two pressures agree again.
+
+Still untested: whether **Logic and GarageBand** share a store, since both go
+through `AUHostingServiceXPC`. If they do, the boundary is the *hosting
+process*, not the DAW.
+
+### A3.1e CAUTION — the test machine's audio device is at 24 kHz
+
+```
+prepareToPlay sampleRate=24000 blockSize=480
+audio: state=suspended sr=24000
+```
+
+Reaper is running at **24 kHz**. Unusual, and worth fixing before any audio
+work: Task 2's sfizz playback, round-robin and velocity-layer testing would all
+be evaluated through a 12 kHz Nyquist. Bluetooth headsets in headset
+(bidirectional) mode commonly force rates like this.
+
+Set Reaper's device to 44.1 or 48 kHz before Task 2.
+
+**It also refines §C.** In GarageBand both host and page reported 44100, and
+that was recorded as coincidence. Here both report 24000. So the page's
+`AudioContext` does appear to follow the same system output device the host is
+using — they agree *while* the host uses the system default device. They would
+diverge the moment a host takes a different device, or an exclusive-mode
+interface at another rate. §C's point stands, but the mechanism is now
+understood rather than assumed.
+
+### A3.1b Open question — does it reflow, or only clip?
+
+The matrix row is *"resize: page reflows, no clipping"*, and the Reaper
+screenshot shows the window narrower than 1280 px with content running off the
+right edge: the nav's rightmost control is cut in half and the hero subtitle
+ends mid-word ("…shaped by human creativit").
+
+Two readings, not yet distinguished:
+
+1. **Normal responsive overflow.** The page has a min-width and the browser is
+   scrolling/clipping horizontally, exactly as it would in a narrow browser
+   window. Benign, and a web-app CSS matter rather than a plugin one.
+2. **The viewport is not being updated.** The `WebBrowserComponent` bounds
+   follow `getLocalBounds()` in `resized()`, but if the page's viewport does
+   not track that, the document keeps laying out at the old width and simply
+   gets cropped. That would be a real plugin-side finding.
+
+**How to tell:** narrow the window well below any tablet breakpoint. If the nav
+collapses, columns stack, or text rewraps, the viewport is live and this is
+case 1. If the layout stays pixel-identical and merely loses its right-hand
+edge, it is case 2.
+
+---
+
+### A3.1 (original) GarageBand will not resize the plugin window
 
 Dragging the window corners **moves** the window; it does not resize it. The
 editor requested and received 1280×800 and is stuck there.

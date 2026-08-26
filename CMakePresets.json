@@ -48,6 +48,22 @@
       "cacheVariables": { "KROMOSYNTH_WEBVIEW_PROBE": "OFF" }
     },
     {
+      "name": "stage0-stub",
+      "inherits": "stage0-ninja",
+      "displayName": "Stage 0 — §A3.1c discriminator (plain component, no webview)",
+      "description": "Replaces the WebBrowserComponent with a plain juce::Component, resize configuration untouched. Load the AU in Live: if the stub resizes, the native NSView embedding is the problem (upstream JUCE); if the corners are still dead, it is our AU editor configuration. Separate build dir so it cannot contaminate the normal build's cache.",
+      "binaryDir": "${sourceDir}/build/stage0-stub",
+      "cacheVariables": { "KROMOSYNTH_EDITOR_STUB": "ON" }
+    },
+    {
+      "name": "stage0-inset",
+      "inherits": "stage0-ninja",
+      "displayName": "Stage 0 — §A3.1c occlusion test (24px reserved for the resize grip)",
+      "description": "Real WebBrowserComponent, but pulled 24px back from the bottom and right so JUCE's ResizableCornerComponent is not buried under the native WKWebView NSView. Load the AU in Live: if the corners now drag, the AU resize failure is occlusion. Diagnostic only, not a kept workaround.",
+      "binaryDir": "${sourceDir}/build/stage0-inset",
+      "cacheVariables": { "KROMOSYNTH_BROWSER_INSET": "24" }
+    },
+    {
       "name": "release",
       "inherits": "stage0",
       "displayName": "Release — universal binary, anything that leaves this machine",
@@ -71,6 +87,8 @@
     { "name": "stage0-ninja", "configurePreset": "stage0-ninja" },
     { "name": "stage0-lifetime", "configurePreset": "stage0-lifetime" },
     { "name": "stage0-noprobe", "configurePreset": "stage0-noprobe" },
+    { "name": "stage0-stub", "configurePreset": "stage0-stub" },
+    { "name": "stage0-inset", "configurePreset": "stage0-inset" },
     { "name": "stage0-xcode", "configurePreset": "stage0-xcode", "configuration": "Debug" },
     { "name": "release", "configurePreset": "release", "jobs": 0 },
     { "name": "sampler", "configurePreset": "sampler", "jobs": 0 }
