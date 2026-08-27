@@ -1,119 +1,148 @@
 # Next session prompt
 
-Copy-paste into a fresh session. Written at the end of the Task 2 preparation
-session, 2026-08-27. Supersedes `NEXT_SESSION_PROMPT.2026-08-26.md`.
+Copy-paste into a fresh session. Written at the end of the Task 2 session,
+2026-08-27 (second session that day). Supersedes
+`NEXT_SESSION_PROMPT.2026-08-27.md`.
 
 ---
 
-Continue work on the Synth.is DAW plugin. Task 1 (webview) passed. Task 2's
-prerequisites are now cleared and sfizz builds and links, but **no engine code
-exists** — nothing in `src/` references sfizz, so the linker drops the archive.
-This session writes the sampler engine and answers what Task 2 actually asked.
+Continue work on the Synth.is DAW plugin. Task 1 (webview) passed. **Task 2 is
+answered, both halves** — see §F and §G of `STAGE0_FINDINGS.md`. Every open
+question about what sfizz does with our SFZ is now settled by measurement.
+
+What is still true from the last three sessions: **nothing in `src/` references
+sfizz, so the linker drops the archive.** That was a deliberate reordering, not
+an oversight (§F1). This session writes the plugin engine and closes it.
 
 Use the filesystem MCP and the shell. Be critical; I want pushback, not
 validation. Report failures as findings, not as things to work around.
 
 ## Context to load
 
-- `kromosynth-plugin/docs/STAGE0_FINDINGS.md` — read **§E in full** first; it
-  is this session's starting state. §C and §D are the earlier Task 2 material.
-  The TASK 1 VERDICT at the top is still accurate.
-- `kromosynth-plugin/cmake/Sfizz.cmake` — rewritten and exercised. Two upstream
-  workarounds live here with the reasoning inline. Do not remove either without
-  reading §E2 and §E3.
-- `kromosynth-plugin/src/` — `PluginProcessor` and `PluginEditor` are marked
-  DISPOSABLE and mean it. `processBlock` clears the buffer.
-- `kromosynth-vi/src/services/sfzGenerator.js` and `sampleMatrix.js` — what our
-  SFZ contains, and the defect in §E6.2.
+- `docs/STAGE0_FINDINGS.md` — read **§F and §G in full** first; together they
+  are this session's starting state. §E is the sfizz vendoring and build story
+  and is still accurate. §C (audition stays in the webview, the plugin plays
+  instruments) is the scope decision that still matters. The TASK 1 VERDICT at
+  the top is still accurate.
+- `tools/sfz-probe/main.cpp` — **read this before writing any engine code.** It
+  is a working, minimal, correct use of every sfizz call the engine needs:
+  `setSampleRate`, `setSamplesPerBlock`, `loadSfzFile`, `noteOn`/`noteOff`/`cc`,
+  `renderBlock`, `getNumActiveVoices`, `getNumRegions`. It will save you
+  re-deriving the buffer layout and the freewheeling semantics, and its comments
+  record why several things are the way they are.
+- `cmake/Sfizz.cmake` — two upstream workarounds live here with the reasoning
+  inline. Do not remove either without reading §E2 and §E3.
+- `src/PluginProcessor.*` and `src/PluginEditor.*` — marked DISPOSABLE and mean
+  it. `processBlock` clears the buffer.
 - `kromosynth-projects/Evolutionary Sound Discovery Platform/daw-plugin/WP_SYNTHIS_PLUGIN.md`
-  — **stale in known ways.** Six Task 1 findings and now eight more from §E are
-  not reconciled into it. STAGE0_FINDINGS.md is the newer truth.
+  — **stale in known ways.** Six Task 1 findings and now everything in §E, §F
+  and §G are unreconciled into it. STAGE0_FINDINGS.md is the newer truth.
 
-## Repository state — uncommitted
+## Repository state
 
-Nothing from the last session is committed. Björn commits and pushes.
+`kromosynth-plugin` is **clean**. Two commits from the last session, not pushed:
 
 ```
-kromosynth-plugin:    M .gitmodules, M cmake/Sfizz.cmake, A third_party/sfizz
-                      + docs/STAGE0_FINDINGS.md (§E appended)
-                      + docs/NEXT_SESSION_PROMPT*.md
-kromosynth-recommend: M src/routes/internalRoutes.js   (§E6.1, not deployed to hub)
+1a1248c  Task 2 half 2: offline render settles the remaining format questions
+f54bc1e  Task 2 half 1: sfz-probe load-time conformance dump
 ```
 
-There is a stray untracked `third_party/sfizz/external/invoke.hpp/` left from
-the mis-pinned first checkout. Safe to delete.
+Björn pushes.
+
+`kromosynth-recommend`: `M src/routes/internalRoutes.js` (§E6.1) still
+uncommitted and still not deployed to the hub. The live service still returns
+500s.
 
 ## Build
 
 ```
 cmake --preset sampler && cmake --build --preset sampler
+./build/sampler/tools/sfz-probe/sfz-probe dump   <file.sfz>
+./build/sampler/tools/sfz-probe/sfz-probe render <file.sfz> [--note --vel --cc N=V --repeat --isolate ...]
+./build/sampler/tools/sfz-probe/sfz-probe curve  <file.sfz> <cc> [...]
 ```
 
-Both artefacts are on disk locally:
+Always redirect stderr separately. sfizz reports parse errors and unsupported
+`<control>` opcodes there and nowhere else (§F6.1).
 
-- velocity layers + round-robins:
+Test artefacts:
+
+- velocity layers + round robins:
   `~/Developer/apps/synth.is/kromosynth-vi/data/vi-artifacts/anonymous/b234fe6d-8423-489c-b60d-275b4471b069/`
 - XY morph:
   `~/Developer/apps/synth.is/kromosynth-vi/data/vi-artifacts/ymn5rj11wx4kuhk/3f2477c2-b260-46ff-a08f-28cde501a84f/`
 
-## TASK — the sampler engine
+## TASK — the plugin engine
 
-**Split the work in two, and do the first half first.** Most of what Task 2
-asks is answerable at load time with no audio device and no DAW:
+**Propose the design before writing it.** The shape agreed last session:
 
-**Half 1 — load-time conformance dump.** Load each SFZ through
-`sfz::Sfizz` and report: how many regions, groups and curves survived parsing;
-which opcodes were dropped; whether `<curve>` blocks at index 10-12 were
-accepted. Check `sfizz.hpp` for what diagnostics the public API actually
-exposes rather than assuming an unknown-opcode accessor exists. Deterministic,
-fast, and it answers "what did sfizz silently ignore".
+- A `SamplerEngine` owned by the processor. **No engine abstraction** — there is
+  still only one engine, and the top-level `CMakeLists.txt` says not to grow one
+  before there is a second.
+- `loadSfzFile` on the message thread inside `suspendProcessing(true)`.
+  Acceptable for a disposable first pass **only if documented as not the Stage 1
+  design**.
+- SFZ path from a CMake cache variable compiled in as a define
+  (`KROMOSYNTH_SFZ_PATH`), so switching artefacts is a reconfigure and not a
+  code edit. The harness takes argv instead, and that difference is deliberate
+  (§F1) — do not "unify" them.
+- `processBlock` translates the `MidiBuffer` and calls `renderBlock`.
+- No UI, no webview bridge, no parameters, no state.
 
-**Half 2 — audible behaviour.** Round-robin cycling, velocity switching, XY
-morph, voice counts. Needs MIDI and a real render.
+### Six things §F and §G established that the engine must honour
 
-**Propose the engine design before writing it.** Constraints: `loadSfzFile`
-does disk I/O and allocates, so it must not run on the audio thread. For a
-disposable first pass, `suspendProcessing(true)` around a message-thread load is
-acceptable if documented as not the Stage 1 design. Take the SFZ path from a
-CMake cache variable compiled in as a define, so switching artefacts is a
-reconfigure and not a code edit. No UI, no webview bridge, no engine
-abstraction — there is still only one engine.
+1. **Check `getNumRegions() > 0` after loading, not just the boolean.**
+   `loadSfzFile` returns true when every region was culled for an unresolvable
+   sample (§F11). Two different on-disk artefact layouts exist (§E5), so a
+   broken `default_path` is a live failure mode, not a hypothetical. It would
+   present as an instrument that loads fine and plays silence.
+2. **Do NOT call `enableFreeWheeling()` in the plugin.** It makes the file pool
+   block until background loading finishes, which is correct for the offline
+   harness and exactly wrong on an audio thread.
+3. **Budget five voices per note for XY instruments** (§G4). sfizz does not cull
+   voices whose amplitude modulation has driven them to zero. A four-note chord
+   is 20 voices before release tails overlap.
+4. **`sendMessage` is documented RT** — same task as `renderBlock`. The harness
+   gets away with it by being single-threaded and never rendering while
+   querying. Do not call the introspection API from the message thread.
+5. sfizz injects `amplitude` on cc7 and cc11 and `pan` on cc10 into **every**
+   region (§F8.3). If host CCs are forwarded they will modulate. cc7 defaults to
+   100/127 through a squared curve, so there is a standing gain of about 0.62.
+6. `renderBlock` wants `numOutputs * 2` **planar** channel pointers, each
+   `numFrames` long.
 
-## Open predictions to test, from §E8
+### Open questions, written down before measuring
 
-- Stacked `amplitude_oncc` on one `<group>`: multiply or sum? This is the whole
-  XY morph question. `generateXYMorphSFZ` asserts multiplication as fact but was
-  verified against sforzando/Decent Sampler, not sfizz.
-- `<curve>` with sparse `vNNN` points: interpolated between defined points, or
-  zero between them?
-- `set_cc85=64` / `set_cc86=64` honoured? **Free first test** — if not, both CCs
-  default to 0 and the XY instrument opens with Center silent and West plus
-  South at full. Loud, unambiguous, needs no measurement.
-- Voice count under XY morph: all five groups match every note regardless of CC
-  position. Does sfizz cull zero-amplitude voices? Decides between 1 and 5
-  voices per note.
-- `ampeg_sustain_oncc72=-80` with negative depth, and `amplitude_curvecc`.
-- Round-robins: **do not test on a boundary key.** With `fifth` sampling there
-  are none in the new artefact, which is why it was rendered that way. See §E6.2.
-
-## Worth building in: run both engines
-
-§E4 — the sfizz repository is archived, and liquidsfz (the WP §9 fallback) is
-actively maintained. Do not switch engines on that basis alone. But the
-load-time conformance dump is cheap to point at **both**, and two independent
-implementations disagreeing about stacked `amplitude_oncc` would settle the XY
-question by measurement rather than argument. Propose it before building it;
-it adds a dependency and the constraint below still applies.
+- `setSampleRate` and `setSamplesPerBlock` are documented **OFF** — they cannot
+  be called while another thread is in an RT function. JUCE calls
+  `prepareToPlay` before `processBlock`, but hosts change sample rate
+  mid-session. What is the correct guard?
+- Voice count under a real chord in a real host, versus §G4's harness number.
+- **Release-build cold-open time.** Debug measured 1532 ms under `auval` and
+  hosts time out during scans. `libsfizz_internal.a` is 37.5 MB in Debug. This
+  is the number most likely to block Stage 1.
+- Whether AU and VST3 diverge now that there is audio. §A3.1c found they diverge
+  on UI layout.
+- Does the sampler actually sound right in a host, or only in the harness? §C
+  warns about exactly this A/B trap: the webview plays through the system
+  output at the page's sample rate, the plugin through the host's bus. A user
+  who auditions then loads will compare them.
 
 ## Constraints
 
 - sfizz pinned at tag **1.2.3**, verified at configure time. `SFIZZ_USE_SNDFILE`
   stays OFF and two assertions in `cmake/Sfizz.cmake` enforce it. Do not vendor
   libsndfile.
+- **liquidsfz is deferred, not rejected** (§F2). libsndfile is not optional in
+  it and it is autotools. Do not add it without revisiting §F2.
 - macOS AU + VST3 only. No Windows, Linux, iOS, CLAP.
 - Universal builds with the sampler hard-error by design (§E2). Do not "fix"
   that by removing the guard.
-- No Faust engine — gated on `EXPERIMENT_01_DSP_EXECUTION.md`.
+- **No Faust engine.** Gated on `EXPERIMENT_01_DSP_EXECUTION.md`, which is Gate
+  0 in WP §7 and is still at "protocol, pre-registered" — the measurement has
+  not been taken. WP Stage 1 says *deliberately no Faust engine yet*. Note the
+  plugin already plays Faust-derived sounds today, as samples, because the
+  render already happened; Stage 2 buys live parametric control, not access.
 - No auth, no quota, no local library.
 - No dependencies beyond JUCE and sfizz without asking.
 - Do not adopt the `KROMOSYNTH_BROWSER_INSET` workaround. Recorded diagnostic,
@@ -123,18 +152,38 @@ it adds a dependency and the constraint below still applies.
 ## Standing rules
 
 - Propose significant changes before writing them.
-- State hypotheses as hypotheses until log data settles them. Three confident
-  diagnoses were wrong across the last two sessions.
+- State hypotheses as hypotheses until log data settles them.
 - **When a diagnostic and the thing it measures can both be broken, verify the
-  diagnostic first.** Last session: a scanner was validated against a known-bad
-  file before its zero-result was believed, and a proposed libsndfile check
-  would have false-positived had it not been checked against the source.
-- Read the actual tree you are reasoning about. §E1 — half a session's
-  conclusions were drawn from the wrong commit.
+  diagnostic first.** Five instances now across four sessions. §F9 and §G7 are
+  the most recent three, and two of them nearly became sfizz bug reports.
+- **Never round-trip a measurement through its own display string.** §F9: a
+  velocity reconstruction parsed its own `%g` output and manufactured a
+  band overlap that did not exist.
+- **Build the minimal control first.** §G7.2: a two-region control file settled
+  in one run what three full-artefact runs had confused. It was built fourth. It
+  should have been built first.
+- A statistic you compare for exact equality cannot be normalised (§G7.3). Use a
+  scale-invariant ratio and a tolerance instead.
+- Read the actual tree you are reasoning about (§E1).
 - Every async callback crossing the C++/JS or C++/host boundary needs
   `Component::SafePointer` or equivalent.
 - Non-ASCII in C++ string literals is mangled. ASCII or `juce::CharPointer_UTF8`.
 - Selective git staging; never `git add -A` in a repo with unrelated WIP.
+
+## Two `kromosynth-vi` decisions, both now measured rather than argued
+
+Neither is in the plugin. Both change every future artefact.
+
+- **§E6.2 `calculateKeyRange` double-covers boundary keys.** Measured from
+  sfizz's parsed ranges: of 49 keys in the XY instrument, 46 match 5 regions and
+  **3 match 10** (MIDI 54, 66, 78). `octave` sampling is the only mode that
+  triggers it and it is the default in `requestFullVI`.
+- **§G5: 10 of 21 round-robin pairs in the RR artefact are byte-identical.** 42
+  WAVs, 32 distinct checksums. On those keys the feature is decorative — sfizz
+  alternates correctly between two copies of the same file. Not uniform across
+  velocity bands (055 has identical v1 and v3 but a genuinely varying v2), which
+  argues against "round robins were never implemented" and toward something
+  conditional in the render path. **Unexplained.**
 
 ## Also outstanding, cheap
 
@@ -142,29 +191,29 @@ it adds a dependency and the constraint below still applies.
   §A3.1c resize finding at its worst, and it shares `AUHostingServiceXPC` with
   GarageBand, so it settles whether the storage boundary is the DAW or the
   hosting process.
-- Release-build cold-open time. Debug measured 1532 ms under `auval`; hosts
-  time out during scans.
 - "Host still alive after removing the plugin" — last unticked row of the
   GarageBand matrix.
 - `git clone --mirror` of sfizz onto own storage (§E4.5). Availability
   insurance, independent of the engine decision, about 22 MB.
-- Decide what to do about §E6.2, the `calculateKeyRange` overlap. It is in
-  `kromosynth-vi` and changing it changes every future artefact.
-- Deploy the `kromosynth-recommend` fix to the hub (§E6.1). The live service is
-  still returning 500s.
+- Deploy the `kromosynth-recommend` fix to the hub (§E6.1).
 - `.github/workflows/build.yml` runs a preset that does not exist
   (`stage0-release`). Low priority: the repo has no remote, so CI has never run.
   Fix before adding one.
 
-## Reconciliation debt, growing
+## Reconciliation debt, still growing
 
-`WP_SYNTHIS_PLUGIN.md` has absorbed none of the fourteen findings now in
-STAGE0_FINDINGS.md. The most consequential: §A2 signing moves earlier than
-Stage 1, §C audition routing (**now decided** — see below), §A3.1c AU and VST3
-diverge on UI layout, and §E4 the sfizz maintenance premise in §3 is false.
+`WP_SYNTHIS_PLUGIN.md` has absorbed none of the findings now in
+STAGE0_FINDINGS.md. The most consequential:
 
-**§C is decided and the WP does not say so.** Sound audition stays in the
-webview; the plugin plays instruments. The quota gate fires at acquisition,
-when an instrument lands on the device, which removes the "on disk but not
-owned" problem entirely. No instrument trial for now. Whole-VI preview is a
-separate project and a platform question before it is a playback one.
+- §A2 signing moves earlier than Stage 1.
+- §C audition routing — **decided**: audition stays in the webview, the plugin
+  plays instruments, the quota gate fires at acquisition. The WP does not say
+  so. No instrument trial for now. Whole-VI preview is a separate project and a
+  platform question before it is a playback one.
+- §A3.1c AU and VST3 diverge on UI layout.
+- §E4 the sfizz maintenance premise in §3 is false — the library repository is
+  archived, and §9's fallback is in better health than the engine it chose.
+- **§G2 contradicts §D2 and vindicates the generator.** WP §3's ARIA-divergence
+  caution does not apply to our stacked `amplitude_oncc`: sfizz multiplies,
+  exactly as `generateXYMorphSFZ` asserts.
+- **§G4 is a new constraint on the XY design.** Five voices per note, always.
