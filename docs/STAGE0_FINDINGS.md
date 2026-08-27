@@ -2262,3 +2262,68 @@ Task 2 is done. The open items are no longer about the SFZ format:
 - **`kromosynth-vi` decisions**, both now measured rather than argued: the
   §E6.2 `calculateKeyRange` overlap (3 keys matching 10 regions), and G5's
   duplicate round robins.
+
+---
+
+# H. §E6.2 FIXED — `calculateKeyRange` boundary overlap
+
+Fixed in `kromosynth-vi`, verified with `sfz-probe`. Staged but **not committed**
+— that repo has unrelated WIP.
+
+## H1. The cause
+
+```js
+// Halfway to next pitch (minus 1 to avoid overlap)
+high = Math.floor((midiNote + pitchMidis[index + 1]) / 2);
+```
+
+The comment already described the correct behaviour. The code never implemented
+it. There is no minus 1.
+
+It fires if and only if adjacent sampled pitches are an **even** number of
+semitones apart:
+
+- octave (12): `(48+60)/2` is exactly 54. `floor` gives 54 as the lower
+  region's `high`, `ceil` gives 54 as the upper region's `low`. Both claim it.
+- fifth (7): `(48+55)/2` is 51.5. `floor` gives 51, `ceil` gives 52. No overlap.
+
+That is the whole explanation for why §E5's `fifth` choice escaped and why
+`octave`, the default in `requestFullVI`, did not. §F7 measured the symptom
+without accounting for it; this is the account.
+
+## H2. The fix
+
+`Math.ceil((midiNote + next) / 2) - 1`, in **two** places:
+
+- `src/services/sfzGenerator.js` `calculateKeyRange`
+- `src/services/dsPresetTemplater.js` `dsKeyRange`
+
+The second is a hand-copied duplicate labelled "Same logic as
+sfzGenerator.calculateKeyRange". Fixing only the first would have left every
+Decent Sampler export wrong, and that divergence would be far harder to find
+later than it was to fix now. Both now carry a note saying they are duplicated.
+
+Identical to the old `floor` for odd intervals, so **existing fifth-sampled
+instruments are byte-unchanged.**
+
+## H3. Verified three ways
+
+1. Arithmetic across intervals 3, 4, 7, 12, an irregular set, and the
+   single/two-pitch edge branches: overlaps eliminated, **no gaps introduced**,
+   odd intervals bit-identical.
+2. End-to-end through the real `generateXYMorphSFZ`, not a reimplementation.
+3. **By `sfz-probe dump` on the regenerated SFZ pointed at the real samples**:
+   `49 keys match 5 regions`, none matching 10, 20 regions, zero unknown
+   opcodes. Before: 46 at 5, 3 at 10.
+
+The tool built to answer Task 2 turned out to be the regression test for a bug
+in a different repository. Worth remembering when the next "should this be
+keepable" question comes up.
+
+## H4. Consequence for the plugin
+
+The worst-case voice count drops from 10 per key to 5 (§G4). The engine's
+polyphony budget should assume 5, not 10 — but only for artefacts regenerated
+after this fix. **Every XY artefact currently on disk still has the overlap**,
+including the one in `data/vi-artifacts/ymn5rj11wx4kuhk/`. Regenerating them is
+a separate decision.
