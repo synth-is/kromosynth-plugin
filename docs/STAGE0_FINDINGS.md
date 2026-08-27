@@ -2099,3 +2099,166 @@ this is a live failure mode, not a hypothetical.
 The plugin engine must therefore check `getNumRegions() > 0` after loading, not
 just the boolean. Cheap, and it converts a silent instrument into a diagnosable
 one.
+
+---
+
+# G. TASK 2, HALF 2 — OFFLINE RENDER — session of 2026-08-27 (second)
+
+Task 2 is answered. Every remaining §E8 item is now settled by measurement, and
+one of them the opposite way round from the §D prediction.
+
+No DAW, no audio device, no MIDI hardware. `sfz-probe render` and
+`sfz-probe curve` drive `noteOn` / `cc` / `renderBlock` directly under
+`enableFreeWheeling()`.
+
+## G1. The scorecard, closed
+
+| question | answer |
+|---|---|
+| stacked `amplitude_oncc`: multiply or sum | **Multiply.** Measured. |
+| `<curve>` sparse `vNNN`: interpolated or zero | **Linearly interpolated.** Measured, exact. |
+| round-robin cycling | **Works.** Alternates correctly. |
+| velocity switching | **Works**, at exactly the declared boundaries. |
+| voice count under XY morph | **5 per note.** No culling of silent voices. |
+
+## G2. Multiply, decisively — §D2 was wrong
+
+One region, one sample, two `amplitude_oncc` bindings on curve 10, everything
+else stripped away. Holding cc86 at 32 (where curve 10 reads 0.5) and sweeping
+cc85:
+
+| cc85 | measured gain | multiply predicts | sum predicts |
+|---|---|---|---|
+| 32 | **0.2500** | 0.25 | 1.00 |
+| 64 | **0.5000** | 0.50 | 1.50 |
+
+With cc86 held at 64 (curve 10 reads 1.0) the sweep reproduces the plain tent
+exactly, which is the control.
+
+So `generateXYMorphSFZ`'s source comment — "giving the center layer tent(X) x
+tent(Y) natively, no workarounds needed" — is **correct for sfizz**, not only
+for sforzando and Decent Sampler. §D2 predicted the XY morph would misbehave
+under sfizz. It does not. The ARIA-divergence caution in WP §3 does not bite
+here, and the F5 source reading (`kModIsMultiplicative`) is confirmed.
+
+## G3. The tent curve is exact, and interpolation is linear
+
+Curve 10 declares `v000=0 v032=0.5 v064=1.0 v096=0.5 v127=0`. Measured against
+an unmodulated reference render of the same region:
+
+```
+cc    0   8    16    24    32    40    48    56    64
+gain  0  .125  .250  .375  .500  .625  .750  .875  1.000
+```
+
+Every declared point lands exactly, and every undeclared point sits exactly on
+the straight line between its neighbours. F6.2 recorded that curve shape is not
+introspectable at load time; this is the render half supplying what the dump
+structurally could not see.
+
+## G4. XY morph costs five voices per note, at every position
+
+`getNumActiveVoices()` reports **5** at (64,64), (0,64), (127,64), (64,0),
+(64,127) and (32,32) alike. sfizz does not cull voices whose amplitude
+modulation has driven them to zero — they render silently and still occupy a
+voice.
+
+The §E8 question was "5 or 1". It is 5, always. A four-note chord on an XY
+instrument is 20 voices before any release tails overlap, and sfizz's default
+polyphony is finite. This is a real constraint on the XY design rather than a
+detail, and it should inform both the voice-count budget in the plugin and
+whether `generateXYMorphSFZ` should emit five layers at all.
+
+## G5. Round-robin works. The artefact is what does not.
+
+Alternation is correct: a two-region control gives `ABABAB`, and the full
+artefact gives `BABABA` wherever the two round-robin samples actually differ.
+
+**But 10 of the 21 round-robin pairs in the RR artefact are byte-identical.**
+Checked by md5 across all 42 WAVs: 42 files, 32 distinct checksums.
+
+```
+048_v2, 055_v1, 055_v3, 062_v2, 069_v1, 069_v3,
+076_v2, 083_v1, 083_v3, 084_v2      rr1 == rr2
+```
+
+Roughly half the round-robin variation this artefact claims to have does not
+exist. On those keys the feature is decorative: sfizz alternates dutifully
+between two identical files.
+
+This is a `kromosynth-vi` finding, not a plugin one, and it is unexplained. It
+is not uniform across velocity bands (055 has identical v1 and v3 but a
+genuinely varying v2), which argues against a simple "round robins were never
+implemented" reading and toward something conditional in the render path.
+**Flagged for a decision alongside §E6.2.**
+
+## G6. Velocity switching, proven with a scale-invariant statistic
+
+Crest factor (rms/peak) is unchanged by a gain change and changes when the
+sample changes. Note 55:
+
+| velocity | band | crest |
+|---|---|---|
+| 10, 25, 42 | v1 | 0.231797 |
+| 43, 60, 84 | v2 | 0.225290 |
+| 85, 110, 127 | v3 | 0.206552 |
+
+Identical to six decimals within each band, different across. The transitions
+land exactly at 42-to-43 and 84-to-85, matching the file. Peak is also very
+nearly continuous across the boundaries (0.019283 to 0.020485), so
+`amp_veltrack` does not produce an audible step at a band edge.
+
+## G7. Three more bugs in the diagnostic, all caught before the result
+
+Continuing the F9 theme. None of these were sfizz's.
+
+**G7.1 — Overlapping passes.** The first round-robin run rendered repeats
+back-to-back without draining, so each pass carried the previous note's release
+tail and `max_voices` climbed to 2. It produced `ABBBBB`, which reads as
+"round-robin fires once then sticks". Fixed by rendering to
+`getNumActiveVoices() == 0` between passes and reporting the settle count, so a
+contaminated pass is visible rather than silent.
+
+**G7.2 — Wrong velocity band, and it nearly became a sfizz bug report.** The
+corrected run still gave `AAAAAA`. The cause was mine: I ran at velocity 100
+believing it was band v2. The bands are 1-42, 43-84, 85-127, so 100 is band
+**v3** — and 055_v3 is one of the ten identical pairs in G5. A minimal
+two-region control file settled it in one run by making sfizz's behaviour
+observable in isolation. Building the minimal control was the cheap move and it
+should have come first.
+
+**G7.3 — A normalised hash that could not work.** To separate "different
+sample" from "same sample, different gain" I first fingerprinted the
+peak-normalised signal. Dividing by peak and quantising at 1e-6 amplifies float
+rounding, badly at low levels, so renders of the *same* sample at velocities 10
+and 25 hashed differently. A hash needs exact equality and normalisation cannot
+deliver it. Replaced with crest factor, which is scale-invariant by
+construction and compared against a tolerance rather than for equality.
+
+**And one guard that worked.** The first curve sweep referenced every point
+against cc=127 — which is silent for a tent curve. The silence guard aborted
+instead of printing a column of 0/0. Referencing a sweep against a point inside
+the sweep only works if you already know the answer; it now references an
+unmodulated render, which also makes the numbers absolute gains rather than
+ratios.
+
+## G8. Updated §E7 predictions
+
+| prediction | outcome |
+|---|---|
+| §D2 XY morph misbehaves under sfizz | **WRONG.** Multiply is what sfizz does. |
+| §D4 no `loop_mode`, holding a key gives silence | Confirmed again from the engine side: every region reports `loop_mode no_loop`. |
+| F5 stacked `amplitude_oncc` multiply (from source) | **Confirmed by measurement.** |
+| F5 sparse `vNNN` linearly interpolated (from source) | **Confirmed by measurement, exactly.** |
+| §E8 voice count 5 or 1 | **5.** No culling. |
+
+## G9. What is left
+
+Task 2 is done. The open items are no longer about the SFZ format:
+
+- **The plugin engine.** Still unwritten; the archive is still dropped. It must
+  check `getNumRegions() > 0` after loading (F11), and budget for G4's five
+  voices per note.
+- **`kromosynth-vi` decisions**, both now measured rather than argued: the
+  §E6.2 `calculateKeyRange` overlap (3 keys matching 10 regions), and G5's
+  duplicate round robins.
