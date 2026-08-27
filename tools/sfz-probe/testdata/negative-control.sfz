@@ -1,0 +1,49 @@
+// Negative control for sfz-probe. Deliberately broken.
+//
+// This file exists so the dump's zero-results can be believed. A conformance
+// tool that reports "nothing was rejected" is worthless until it has been shown
+// to report something when something IS rejected.
+//
+// Run:   sfz-probe dump negative-control.sfz > /dev/null 2> stderr.txt
+//
+// Expected, and all four of these are load-bearing:
+//
+//   1. unknown_opcodes.count 2, naming another_bogus_opcode and
+//      kromosynth_not_a_region_opcode. Note this holds even though the region
+//      is removed at step 3 below: opcodes are parsed before regions are
+//      culled, so the diagnostic survives the region not surviving.
+//
+//   2. The two bogus <control> opcodes do NOT appear in that list. They appear
+//      only on stderr as "Unsupported control opcode:". This is the gap in
+//      getUnknownOpcodes that would otherwise mislead - it is fed only from
+//      Synth::Impl::buildRegion, and handleControlOpcodes routes unsupported
+//      names to DBG().
+//
+//   3. load.ok is true and num_regions is 0, with stderr reporting
+//      "Removing the region with sample ...". The sample does not exist, so
+//      the region is culled after parsing and loadSfzFile still returns true.
+//      "Loaded successfully" is not evidence that anything will play. A VI
+//      artefact with a broken default_path would look exactly like this.
+//
+//   4. num_curves is 7 - the predefined set only, since no <curve> block is
+//      declared here.
+//
+// NOT demonstrated by this file, because there is no surviving region to
+// report on: sfizz accepts amplitude_curvecc85=10 and reports curve=10 even
+// when curve 10 was never declared, falling back to a linear 0-to-1 ramp via
+// CurveSet::getCurve. That was observed by pointing a copy of this file at a
+// real WAV. See STAGE0_FINDINGS.md section F6.3 - it is a render-half test.
+//
+// The missing sample is intentional - it keeps this file self-contained and it
+// is what demonstrates point 3. Do not "fix" it by adding a WAV.
+
+<control>
+default_path=samples/
+set_cc85=64
+kromosynth_not_a_control_opcode=1
+hint_totally_made_up=7
+
+<global>
+kromosynth_not_a_region_opcode=1
+
+<region> sample=does-not-exist.wav lokey=48 hikey=48 pitch_keycenter=48 another_bogus_opcode=3 amplitude_oncc85=100 amplitude_curvecc85=10

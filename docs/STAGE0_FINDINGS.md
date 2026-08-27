@@ -1867,3 +1867,235 @@ accident. Safe because `sfizz.hpp`'s public API is `std::string`,
 - Voice count under XY morph: five groups match every note regardless of CC
   position, so whether sfizz culls zero-amplitude voices decides between 5 and
   1 voice per note.
+
+---
+
+# F. TASK 2, HALF 1 — LOAD-TIME CONFORMANCE — session of 2026-08-27 (second)
+
+Half 1 of Task 2 is done. Both artefacts load, nothing is silently dropped, and
+four of the six §E8 open items are now settled. The tool that settled them is
+`tools/sfz-probe`, a console executable that links sfizz and nothing else: no
+JUCE, no plugin wrapper, no DAW, no audio device.
+
+**The plugin still does not reference sfizz.** That was a deliberate reordering
+(see F1) and it means the linker still drops the archive. Unchanged from §E.
+
+## F1. Why a harness instead of the plugin engine
+
+The §E brief split Task 2 into a load-time half and an "audible behaviour"
+half, the second described as needing MIDI and a real render. The second half
+needs neither MIDI hardware nor a DAW: `noteOn`, `cc` and `renderBlock` are
+plain calls on `sfz::Sfizz`, and `enableFreeWheeling()` exists precisely so an
+offline caller gets deterministic output (`Synth.cpp:1115` calls
+`filePool.waitForBackgroundLoading()` under that flag).
+
+So both halves are offline, both are measurements rather than auditions, and
+neither needs the plugin. Given the standing rule about A/B listening, making
+Half 2 a number rather than an impression is worth the reordering.
+
+The cost is stated plainly: the archive-dropped problem is still open, and the
+plugin engine is still unwritten.
+
+**One deviation from the brief.** The brief asked for the SFZ path as a compile-
+time define. That is right for the plugin and wrong for the harness: the point
+of the dump is comparing two artefacts, and a define makes that two
+reconfigures. `sfz-probe` takes argv. The define stays in the plan for the
+plugin engine.
+
+## F2. liquidsfz — not built, and the reason is not the maintenance question
+
+§E4 recommended pointing the conformance dump at both engines. Checked before
+building it: **libsndfile is not optional in liquidsfz.** Its README lists
+`libsndfile1-dev` as a required package; `--without-jack` and `--without-lv2`
+exist and there is no `--without-sndfile`; distro packaging carries libsndfile
+as both a build and a runtime dependency. It is also autotools rather than
+CMake.
+
+That runs straight into the constraint `cmake/Sfizz.cmake` has two assertions
+defending. The fair counter is that a developer tool which never ships is not a
+distribution event, so this is arguably a "keep it out of the repo and out of
+the plugin target" question rather than a veto. Not legal advice and not
+verified properly.
+
+Deferred rather than rejected. The XY question that motivated it is answered
+below by sfizz's own parsed state plus its modulation-matrix source, so the
+second engine is no longer on the critical path.
+
+Also noted from the same check: liquidsfz's licence changed from LGPL-2.1 to
+MPL-2.0 upstream, reflected in distro packaging around October 2025. §E4's
+MPL-2.0 line is right for current releases and wrong for older ones.
+
+## F3. What sfizz does with our files
+
+Both dumps under `build/probe-out/` (gitignored). Headline numbers:
+
+| | RR artefact | XY artefact |
+|---|---|---|
+| `load.ok` | true | true |
+| regions | 42 | 20 |
+| `<group>` headers | 7 | 5 |
+| preloaded samples | 42 | 20 |
+| `num_curves` | 7 | 13 |
+| `unknown_opcodes` | **0** | **0** |
+| stderr | one `default_path` line | one `default_path` line |
+
+Nothing was rejected. No parse errors, no parse warnings, no unsupported
+control opcodes.
+
+**`num_curves 13` is correct, not a defect.** `CurveSet::createPredefined`
+seeds 7 (`Curve.h:86`), and `addCurve` with an explicit index resizes the
+vector to index+1, leaving skipped slots null. Three curves at 10, 11 and 12
+therefore give 13, with 7-9 as null gaps. The RR file, which declares no
+curves, reports 7. The dump prints the arithmetic alongside the number.
+
+## F4. The §E8 scorecard
+
+| §E8 item | outcome |
+|---|---|
+| `loadSfzFile` parses our SFZ at all | **Confirmed.** Both files, zero unknown opcodes. |
+| `set_ccN` defaults honoured | **Confirmed, and the predicted failure does not happen.** `/cc85/default` and `/cc86/default` both read 0.503937006, which is 64/127. The "Center silent, West and South at full" symptom is off the table. |
+| stacked `amplitude_oncc` multiply or sum | **Multiply, from source; not yet measured.** See F5. |
+| sparse `vNNN` interpolated or zero-filled | **Interpolated, from source; not yet measured.** See F5. |
+| round-robin cycling and velocity switching | **Structurally intact; behaviour not yet measured.** All 42 RR regions carry `seq_length=2` with positions 1 and 2, and the three velocity bands reconstruct as 1-42, 43-84, 85-127, exactly as written. |
+| voice count under XY morph | **Still open.** Needs the render half. |
+
+The XY amplitude bindings survived byte-faithfully. Region 0 (center) carries
+`cc85 amplitude depth=100 curve=10` and `cc86 amplitude depth=100 curve=10`;
+west and south carry curve 12 on their own axis; east and north carry curve 11.
+`ampeg_sustain_oncc72=-80` is retained with its negative depth intact.
+
+## F5. Two answers read out of the source, held as hypotheses
+
+Both are consistent with everything the dump shows and neither has been
+measured. Recorded as hypotheses on purpose.
+
+**Stacked `amplitude_oncc` multiply.** `ModId::Amplitude` carries
+`kModIsMultiplicative` (`modulations/ModId.cpp:55`), and `ModMatrix` does
+`buffer[i] *= ...` for each source after the first into a multiplicative
+target, filling 1.0 when there are none (`ModMatrix.cpp:456`, `:481`). So sfizz
+agrees with what `generateXYMorphSFZ` asserts, and the ARIA-divergence worry in
+WP §3 does not bite here. Unchecked: the depth scaling and the interaction with
+the region's base amplitude.
+
+**Sparse `vNNN` points are linearly interpolated.** `buildCurveFromHeader`
+marks only the given indices as filled and calls `fill()`; the interpolator is
+hard-coded Linear because the spline branch is `#if 0` (`Curve.cpp`). Separately
+worth knowing: it pre-seeds v000=0 and v127=1.0 *before* reading the opcodes, so
+a curve omitting `v127` silently gets 1.0. Ours sets both explicitly.
+
+## F6. Three things the load-time dump cannot see
+
+These are limits of the method, and the third is the one that could bite.
+
+1. **`getUnknownOpcodes()` is weaker than it looks.** It deduplicates by opcode
+   name across the whole file, so it never says how many times or where. It is
+   fed only from `buildRegion`, so `<control>` opcodes never reach it at all:
+   `handleControlOpcodes` sends unsupported names to `DBG()` and nothing else.
+   And it is populated when `Region::parseOpcode` returns false, so "accepted"
+   is not "has an effect".
+
+   **Demonstrated, not argued.** A deliberately bad file with two bogus region
+   opcodes and two bogus control opcodes reports `unknown_opcodes.count 2`,
+   naming only the region ones, with the control ones appearing solely on
+   stderr as `Unsupported control opcode:`. Always capture stderr separately.
+
+2. **There is no `/curve&/...` introspection path.** Only `/num_curves`. Curve
+   shape is not readable at load time.
+
+3. **A curve index is reported whether or not the curve exists.** The bad file
+   above declares no curves and reports `num_curves 7`, yet region 0 still
+   reports `cc85 amplitude depth=100 curve=10`. sfizz stores the index on the
+   connection without validating it, and `CurveSet::getCurve` falls back to
+   `Curve::getDefault()`, a linear 0-to-1 ramp, for a missing index.
+
+   So a typo'd `curve_index` would turn every XY tent into a linear ramp, and
+   the dump would look identical either way. `num_curves` is the only load-time
+   signal and it is indirect. **This is a render-half test, and it is the
+   strongest argument for doing the render half at all.**
+
+## F7. Two prior findings confirmed from sfizz's side
+
+**§E6.2 confirmed, with the number.** Of the 49 keys in the XY instrument's
+range, 46 match 5 regions and **3 match 10** (MIDI 54, 66, 78). §E6.2 predicted
+"10 voices on a boundary key where 5 is intended" from reading
+`calculateKeyRange`; sfizz's own parsed key ranges agree exactly. The decision
+about `calculateKeyRange` is still outstanding.
+
+**`fifth` sampling does avoid it.** Every key in the RR instrument's range
+matches exactly 6 regions: 3 velocity bands times 2 round robins, no more. The
+deliberate choice recorded in §E5 was the right one and is now measured rather
+than reasoned.
+
+## F8. Three traps in the introspection API, recorded because they cost time
+
+1. **`/region&/group` is not the `<group>` header index.** It returns
+   `region.group`, the SFZ `group=` opcode used for polyphony and `off_by`. Our
+   generator never emits it, so it reads 0 for all 20 regions of a file with
+   five `<group>` headers. The dump labels it `poly_group`. Header count is
+   `num_groups`.
+
+2. **The `ampeg_*`, `offset` and `end` CC paths are never nil.** They read a
+   `CCMap` with `getWithDefault`, which returns a zero entry for all 128 CCs,
+   unlike `amplitude`/`volume`/`pan`/`pitch`, which go through
+   `Region::ccModDepth` and return `absl::nullopt` when absent. Unfiltered this
+   is roughly 43k lines of nothing for a 42-region file. The dump suppresses
+   depth-zero-with-default-curve and says so.
+
+3. **Every region carries bindings the file never asked for.** `amplitude` on
+   cc7 and cc11 with curve 4, and `pan` on cc10 with curve 1. That is sfizz
+   implementing MIDI volume, expression and pan. Consequence for absolute
+   level: cc7 defaults to 100/127 and curve 4 is x squared, so there is a
+   standing amplitude factor of about 0.62, not 1.0. Any level comparison
+   against a reference render has to account for it.
+
+## F9. A bug in the diagnostic, found before it was believed
+
+The first version of the dump reconstructed MIDI velocities by parsing its own
+printed output. `Default::hiVel` carries `kFillGap`, so `hivel=42` is stored as
+`nextafter(43/127, 0)` rather than `42/127`, which makes adjacent bands
+half-open and non-overlapping. Printed at `%g` that is `0.338583`; read back and
+multiplied by 127 it is `43.000041`, which ceils one too high. The bands came
+out as 1-43 and 43-84, **overlapping at 43** — which looks exactly like the
+§E6.2 defect and is entirely an artefact of the formatter.
+
+Fixed by keeping the numeric value alongside the text and printing at `%.9g`.
+Correct output is 1-42, 43-84, 85-127, and at 9 digits the one-ULP gap between
+`0.338582635` and `0.338582665` is visible.
+
+Filed under the existing standing rule. The failure mode here is narrower and
+worth naming separately: **never round-trip a measurement through its own
+display string.** Had this not been caught, §E6.2 would have acquired a second,
+fictitious instance in the RR artefact.
+
+## F10. Next
+
+- Render half: curve shape (F6.3 is the priority), multiply-versus-sum by
+  measurement, round-robin cycling by fingerprinting successive renders,
+  velocity switching, and voice count under XY morph.
+- Then the plugin engine, which is what stops the archive being dropped.
+
+## F11. `loadSfzFile` returns true when every region was dropped
+
+Found while turning the negative control into a committed test file
+(`tools/sfz-probe/testdata/negative-control.sfz`). With an unresolvable sample
+path, the dump reports:
+
+```
+load.ok true
+num_regions 0
+```
+
+and stderr carries `File not found, could not resolve ...` followed by
+`Removing the region with sample ...`. Regions are culled after parsing
+(`Synth.cpp:901`, "Remove bad regions with unknown files") and `loadSfzFile`
+still returns true.
+
+**A VI artefact with a broken `default_path` would load "successfully" and play
+silence.** Given that §E5 already records two different on-disk layouts for the
+same artefact — the hub uses `ARTIFACT_STORAGE_PATH` with
+`anonymous/<artifactId>` while the local dev tree uses `<runId>/<artifactId>` —
+this is a live failure mode, not a hypothetical.
+
+The plugin engine must therefore check `getNumRegions() > 0` after loading, not
+just the boolean. Cheap, and it converts a silent instrument into a diagnosable
+one.

@@ -108,3 +108,11 @@ if(KROMOSYNTH_BUILD_SAMPLER)
 endif()
 
 add_subdirectory(src)
+
+# ── Developer tools (never shipped) ──────────────────────────────────────────
+# sfz-probe answers the Task 2 format questions without a plugin, a host or an
+# audio device. It is built with the sampler because it links sfizz; it is not
+# part of any deliverable. See tools/sfz-probe/main.cpp.
+if(KROMOSYNTH_BUILD_SAMPLER)
+    add_subdirectory(tools/sfz-probe)
+endif()
