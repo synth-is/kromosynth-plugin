@@ -1578,3 +1578,292 @@ Concrete test material:
 `kromosynth-vi/data/vi-artifacts/ymn5rj11wx4kuhk/3f2477c2-b260-46ff-a08f-28cde501a84f/`
 — `instrument.sfz` + 20 WAVs in `samples/`, 4 pitches × 5 XY directions,
 `default_path=samples/`.
+
+---
+
+# E. TASK 2 PREPARATION — session of 2026-08-27
+
+Both §D prerequisites are cleared and sfizz builds and links. No engine code
+exists yet: nothing in `src/` references sfizz, so the linker currently drops
+the archive. Task 2's actual question is still unanswered.
+
+The headline is not about our code. **The sfizz library repository is
+archived.** WP §3 and §9 both need revising, and the fallback they name is in
+better health than the engine they chose.
+
+---
+
+## E1. The submodule pin did not take, and the version string did not warn
+
+`git submodule add` records the gitlink at the default-branch tip. A manual
+`git -C third_party/sfizz checkout 1.2.3` afterwards moves only the working
+tree; the next `git submodule update --init --recursive` reverts it silently.
+
+The result was a tree at `1.2.3-39-gf5c6e29f`, 39 commits past the tag, while
+`project(libsfizz VERSION 1.2.3)` still read 1.2.3. Nothing in the source
+indicated the drift. `git describe --tags` was the only thing that did.
+
+The missing step is `git add third_party/sfizz` between the checkout and the
+update. `cmake/Sfizz.cmake` now asserts the pin at configure time and fails
+with the correct sequence in the error text.
+
+**This mattered more than a tidiness issue.** Every conclusion recorded about
+sfizz's CMake in the first half of the session was read off `f5c6e29f`, not the
+tag, and one of them was materially wrong (see E2). The generic lesson is the
+one already in this document's standing rules: verify the thing you are
+measuring before trusting the measurement.
+
+## E2. sfizz 1.2.3 does not build on Apple silicon
+
+`cmake/SfizzConfig.cmake` at the tag:
+
+```cmake
+elseif(PROJECT_SYSTEM_PROCESSOR MATCHES "(arm.*)")
+    add_compile_options(-mfpu=neon)
+    if(NOT ANDROID)
+        add_compile_options(-mfloat-abi=hard)
+```
+
+`arm64` matches `arm.*`, so 32-bit ARM flags are applied to an arm64 target.
+Apple clang rejects both options. Because these are directory-scope
+`add_compile_options`, the failure lands in the vendored subprojects first:
+abseil-cpp and WavPack fail before sfizz itself is reached.
+
+Upstream added `AND NOT (PROJECT_SYSTEM_PROCESSOR MATCHES "(arm64)")` after the
+release. That fix exists on the development branch and **is in no tag**. The
+last tagged library release does not build on the only platform Stage 0
+targets.
+
+Worked around by pre-setting `PROJECT_SYSTEM_PROCESSOR` to the equivalent
+`aarch64` spelling before `add_subdirectory`. Safe because the variable is read
+in exactly three places at this tag: these flags, a status line, and
+`SfizzSIMDSourceFiles.cmake`, which branches on x86 names only. An arm64 host
+takes the same path under either spelling.
+
+**Universal builds are not covered.** For `CMAKE_OSX_ARCHITECTURES=arm64;x86_64`
+sfizz derives `PROJECT_SYSTEM_PROCESSOR` as the literal list `arm64;x86_64`,
+which also matches the broken branch, and no single value gives correct flags
+for both slices. `cmake/Sfizz.cmake` now hard-errors on
+`KROMOSYNTH_UNIVERSAL_BINARY` with the sampler enabled rather than failing
+obscurely. This blocks the `release` preset for any sampler build and needs
+resolving before Stage 1 ships anything.
+
+## E3. clang 21 rejects the vendored atomic_queue, at every commit
+
+`external/atomic_queue/include/atomic_queue/atomic_queue.h` has four sites of
+
+```cpp
+Base::template do_pop_any(states_[index], elements_[index]);
+```
+
+with no template argument list after the `template` keyword. That is
+ill-formed. Clang places
+`-Wmissing-template-arg-list-after-template-kw` in its DefaultError group, so
+it is an error irrespective of `-Wall` or `-Werror`, and sfizz's own warning
+configuration is irrelevant to it. Every translation unit that includes
+`Synth.h` is affected.
+
+**Checked before working around it:** the same four lines are present verbatim
+at the development tip `f5c6e29f` as at `1.2.3`, even though that file was
+otherwise substantially rewritten between them. Moving the pin would fix E2 and
+not this. That is the argument for staying on the tag: a newer commit buys one
+of two fixes and costs a tagged, auditable pin.
+
+Downgraded to a warning with `-Wno-error=`, probed with
+`check_cxx_compiler_flag` because the diagnostic name is clang-version-specific,
+and applied per-target so our own code keeps the diagnostic at full strength.
+
+## E4. The sfizz library repository is archived
+
+WP §3 records that `sfizz-ui` was archived in June 2026 and calls the engine
+"stable", with §9 listing liquidsfz as a fallback to revisit at Stage 3. The
+situation is worse than that and the revisit should not wait for Stage 3.
+
+| | `sfztools/sfizz` | `swesterfeld/liquidsfz` |
+|---|---|---|
+| archived | **yes** | no |
+| last push | 2025-03-17 | 2026-04-24 |
+| last release | 1.2.3, 2024-01-14 | 0.4.1, 2026-04-07 |
+| previous release | 1.2.2, 2023-08-26 | 0.4.0, 2026-03-13 |
+| open issues | 73 | 19 |
+| open PRs | 14, unmergeable | — |
+| licence | BSD-2-Clause | MPL-2.0 |
+
+`sfztools/sfizz-ui` is also archived, last pushed 2025-03-19.
+
+Among the 14 open pull requests that can never be merged, by title: a
+`Voice::startVoice()` crash fix (2025-10-09), CMake Xcode-generator build fixes
+(2025-10-07), **"Fixes build with Clang 17" (2025-04-10)**, a
+`Voice::Impl::fillInterpolated()` crash fix (2025-04-09), and CMake presets plus
+architecture testing (2025-03-17).
+
+**What follows from this.**
+
+1. There is no upstream to contribute to. Archived GitHub repositories do not
+   accept pull requests. E2 and E3 are permanent local maintenance, not patches
+   awaiting a release.
+2. Two toolchain-vintage build failures appeared on the first build attempt,
+   and a third ("Fixes build with Clang 17") is sitting unmerged. Compilers only
+   move forward. This is the shape of the cost, and it is ours.
+3. The fork option in WP §3 is no longer a contingency. Using sfizz *is*
+   maintaining a fork, whether or not one is formally created.
+4. The other side, stated fairly: archived also means it will never break us
+   with a bad release, and BSD-2-Clause means the source is permanently ours.
+   The risk is decay against a moving toolchain, not churn.
+5. **Availability is a separate risk from maintenance.** The build depends on a
+   third-party archived repository remaining reachable. A `git clone --mirror`
+   onto own storage addresses that and costs about 22 MB. Independent of the
+   engine decision.
+6. liquidsfz is MPL-2.0, not BSD-2-Clause. MPL-2.0 is file-level copyleft and
+   by default carries the secondary-licence clause permitting distribution
+   under GPL/LGPL/AGPL, which would suit an AGPL plugin. **Verify properly
+   before relying on it.** Not legal advice, and not verified here.
+
+**Recommendation: do not switch engines yet, and do make the choice
+measurable.** Task 2's question is largely a format question, and the answer
+feeds the engine decision rather than depending on it. The load-time
+conformance dump should run the same SFZ through **both** engines. Two
+independent implementations disagreeing about stacked `amplitude_oncc` would
+settle the XY question by measurement instead of argument.
+
+## E5. Test material — both artefacts now exist
+
+**XY morph (pre-existing).** `kromosynth-vi/data/vi-artifacts/ymn5rj11wx4kuhk/3f2477c2-b260-46ff-a08f-28cde501a84f/`
+
+**Velocity layers + round-robins (rendered this session).**
+
+```
+~/Developer/apps/synth.is/kromosynth-vi/data/vi-artifacts/anonymous/b234fe6d-8423-489c-b60d-275b4471b069/
+```
+
+62 MB, 42 samples. Sound `01KPXZJ94GPQEEAZFA6F91YR1W`, generation 1869 of
+`01KPV7RX0XMRTKEC2KVRCCRVA6_quality-musicality_enriched-cppn-dsp_hybrid-phase_run`.
+7 pitches, 3 velocity bands (1-42, 43-84, 85-127), `seq_length=2` with
+positions 1 and 2 on every band. Rendered in 14 s.
+
+Hub copy at `/Volumes/kromosynth2/kromosynth-vi/vi-artefacts/anonymous/<artifactId>`.
+Note the hub uses `ARTIFACT_STORAGE_PATH` with an `anonymous/<artifactId>`
+layout, while the local dev tree uses `<runId>/<artifactId>`. Two layouts for
+the same thing.
+
+**`pitchSampling: "fifth"` was chosen deliberately**, not for musical reasons.
+See E6.2: `octave` sampling double-covers every boundary key, which would have
+confounded the round-robin test by matching two groups on the same note.
+Resulting key zones are contiguous with no overlap: 42-51, 52-58, 59-65, 66-72,
+73-79, 80-83, 84-90.
+
+**The audio device prerequisite is cleared.** All outputs report 48000 Hz.
+§A3.1e recorded 24 kHz; that is now stale or was a different machine.
+
+**WAV format:** stereo, Int16, 48 kHz. **No `smpl` chunk** in either artefact,
+so §D prediction 4 stands on evidence rather than inference: there are no
+embedded loop points for sfizz to fall back on, and holding a key past the
+sample duration will produce silence.
+
+## E6. Two defects found outside the plugin
+
+### E6.1 `kromosynth-recommend` — query results treated as arrays
+
+`src/config/database.arcadedb.js` `query()` returns `{ records, summary,
+getAll() }`, an object. Three sites in `src/routes/internalRoutes.js` treated it
+as an array:
+
+| line | endpoint | effect |
+|---|---|---|
+| 152 | user preferences | `result.length === 0` is never true, so `result[0].upv` threw on **every** call |
+| 280 | genome | same, and it surfaced to `kromosynth-vi` as a 500 where a missing sound should have been a 404 |
+| 384 | genome context | `metadataResult.length > 0` always false, so `metadataMap` stayed empty and every context response silently omitted class, score and generation |
+
+The guard `if (!x || x.length === 0)` cannot fire on a wrapper object: it is
+truthy, and `undefined === 0` is false. The third is the worst of the three
+because it fails silently.
+
+Fixed by calling `getAll()` and guarding the resulting array. A scanner for the
+antipattern (a query result indexed, counted or iterated without an intervening
+`getAll()`) was written, **validated against the pre-fix file** where it
+correctly found all three, then run across the repository: no other occurrences.
+254 `db.query` call sites against 247 `getAll()` call sites, so the codebase
+does this correctly nearly everywhere.
+
+Note: the fix is in the local checkout only. The hub runs its own checkout at
+`/Users/bthj/Developer/synth.is/`, so the live service is unaffected until
+deployed and restarted.
+
+### E6.2 `kromosynth-vi` — `calculateKeyRange` double-covers boundary keys
+
+`src/services/sampleMatrix.js`:
+
+```js
+low  = Math.ceil((pitchMidis[index - 1] + midiNote) / 2);
+high = Math.floor((midiNote + pitchMidis[index + 1]) / 2);   // "minus 1 to avoid overlap"
+```
+
+The comment says the subtraction is there; the code has no subtraction. When
+the interval between adjacent key centres is **even**, `ceil` and `floor`
+coincide and the boundary key is covered by two regions.
+
+`octave` (12) is the only sampling mode that triggers this, and it is the
+default in `requestFullVI`. `fifth` (7), `minor3rd` (3) and `chromatic` (1) all
+produce odd sums and are unaffected.
+
+Visible in the existing XY artefact: key centres 48, 60, 72, 84 give zones
+42-54, 54-66, 66-78, 78-90, so MIDI 54, 66 and 78 each match two regions **per
+layer**. On a 5-layer XY instrument that is 10 voices on a boundary key where 5
+is intended, plus audible doubling of two differently pitch-shifted samples.
+
+Not fixed. It is in `kromosynth-vi`, not the plugin, and changing it changes
+every future artefact. Flagged for a decision.
+
+## E7. Predictions scorecard
+
+Recorded because this document's value depends on predictions being falsifiable
+and on wrong ones being reported.
+
+| prediction | outcome |
+|---|---|
+| §D1 round-robin indexing is 1-based and correct | **Confirmed** — generated SFZ emits `seq_position=1` and `2` |
+| §D2 XY morph misbehaves under sfizz | **Still untested** — needs the engine |
+| §D3 `cutoff=0` caution does not apply, generator never emits it | **Confirmed** by reading both generated SFZ files |
+| §D4 no `loop_mode`, holding a key gives silence | **Confirmed and strengthened** — no `smpl` chunk either |
+| `sfizz::sfizz` target exists | **Confirmed** — `ALIAS sfizz_static`, src/CMakeLists.txt:358 |
+| four forced options do not exist at 1.2.3 | **Confirmed** — `SFIZZ_LV2`, `SFIZZ_LV2_UI`, `SFIZZ_VST`, `SFIZZ_AU` |
+| a link-library grep for `sndfile` would false-positive | **Confirmed** — `st_audiofile` is linked unconditionally |
+| `fifth` avoids the key-range overlap | **Confirmed** in the generated SFZ |
+| **first build failure would be the C++ standard clash** | **WRONG.** Setting sfizz to C++14 made it a non-issue. The real failures were architecture detection (E2) and a compiler-vintage conformance error (E3), neither anticipated |
+
+## E8. Verified, versus still assumed
+
+**Verified by measurement, not reading:**
+
+- No libsndfile anywhere in the build. Across every built archive: 0 libsndfile
+  symbols, 87 dr_libs symbols, located in `libst_audiofile*.a`.
+- No extra runtime dependencies. `otool -L` on the built VST3 lists system
+  frameworks only, despite `SfizzDeps.cmake` unconditionally probing for Qt5
+  and finding Homebrew's libsamplerate 0.2.2. Both are used only by
+  `benchmarks/` and `devtools/`, which are gated off.
+- sfizz compiles at C++14 with `-mmacosx-version-min=10.9` while the plugin is
+  at 11.0. Read off the generated `flags.make`, not inferred.
+
+**Chosen deliberately and worth knowing:** sfizz is built at C++14 rather than
+17 because `SfizzConfig.cmake` compiles a substitute global `operator
+new`/`delete` when the standard is >= 17 and its aligned-new probe fails, and
+that probe fails here because sfizz forces the deployment target to 10.9 while
+aligned allocation needs 10.14. Replacing global `operator new` inside a static
+library linked into a DAW-hosted plugin is not something to acquire by
+accident. Safe because `sfizz.hpp`'s public API is `std::string`,
+`std::vector` and `std::unique_ptr` only, with no absl types and no
+`std::string_view`, so no type definition differs across the standard boundary.
+
+**Still assumed, to be settled by the engine work:**
+
+- That `sfizz::Sfizz::loadSfzFile` parses our SFZ at all.
+- Whether stacked `amplitude_oncc` bindings multiply or sum.
+- Whether `<curve>` blocks with sparse `vNNN` points are interpolated or
+  treated as zero between defined points.
+- Whether `set_ccN` defaults are honoured. If not, CC85/86 default to 0 and the
+  XY instrument opens with Center silent and West plus South at full, which is
+  a loud and unambiguous symptom needing no measurement.
+- Whether round-robin cycling and velocity switching behave.
+- Voice count under XY morph: five groups match every note regardless of CC
+  position, so whether sfizz culls zero-amplitude voices decides between 5 and
+  1 voice per note.
