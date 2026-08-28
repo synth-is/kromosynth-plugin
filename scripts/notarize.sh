@@ -17,8 +17,15 @@
 #        > Manage Certificates... > + > Developer ID Application
 #
 #    The pane is "Apple Accounts", not "Accounts" -- renamed in Xcode 26.
-#    Only the team's Account Holder can create a Developer ID certificate; an
-#    Admin cannot. If the + menu does not offer it, use the web path instead:
+#
+#    Apple's documentation says Developer ID certificates are restricted to the
+#    team's Account Holder. OBSERVED OTHERWISE: this certificate was created by
+#    an account showing the "Admin" role in Xcode's team list. Either Apple has
+#    relaxed it or the Account Holder had delegated the right. Recorded because
+#    the documented restriction was stated here as fact and the screen said
+#    otherwise.
+#
+#    If the + menu does not offer it, use the web path instead:
 #
 #      a. Keychain Access > Certificate Assistant > Request a Certificate From
 #         a Certificate Authority. Save to disk. This creates the private key
@@ -37,7 +44,13 @@
 #              -DKROMOSYNTH_SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)"
 #
 # 3. A stored notarytool credential profile. The password is an app-specific
-#    password from appleid.apple.com, NOT the Apple ID password:
+#    password generated at the WEBSITE appleid.apple.com -- not entered in
+#    Xcode, and not the Apple ID password itself:
+#
+#        appleid.apple.com > Sign-In and Security > App-Specific Passwords > +
+#
+#    It is displayed once. The Apple ID is the address shown under your name in
+#    Xcode > Settings > Apple Accounts.
 #
 #        xcrun notarytool store-credentials "kromosynth" \
 #            --apple-id "you@example.com" \

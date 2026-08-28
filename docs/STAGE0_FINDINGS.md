@@ -3105,8 +3105,13 @@ Xcode > Settings > Apple Accounts > (Apple ID) > (Team)
 The pane is **"Apple Accounts"**, not "Accounts" — renamed in Xcode 26. This
 machine has Xcode 26.6 (build 17F113) and `xcode-select` points at it.
 
-Only the team's **Account Holder** can create a Developer ID certificate; an
-Admin cannot. If the `+` menu does not offer it, the web path works:
+Apple documents Developer ID certificate creation as restricted to the team's
+**Account Holder**. **Observed otherwise:** this certificate was created by an
+account showing the **Admin** role in Xcode's team list. Either Apple has
+relaxed the restriction or the Account Holder had delegated it. Recorded
+because the documented rule was stated here as fact and the screen disagreed.
+
+If the `+` menu does not offer it, the web path works:
 
 1. Keychain Access → Certificate Assistant → Request a Certificate From a
    Certificate Authority → save to disk. This puts the private key in the login
