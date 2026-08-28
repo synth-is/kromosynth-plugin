@@ -3206,3 +3206,55 @@ Note also that the certificate was created using an Xcode 27 launched from
 Downloads, while `xcode-select` points at `/Applications/Xcode.app` (26.6).
 Irrelevant for certificate creation, and `notarytool` from 26.6 is fine, but
 worth knowing the toolchain building the plugin is not the one that was open.
+
+## L6. CORRECTION to §A2 — the security exception is per-plugin-build, not per-app
+
+§A2 item 3 said GarageBand here "now has the exception granted permanently" and
+that this "confounds this machine's matrix", concluding the signing claim could
+only be tested on a different Mac. That is wrong, and located:
+
+```
+~/Library/Preferences/com.apple.audio.SandboxHelper.plist
+  "app.com.apple.garageband10" => [
+      0x31922e137a09faf58d4682838852c86fe5274304
+      0x95e609af461fc30df1b83fd097f31799e0e7a116
+      0x0f9dea38f6a1ebc7f89df86c75e02bf35c37efa1
+  ]
+```
+
+Modified Aug 25 21:12:18 2026, matching when §A2 recorded the dialog being
+accepted. Three entries, one per ad-hoc build tested that evening.
+
+**Those are cdhashes of individual plugin binaries, not a blanket grant to the
+host.** The exception says "GarageBand may load *these three specific builds*",
+not "GarageBand may load unsigned plugins".
+
+The current Developer ID signed build has cdhash
+`587654cb00cb5c344f230f876f2cfdc2b20cfcfb`, which is **not in the list**. So it
+is not pre-approved, and testing it here is a valid test after all:
+
+- loads silently → library validation passed, i.e. signing works
+- prompts again → it did not
+
+Two further consequences worth noting:
+
+1. **Any rebuild invalidates the grant**, since the cdhash changes. The
+   exception was never as sticky as §A2 implied — it would have needed
+   re-granting on the next build regardless.
+2. **The store is per-user** (`~/Library/Preferences`), so a fresh user account
+   on this Mac is also a pristine test environment. That was the cheaper option
+   all along and §A2 never considered it.
+
+**Revoking it**, if a fully clean state is wanted. User-level, no sudo:
+
+```
+cp ~/Library/Preferences/com.apple.audio.SandboxHelper.plist /tmp/  # backup
+rm ~/Library/Preferences/com.apple.audio.SandboxHelper.plist
+killall cfprefsd
+```
+
+**Standing rule reinforced.** §A2 recorded an observed behaviour ("the dialog
+appeared, I accepted it") and then inferred a mechanism ("the host now has a
+permanent exception") without locating where that state lived. The inference
+sat in the findings for three days and produced a wrong constraint on how the
+work could be verified. Locating the state took one search.
