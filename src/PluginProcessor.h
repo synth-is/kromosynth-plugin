@@ -27,6 +27,8 @@
 class SamplerEngine;
 #endif
 
+#include "InstrumentLibrary.h"
+
 class KromosynthAudioProcessor : public juce::AudioProcessor
 {
 public:
@@ -82,6 +84,36 @@ public:
     // the probe's editor-destroyed path needs.
     const juce::File& getLogFile() const noexcept { return logFile_; }
 
+   #if KROMOSYNTH_HAS_SAMPLER
+    /** What a load attempt did. `ok` and `numRegions` are separate on purpose:
+        F11 established that loadSfzFile returns true for an instrument whose
+        every region was culled, so "it loaded" and "there is an instrument"
+        are different claims and the UI must be able to tell them apart.
+    */
+    struct LoadOutcome
+    {
+        bool ok = false;
+        int numRegions = 0;
+        double tailSeconds = 0.0;
+        juce::String id;
+        juce::String detail;
+    };
+
+    /** Loads an instrument from the local library by id.
+
+        Called on the MESSAGE thread, from a native function invoked by the
+        shell's JavaScript. sfizz's loadSfzFile is OFF-annotated and that does
+        not change because the caller is a webview, so this takes the same
+        suspendProcessing barrier prepareToPlay does.
+    */
+    LoadOutcome loadInstrument (const juce::String& id);
+
+    /** What is loaded now. An empty id means the compiled-in default. */
+    LoadOutcome currentInstrument() const { return current_; }
+
+    const InstrumentLibrary& library() const noexcept { return library_; }
+   #endif
+
 private:
    #if KROMOSYNTH_HAS_SAMPLER
     // The compiled-in SFZ path, resolved in one place so the empty-path and
@@ -103,6 +135,11 @@ private:
     // CriticalSection, and that supplies the happens-before edge. See
     // SamplerEngine.h.
     std::unique_ptr<SamplerEngine> engine_;
+
+    InstrumentLibrary library_;
+
+    // Message-thread only.
+    LoadOutcome current_;
    #endif
 
     juce::File logFile_;

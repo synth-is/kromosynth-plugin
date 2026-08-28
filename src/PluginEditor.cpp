@@ -1,6 +1,9 @@
 // DISPOSABLE — see PluginEditor.h.
 
 #include "PluginEditor.h"
+#include "ShellPage.h"
+
+#include <cstring>
 
 #ifndef KROMOSYNTH_WEB_APP_URL
   #define KROMOSYNTH_WEB_APP_URL "https://synth.is"
@@ -133,9 +136,95 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
         // Without this the page is torn down and reloaded every time the host
         // hides the editor, which would make "does it survive close/reopen"
         // a question about JUCE's default rather than about the host.
-        .withKeepPageLoadedWhenBrowserIsHidden();
+        .withKeepPageLoadedWhenBrowserIsHidden()
+        // STAGE 1. Exposes window.__JUCE__.backend to this component only.
+        // Safe here and nowhere else: the page is served by the resource
+        // provider below, from a string compiled into this binary, and
+        // pageAboutToLoad refuses to navigate off that origin.
+        .withNativeIntegrationEnabled()
+        .withResourceProvider ([] (const juce::String& path)
+                               -> std::optional<juce::WebBrowserComponent::Resource>
+        {
+            if (path != "/" && path != "/index.html")
+                return std::nullopt;
+
+            const juce::String html (kromosynth::shell::kIndexHtml);
+            const auto utf8 = html.toRawUTF8();
+            const auto len = std::strlen (utf8);
+
+            std::vector<std::byte> bytes (len);
+            std::memcpy (bytes.data(), utf8, len);
+
+            return juce::WebBrowserComponent::Resource {
+                std::move (bytes), juce::String ("text/html") };
+        })
+        .withNativeFunction ("listInstruments",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            juce::Array<juce::var> out;
+
+            for (const auto& e : proc_.library().scan())
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty ("id", e.id);
+                o->setProperty ("name", e.name);
+                // Region count would mean loading every SFZ on every list, so
+                // it is reported as 0 here and filled in on load. Stated
+                // rather than silently omitted: the UI shows nothing instead
+                // of a wrong number.
+                o->setProperty ("regions", 0);
+                out.add (juce::var (o));
+            }
+
+            done (juce::var (out));
+        })
+        .withNativeFunction ("getLibraryRoot",
+                             [] (const juce::Array<juce::var>&,
+                                 juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            done (juce::var (InstrumentLibrary::root().getFullPathName()));
+        })
+        .withNativeFunction ("loadInstrument",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            auto* o = new juce::DynamicObject();
+
+            if (args.isEmpty() || ! args[0].isString())
+            {
+                o->setProperty ("ok", false);
+                o->setProperty ("detail", "loadInstrument expects an id string");
+                done (juce::var (o));
+                return;
+            }
+
+            const auto r = proc_.loadInstrument (args[0].toString());
+
+            o->setProperty ("ok", r.ok);
+            o->setProperty ("id", r.id);
+            o->setProperty ("regions", r.numRegions);
+            o->setProperty ("tailSeconds", r.tailSeconds);
+            o->setProperty ("detail", r.detail);
+
+            done (juce::var (o));
+        })
+        .withNativeFunction ("getStatus",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            const auto r = proc_.currentInstrument();
+
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("ok", r.ok);
+            o->setProperty ("id", r.id);
+            o->setProperty ("regions", r.numRegions);
+            o->setProperty ("tailSeconds", r.tailSeconds);
+            done (juce::var (o));
+        });
 
     browser_ = std::make_unique<InstrumentedBrowser> (options, proc_);
+    browser_->allowedOrigin = juce::WebBrowserComponent::getResourceProviderRoot();
     addAndMakeVisible (*browser_);
 #endif
 
@@ -148,8 +237,12 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     setSize (1280, 800);
 
 #if ! KROMOSYNTH_EDITOR_STUB
-    proc_.logEvent ("navigating to " KROMOSYNTH_WEB_APP_URL);
-    browser_->goToURL (KROMOSYNTH_WEB_APP_URL);
+    // The shell, not the site. The site is a second component with native
+    // integration OFF; see WP section 12. Not built yet -- acquisition needs
+    // the sentinel-URL hook on the web app side.
+    const auto shellRoot = juce::WebBrowserComponent::getResourceProviderRoot();
+    proc_.logEvent ("navigating to shell " + shellRoot);
+    browser_->goToURL (shellRoot);
 #endif
 }
 
@@ -244,7 +337,21 @@ void KromosynthAudioProcessorEditor::StubContent::paint (juce::Graphics&) {}
 bool KromosynthAudioProcessorEditor::InstrumentedBrowser::pageAboutToLoad (const juce::String& url)
 {
     proc_.logEvent ("page_about_to_load " + url);
-    return true;   // allow everything at Stage 0; we want to see the real app
+
+    if (allowedOrigin.isEmpty() || url.startsWith (allowedOrigin))
+        return true;
+
+    // Off-origin on a component that carries the native bridge. Blocked, and
+    // opened in the system browser instead so the link still works for the
+    // user without the page that receives it inheriting window.__JUCE__.
+    //
+    // about:blank and the resource-provider root's own sub-requests come
+    // through here too; startsWith on the origin covers those.
+    proc_.logEvent ("navigation_blocked " + url);
+
+    juce::URL (url).launchInDefaultBrowser();
+
+    return false;
 }
 
 void KromosynthAudioProcessorEditor::InstrumentedBrowser::pageFinishedLoading (const juce::String& url)

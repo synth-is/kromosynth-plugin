@@ -1,0 +1,98 @@
+#include "InstrumentLibrary.h"
+
+juce::File InstrumentLibrary::root()
+{
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory)
+               .getChildFile ("Synth.is")
+               .getChildFile ("Instruments");
+}
+
+juce::String InstrumentLibrary::readDisplayName (const juce::File& sfz,
+                                                 const juce::String& fallbackId)
+{
+    // Only the header. Reading the whole file to find a comment would mean
+    // opening every SFZ on every scan, and these run to tens of kilobytes.
+    juce::FileInputStream stream (sfz);
+
+    if (! stream.openedOk())
+        return fallbackId;
+
+    const auto header = stream.readString().substring (0, 2048);
+
+    for (const auto& line : juce::StringArray::fromLines (header))
+    {
+        const auto trimmed = line.trim();
+
+        if (! trimmed.startsWith ("//"))
+            continue;
+
+        const auto body = trimmed.substring (2).trim();
+
+        // "Sounds: 01KPXZ..." is the closest thing the generator emits to an
+        // identity. Not a name, and labelled as such in the header comment.
+        if (body.startsWithIgnoreCase ("Sounds:"))
+        {
+            const auto value = body.fromFirstOccurrenceOf (":", false, false).trim();
+
+            if (value.isNotEmpty())
+                return value;
+        }
+    }
+
+    return fallbackId;
+}
+
+std::vector<InstrumentLibrary::Entry> InstrumentLibrary::scan() const
+{
+    std::vector<Entry> entries;
+
+    const auto base = root();
+
+    if (! base.isDirectory())
+        return entries;
+
+    for (const auto& dir : juce::RangedDirectoryIterator (base, false, "*",
+                                                          juce::File::findDirectories))
+    {
+        const auto folder = dir.getFile();
+        const auto sfz = folder.getChildFile ("instrument.sfz");
+
+        // Silently skipping a directory without an instrument.sfz is right --
+        // a samples folder or a partial download is not an error -- but note
+        // this is the one place the library can be quietly wrong. A download
+        // that lands samples and dies before writing the SFZ leaves a
+        // directory that simply does not appear. The acquisition path should
+        // write the SFZ last for exactly this reason.
+        if (! sfz.existsAsFile())
+            continue;
+
+        Entry entry;
+        entry.id = folder.getFileName();
+        entry.sfz = sfz;
+        entry.name = readDisplayName (sfz, entry.id);
+
+        entries.push_back (std::move (entry));
+    }
+
+    std::sort (entries.begin(), entries.end(),
+               [] (const Entry& a, const Entry& b)
+               {
+                   return a.name.compareIgnoreCase (b.name) < 0;
+               });
+
+    return entries;
+}
+
+juce::File InstrumentLibrary::pathFor (const juce::String& id) const
+{
+    // Rejects anything that could escape the library root. `id` arrives from
+    // JavaScript, so "../../../etc/passwd" is a string someone can send, and
+    // File::getChildFile would resolve it happily.
+    if (id.isEmpty() || id.containsChar ('/') || id.containsChar ('\\')
+        || id.contains (".."))
+        return {};
+
+    const auto sfz = root().getChildFile (id).getChildFile ("instrument.sfz");
+
+    return sfz.existsAsFile() ? sfz : juce::File{};
+}

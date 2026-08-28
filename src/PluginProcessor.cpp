@@ -97,6 +97,71 @@ double KromosynthAudioProcessor::getTailLengthSeconds() const
    #endif
 }
 
+KromosynthAudioProcessor::LoadOutcome
+KromosynthAudioProcessor::loadInstrument (const juce::String& id)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    LoadOutcome outcome;
+    outcome.id = id;
+
+    const auto file = library_.pathFor (id);
+
+    if (file == juce::File{})
+    {
+        // pathFor rejects ids containing separators or ".." as well as ones
+        // that simply are not there, and deliberately does not distinguish:
+        // telling a caller which of the two happened is a directory oracle.
+        outcome.detail = "no such instrument in the local library";
+        logEvent ("instrument_load_rejected id=" + id);
+        return outcome;
+    }
+
+    if (engine_ == nullptr)
+    {
+        // prepareToPlay has not run, so there is nothing to load into and no
+        // sample rate to load at. Recording the request would mean a pending
+        // state the rest of this file does not have; the shell can retry once
+        // the host activates the plugin.
+        outcome.detail = "plugin not activated by the host yet";
+        logEvent ("instrument_load_deferred id=" + id);
+        return outcome;
+    }
+
+    // Same barrier as prepareToPlay, for the same reason: loadSfzFile is OFF
+    // (sfizz.hpp:118-120) and must not run while a render is in flight. That
+    // the caller here is JavaScript on the message thread rather than the host
+    // changes nothing about sfizz's requirement.
+    suspendProcessing (true);
+
+    const auto result = engine_->load (file);
+
+    suspendProcessing (false);
+
+    outcome.ok = result.ok;
+    outcome.numRegions = result.numRegions;
+    outcome.tailSeconds = result.tailSeconds;
+    outcome.detail = result.detail;
+
+    logEvent ("instrument_load id=" + id
+              + " ok=" + juce::String (result.ok ? 1 : 0)
+              + " regions=" + juce::String (result.numRegions)
+              + " ms=" + juce::String (result.loadMs, 1)
+              + " tail_s=" + juce::String (result.tailSeconds, 3)
+              + (result.detail.isEmpty() ? juce::String()
+                                         : " detail=\"" + result.detail + "\""));
+
+    if (result.ok)
+        current_ = outcome;
+
+    // The host's reported latency and tail are now stale. Tail in particular:
+    // a host that cached 8.3 s from the previous instrument will truncate or
+    // over-render this one.
+    updateHostDisplay();
+
+    return outcome;
+}
+
 void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     logEvent ("prepareToPlay sampleRate=" + juce::String (sampleRate)

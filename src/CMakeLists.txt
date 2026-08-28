@@ -35,6 +35,9 @@ target_sources(KromosynthPlugin PRIVATE
     PluginProcessor.h
     PluginEditor.cpp
     PluginEditor.h
+    InstrumentLibrary.cpp
+    InstrumentLibrary.h
+    ShellPage.h
 )
 
 if(KROMOSYNTH_BUILD_SAMPLER)
@@ -51,12 +54,22 @@ target_compile_definitions(KromosynthPlugin PRIVATE
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
 
-    # Stage 0 deliberately does NOT enable native integration or a resource
-    # provider. Both change the page's origin semantics — a resource provider
-    # serves from JUCE's juce:// virtual origin, which would break the web
-    # app's BrowserRouter (history-API routing, see packages/web/src/App.jsx)
-    # and would make the cross-origin-isolation question unanswerable. We are
-    # measuring the deployed origin as it actually is.
+    # STAGE 1 (2026-08-28): native integration and a resource provider are now
+    # ON for the shell component. The Stage 0 reasoning below was correct and
+    # is kept because it explains what changed and why it was safe to change.
+    #
+    #   Stage 0 deliberately did NOT enable either. Both change the page's
+    #   origin semantics — a resource provider serves from JUCE's virtual
+    #   origin, which would break the web app's BrowserRouter (history-API
+    #   routing, see packages/web/src/App.jsx) and would make the
+    #   cross-origin-isolation question unanswerable. We were measuring the
+    #   deployed origin as it actually is.
+    #
+    # That objection still stands — and is precisely why there are now TWO
+    # components. The shell is served from the virtual origin and carries the
+    # bridge; the site keeps the deployed origin, its router and its isolation
+    # semantics, with native integration OFF. Neither compromises the other.
+    # See WP_SYNTHIS_PLUGIN.md §12.
     KROMOSYNTH_WEB_APP_URL="${KROMOSYNTH_WEB_APP_URL}"
     KROMOSYNTH_WEBVIEW_PROBE=$<BOOL:${KROMOSYNTH_WEBVIEW_PROBE}>
     KROMOSYNTH_PROBE_DELAY_MS=${KROMOSYNTH_PROBE_DELAY_MS}

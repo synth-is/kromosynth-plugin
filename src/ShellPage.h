@@ -1,0 +1,219 @@
+// ShellPage — the local UI the plugin serves to itself.
+//
+// Stage 1. Small on purpose, and the smallness is the design, not a shortcut.
+//
+// ── Why this exists at all ───────────────────────────────────────────────────
+//
+// WP_SYNTHIS_PLUGIN.md section 4 originally said "one UI codebase, not three"
+// and served everything from the platform. That was superseded on 2026-08-28
+// (WP section 12) for two reasons neither of which is a preference:
+//
+//   1. The web app's service worker handles `push` and `notificationclick`
+//      only -- 36 lines, no `fetch` handler. Nothing is cached, so a
+//      platform-served UI is BLANK with no network. For a plugin expected to
+//      work during a live performance that is disqualifying.
+//
+//   2. The list of locally downloaded instruments is plugin-side state. The
+//      web app cannot render it without the native bridge regardless of
+//      caching.
+//
+// So: this page, served from C++ over the resource provider, is the offline
+// surface and the only place `window.__JUCE__.backend` is exposed. The live
+// site keeps doing everything discovery-shaped, in a second component with
+// native integration OFF.
+//
+// ── Why it is one hand-written string and not a build step ───────────────────
+//
+// A bundler, a package.json and a node_modules for a page with one list in it
+// would be a second frontend toolchain to maintain for no gain, and it would
+// make the plugin's build depend on npm. When this page needs a framework it
+// will be obvious, and the honest move then is a real frontend directory --
+// not to have pre-emptively built one now and pretended the decision was made
+// on evidence.
+//
+// Kept deliberately dependency-free: no fonts, no CDN, no images. Every
+// external reference would be a network request on a surface whose entire
+// justification is working without a network.
+
+#pragma once
+
+namespace kromosynth::shell
+{
+// The page. `%%STATUS%%` is not templated -- everything is fetched through the
+// bridge after load, so the HTML is static and can be served from a constant.
+inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synth.is</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    background: #0d1117; color: #e6edf3;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    padding: 14px 18px; border-bottom: 1px solid #21262d;
+    display: flex; align-items: baseline; gap: 12px; flex: 0 0 auto;
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+  header .count { color: #7d8590; font-size: 12px; }
+  header button {
+    margin-left: auto; background: #21262d; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 5px 12px; font-size: 12px; cursor: pointer;
+  }
+  header button:hover { background: #30363d; }
+  main { flex: 1 1 auto; overflow-y: auto; padding: 8px; }
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .row:hover { background: #161b22; border-color: #21262d; }
+  .row.active { background: #16281d; border-color: #2ea04326; }
+  .row .name { flex: 1 1 auto; font-variant-numeric: tabular-nums; }
+  .row .meta { color: #7d8590; font-size: 12px; }
+  .row .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #30363d; flex: 0 0 auto;
+  }
+  .row.active .dot { background: #3fb950; }
+  .empty { padding: 40px 18px; color: #7d8590; }
+  .empty code {
+    display: block; margin-top: 10px; padding: 10px;
+    background: #161b22; border-radius: 6px; font-size: 12px;
+    color: #a5d6ff; user-select: text; word-break: break-all;
+  }
+  footer {
+    flex: 0 0 auto; padding: 9px 18px; border-top: 1px solid #21262d;
+    color: #7d8590; font-size: 12px; min-height: 34px;
+  }
+  footer.warn { color: #d29922; }
+  footer.err { color: #f85149; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Instruments</h1>
+  <span class="count" id="count"></span>
+  <button id="refresh">Refresh</button>
+</header>
+<main id="list"></main>
+<footer id="status">Loading&hellip;</footer>
+
+<script>
+// The bridge. JUCE injects window.__JUCE__.backend when native integration is
+// enabled; if it is missing we are being viewed somewhere it is not, and
+// saying so plainly beats a page that silently does nothing.
+const backend = window.__JUCE__ && window.__JUCE__.backend;
+
+function setStatus (text, kind) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = kind || '';
+}
+
+async function call (name, ...args) {
+  if (!backend) throw new Error('native bridge unavailable');
+  return backend.callNativeFunction(name, args);
+}
+
+let entries = [];
+let currentId = null;
+
+function render () {
+  const list = document.getElementById('list');
+  document.getElementById('count').textContent =
+    entries.length === 1 ? '1 instrument' : entries.length + ' instruments';
+
+  if (entries.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No instruments in the local library yet.' +
+      '<code id="root"></code></div>';
+    call('getLibraryRoot').then(function (p) {
+      const el = document.getElementById('root');
+      if (el) el.textContent = p;
+    }).catch(function () {});
+    return;
+  }
+
+  list.innerHTML = '';
+
+  entries.forEach(function (e) {
+    const row = document.createElement('div');
+    row.className = 'row' + (e.id === currentId ? ' active' : '');
+
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = e.name;
+
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = e.regions > 0 ? e.regions + ' regions' : '';
+
+    row.appendChild(dot);
+    row.appendChild(name);
+    row.appendChild(meta);
+    row.addEventListener('click', function () { load(e.id); });
+    list.appendChild(row);
+  });
+}
+
+async function load (id) {
+  setStatus('Loading\u2026');
+  try {
+    const r = await call('loadInstrument', id);
+
+    // ok and regions are reported separately on purpose. F11: sfizz's
+    // loadSfzFile returns true when every region was culled for an
+    // unresolvable sample, so "it loaded" and "there is an instrument" are
+    // different claims. A UI that collapses them would show a green tick on a
+    // silent instrument.
+    if (r.ok) {
+      currentId = id;
+      setStatus('Loaded \u00b7 ' + r.regions + ' regions \u00b7 '
+                + r.tailSeconds.toFixed(1) + ' s tail');
+    } else {
+      setStatus(r.detail || 'Load failed', 'err');
+    }
+    render();
+  } catch (err) {
+    setStatus(String(err), 'err');
+  }
+}
+
+async function refresh () {
+  if (!backend) {
+    setStatus('Native bridge unavailable \u2014 this page is not being served '
+              + 'by the plugin.', 'err');
+    return;
+  }
+  try {
+    entries = await call('listInstruments');
+    const cur = await call('getStatus');
+    currentId = cur && cur.ok ? cur.id : null;
+    render();
+    setStatus(currentId
+      ? 'Loaded \u00b7 ' + cur.regions + ' regions \u00b7 '
+        + cur.tailSeconds.toFixed(1) + ' s tail'
+      : 'Nothing loaded yet \u2014 pick an instrument.');
+  } catch (err) {
+    setStatus(String(err), 'err');
+  }
+}
+
+document.getElementById('refresh').addEventListener('click', refresh);
+refresh();
+</script>
+</body>
+</html>
+)HTML";
+} // namespace kromosynth::shell
