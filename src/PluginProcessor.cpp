@@ -88,6 +88,15 @@ void KromosynthAudioProcessor::logRenderStats (const char* reason)
 
 #endif
 
+double KromosynthAudioProcessor::getTailLengthSeconds() const
+{
+   #if KROMOSYNTH_HAS_SAMPLER
+    return engine_ != nullptr ? engine_->tailSeconds() : 0.0;
+   #else
+    return 0.0;
+   #endif
+}
+
 void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     logEvent ("prepareToPlay sampleRate=" + juce::String (sampleRate)
@@ -145,6 +154,8 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
                   + " regions=" + juce::String (result.numRegions)
                   + " voices=" + juce::String (result.numVoices)
                   + " ms=" + juce::String (result.loadMs, 1)
+                  + " tail_s=" + juce::String (result.tailSeconds, 3)
+                  + " tail_ms=" + juce::String (result.tailMs, 1)
                   + (result.detail.isEmpty() ? juce::String()
                                              : " detail=\"" + result.detail + "\"")
                   + " path=" + file.getFullPathName());

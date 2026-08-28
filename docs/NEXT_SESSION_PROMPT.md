@@ -82,7 +82,18 @@ Test artefacts:
 
 **Propose the design before writing it.**
 
-### 1. VST3 with audio. The largest untested surface.
+### 1. The AU leg of the Reaper render comparison.
+
+`tools/reaper-render/make_projects.py` renders fixed MIDI through the plugin via
+`REAPER -renderproject`. The VST3 leg works. The AU leg does not: five
+hand-written `<AU>` FXCHAIN header formats all failed to instantiate anything
+(§J2), and Reaper's AU serialisation is undocumented. It needs a project Reaper
+saved itself -- a two-minute GUI step, not a code problem.
+
+Note `pluginval` already shows AU and VST3 producing identical output with a
+pinned seed (§J1), so this is confirmation rather than discovery.
+
+### 1b. VST3 with audio -- LARGELY ANSWERED, see §J1.
 
 `auval` is AU-only. §A3.1c already found the formats diverge on UI layout;
 whether they diverge on audio is unknown.
@@ -109,21 +120,22 @@ chunking is not bit-identical, so block size is very slightly audible, and any
 A/B has to hold it fixed. The standing rule about A/B listening applies: prefer
 a rendered diff over an impression, which task 1 above now makes cheap.
 
-### 3. `getTailLengthSeconds()` — known wrong, fix documented but not done.
+### 3. `getTailLengthSeconds()` — DONE, see §J4.
 
-Returns 0.0. Both artefacts run 0.3 s to 8.3 s of release depending on CC73, so
-hosts will truncate tails on bounce and freeze. The fix is to read
-`ampeg_release` and its CC depth through the introspection API **at load time**,
-which is legal inside the suspend window because no RT call can be in flight,
-and cache it in an atomic. This makes the standing "never call introspection off
-the RT task" rule precise rather than blanket. It is the smallest task here with
-a real audible consequence.
+Reads `ampeg_release` and its CC depths from sfizz at load time, caches in an
+atomic, returns 8.300 for both artefacts. Costs 0.6 ms. The remaining question
+is whether reporting the WORST case (8.3 s) rather than the default-CC case
+(0.3 s, measured) is the right trade -- it makes a host render 8 s of silence
+after every bounce.
 
 ### 4. Voice count under a real chord in a real host.
 
 Left at sfizz's default 64 (`Config.h:37`), about twelve notes at §G4's five
 voices each. `setNumVoices` deliberately not called: voice stealing is audible
-and the decision should follow a measurement. Needs a DAW, or task 1's host.
+and the decision should follow a measurement. The Reaper render's four-note
+chord did not misbehave, but `getNumActiveVoices` is not sampled during a
+render, so this is still inferred. Adding a max-voices field to the render
+stats would settle it with the harness that already exists.
 
 ### 5. Logic. Still the one untested host that matters.
 

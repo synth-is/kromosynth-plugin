@@ -49,27 +49,17 @@ public:
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
 
-    // KNOWN WRONG, and left wrong on purpose for this pass.
+    // Read from sfizz at LOAD time and cached, so this message-thread query
+    // never touches the introspection API. See SamplerEngine::tailSeconds().
     //
-    // Both artefacts on disk declare ampeg_release=0.3 with
-    // ampeg_release_oncc73=8, so the real tail runs from 0.3 s to 8.3 s
-    // depending on where CC73 sits. A host that believes 0.0 will truncate
-    // release tails when it bounces or freezes — precisely the kind of
-    // artefact §C's A/B trap would surface as "the plugin sounds wrong
-    // compared to the audition".
-    //
-    // The value cannot be read from sfizz here. It depends on the loaded file,
-    // and reading it means the introspection API, which is documented RT and
-    // must not be called from the message thread — and getTailLengthSeconds IS
-    // a message-thread query.
-    //
-    // STAGE 1: read ampeg_release and its CC depth through sendMessage at LOAD
-    // time, which is legal because the load runs inside the suspend window
-    // where no RT call can be in flight, and cache it in an atomic. That turns
-    // the standing "never call introspection off the RT task" rule into the
-    // precise version of itself. Not done here because it should follow a
-    // measurement rather than lead one.
-    double getTailLengthSeconds() const override { return 0.0; }
+    // Returns the WORST case, which for both artefacts on disk is 8.3 s
+    // (ampeg_release=0.3 plus ampeg_release_oncc73=8). The typical case at
+    // default CC is 0.3 s, measured: a Reaper render is at exactly 0.0 from
+    // one second after the last note-off. Reporting the worst case makes a
+    // host render silence for the difference, which is the cheap direction to
+    // be wrong in; the other direction truncates a real tail whenever CC73 is
+    // up.
+    double getTailLengthSeconds() const override;
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }

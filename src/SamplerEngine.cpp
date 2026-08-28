@@ -3,6 +3,35 @@
 
 #include "SamplerEngine.h"
 
+#include <algorithm>
+
+namespace
+{
+// Minimal reply sink for sfizz's OSC-style introspection. dispatchMessage
+// calls the receive callback INLINE, so a query is synchronous and the reply
+// is available the moment sendMessage returns. Same mechanism as
+// tools/sfz-probe, deliberately narrowed to the one numeric case this needs
+// rather than copied wholesale.
+struct FloatReply
+{
+    bool received = false;
+    float value = 0.0f;
+};
+
+void receiveFloat (void* data, int, const char*, const char* sig, const sfizz_arg_t* args)
+{
+    auto& reply = *static_cast<FloatReply*> (data);
+    reply.received = false;
+    reply.value = 0.0f;
+
+    if (sig == nullptr || args == nullptr || sig[0] != 'f')
+        return;
+
+    reply.received = true;
+    reply.value = args[0].f;
+}
+} // namespace
+
 SamplerEngine::SamplerEngine() = default;
 SamplerEngine::~SamplerEngine() = default;
 
@@ -60,6 +89,63 @@ void SamplerEngine::prepare (double sampleRate, int maxBlockSize)
     // apart needs a measurement rather than a plausible argument.
 }
 
+double SamplerEngine::measureTailSeconds (int regionCount)
+{
+    // Worst case across every region: base ampeg_release plus the sum of every
+    // POSITIVE CC depth on it, because a host can hold all of them at maximum
+    // at once. Negative depths are ignored rather than subtracted: a CC that
+    // shortens the release cannot make the worst case longer, and treating it
+    // as if it could would under-report the tail, which is the direction that
+    // truncates audio.
+    //
+    // MEASURED: against both artefacts this returns 8.3 s (ampeg_release=0.3,
+    // ampeg_release_oncc73=8). Worth knowing the DEFAULT-CC tail is only 0.3 s
+    // -- a Reaper render showed the signal at exactly 0.0 from one second after
+    // the last note-off. So 8.3 is honest as a worst case and pessimistic as a
+    // typical one, and a host will render silence for the difference. Still the
+    // right number to report: the alternative truncates a real tail whenever
+    // CC73 is up.
+
+    if (regionCount <= 0)
+        return 0.0;
+
+    FloatReply reply;
+    auto client = sfz::Sfizz::createClient (&reply);
+    sfz::Sfizz::setReceiveCallback (*client, &receiveFloat);
+
+    const auto query = [&] (const std::string& path) -> double
+    {
+        reply = FloatReply{};
+        synth_.sendMessage (*client, 0, path.c_str(), "", nullptr);
+        return reply.received ? double (reply.value) : 0.0;
+    };
+
+    double worst = 0.0;
+
+    for (int region = 0; region < regionCount; ++region)
+    {
+        const std::string prefix = "/region" + std::to_string (region) + "/";
+
+        double total = query (prefix + "ampeg_release");
+
+        // F8.2: the ampeg_* CC paths read a CCMap through getWithDefault, so
+        // they are never nil and all 128 CCs answer. That makes this 128
+        // queries per region with nothing to filter against -- fine at load
+        // time, and the reason it is not done per block.
+        for (int cc = 0; cc < 128; ++cc)
+        {
+            const double depth = query (prefix + "ampeg_release_cc" + std::to_string (cc));
+
+            if (depth > 0.0)
+                total += depth;
+        }
+
+        worst = std::max (worst, total);
+    }
+
+    return worst;
+}
+
 SamplerEngine::LoadResult SamplerEngine::load (const juce::File& sfzFile)
 {
     LoadResult result;
@@ -105,6 +191,16 @@ SamplerEngine::LoadResult SamplerEngine::load (const juce::File& sfzFile)
     // instantiated will then be picked up. The cost is a repeated log line.
     loaded_ = result.ok;
     numRegions_ = result.numRegions;
+
+    // Timed separately from loadMs, because 129 queries per region is a
+    // number nobody would notice growing. The first version of this did NOT
+    // time it and reported a load cost that silently excluded 5418 synchronous
+    // introspection calls.
+    const auto tailStarted = juce::Time::getMillisecondCounterHiRes();
+    result.tailSeconds = result.ok ? measureTailSeconds (result.numRegions) : 0.0;
+    result.tailMs = juce::Time::getMillisecondCounterHiRes() - tailStarted;
+
+    tailSeconds_.store (result.tailSeconds, std::memory_order_relaxed);
 
     blocksRendered_.store (0, std::memory_order_relaxed);
     framesRendered_.store (0, std::memory_order_relaxed);

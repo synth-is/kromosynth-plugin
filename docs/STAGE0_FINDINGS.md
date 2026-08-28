@@ -2552,3 +2552,141 @@ silence — the same symptom as I5, and indistinguishable from it in a DAW.
 - **Does it sound right, or only measure right?** Everything in this section is
   a number. Nobody has listened to it in a DAW.
 - **Signing** (§A2) is still load-blocking on Apple hosts and still unaddressed.
+
+---
+
+# J. VALIDATION AND THE FIRST RENDER — session of 2026-08-27 (third, continued)
+
+Four of §I8's open items closed. The plugin has now been driven by two
+validators and one real DAW, and there is audio on disk.
+
+## J1. AU and VST3 do not diverge on audio
+
+`pluginval` 1.0.4 (installed this session), strictness 5 and 10, GUI tests
+skipped. Both formats **SUCCESS**, zero failures, across 3 sample rates x 5
+block sizes x sub-block variants — 33 `prepareToPlay` calls per run, one load,
+986 blocks rendered at strictness 10.
+
+The first comparison looked like divergence: VST3 peaked at 0.055314, AU at
+0.062567, on identical block and frame counts. **It was pluginval's
+randomisation.** With `--random-seed` pinned:
+
+| seed | VST3 peak | AU peak |
+|---|---|---|
+| 0x1234 | 0.056927 | **0.056927** |
+| 0x9999 | 0.045847 | **0.045847** |
+
+Identical to six decimals at two seeds. Third instance this session of the
+instrument rather than the plugin being the thing that misbehaved.
+
+**This also partly settles §I4.** The `suspendProcessing` barrier was a source
+reading; pluginval changes sample rate and block size repeatedly across a live
+instance, which is the scenario it guards, and nothing failed. Not proof — the
+guard protects against a race, and a race not firing is weak evidence — but it
+is the first evidence of any kind.
+
+One real AU/VST3 divergence found, and it is not audio: at strictness 10 the AU
+reports `!!! WARNING: Current program is -1`, which the VST3 does not. Our
+`getCurrentProgram()` returns 0 and the AU wrapper reports -1 through it.
+Program handling is a Stage 1 placeholder; noted, not chased.
+
+## J2. Reaper renders headlessly, and the AU project could not be hand-written
+
+`tools/reaper-render/make_projects.py` generates Reaper projects that play
+fixed MIDI through the plugin, rendered by `REAPER -renderproject`. Generated
+rather than committed as a fixture because a `.rpp` carries absolute paths and
+a host-specific plugin identifier, read here out of Reaper's own scan caches
+rather than guessed.
+
+**The VST3 leg works.** The AU leg does not, and the failure is instructive.
+
+The first AU render produced a WAV with `peak 0.000000` — an entirely silent
+file, which is exactly the §I5 / F11 symptom of a loaded-but-culled instrument.
+The plugin's own log said `processor_constructed host=REAPER wrapper=VST3` and
+nothing else: **there was never an AU instance at all.** The hand-written
+`<AU>` FXCHAIN block was not parsed, so the track was empty.
+
+Five header formats were tried against the log as an oracle — a reliable one,
+since a constructed instance always writes `processor_constructed`. All five
+produced no plugin instance of any kind. Reaper's AU serialisation is not
+documented and the search space is unbounded, so this was stopped rather than
+continued.
+
+**Fourth instance this session of the verify-the-diagnostic-first rule, and the
+strongest.** A silent render file is indistinguishable from a broken
+instrument. Only the plugin's own log separated "the AU produced silence" from
+"there was no AU". Without §I6's instrumentation this would have become a bug
+hunt in the AU wrapper.
+
+Two smaller things learned the same way: `RENDER_SRATE` in a hand-written
+project has no effect (44100 either way), and the invented `RENDER_CFG` blob
+means Reaper falls back to defaults for everything the blob does not encode.
+The renders are therefore 44100 files of a 48000 plugin run, resampled on
+write — which explains the 0.284902 internal peak against 0.290205 in the file,
+and is fine for listening but not for a bit-exact comparison.
+
+Getting the AU leg needs a project Reaper saved itself. That is a two-minute
+GUI step, not a code problem.
+
+## J3. Velocity layers survive the whole plugin path
+
+The Reaper VST3 render, analysed with §G6's crest-factor method — scale-
+invariant, so a gain change leaves it untouched and a sample change moves it.
+Four notes at velocities 20 / 60 / 100 / 127, which land in bands v1 / v2 / v3 / v3:
+
+| segment | peak | crest |
+|---|---|---|
+| vel 20 (v1) | 0.004177 | 0.193114 |
+| vel 60 (v2) | 0.038666 | 0.191251 |
+| vel 100 (v3) | 0.106672 | **0.190306** |
+| vel 127 (v3) | 0.172051 | **0.190306** |
+| 4-note chord | 0.289982 | 0.138783 |
+
+Velocities 100 and 127 are **identical to six decimals** — same sample,
+different gain — while the three bands give three distinct values. §G6 was
+measured offline against bare sfizz; this is the same result through JUCE, the
+VST3 wrapper, Reaper's audio graph and a WAV encoder. The plugin path does not
+alter what the harness measured.
+
+The XY artefact behaves as its structure predicts: crest constant at 0.375438
+across velocities 60/100/127, because it has no velocity layers — only gain
+changes. **Unexplained:** its velocity-20 segment reads 0.215197 rather than
+0.375438. Not chased.
+
+## J4. `getTailLengthSeconds` fixed, and the fix corrects my own claim
+
+§I8 said the tail runs "0.3 s to 8.3 s". Both ends are right and the emphasis
+was wrong. The render shows the signal at **exactly 0.0** from one second after
+the last note-off, so the *typical* tail at default CC is 0.3 s; 8.3 s is the
+worst case with CC73 held at maximum.
+
+Now read from sfizz at load time via `/region&/ampeg_release` and
+`/region&/ampeg_release_cc&`, and cached in an atomic. Returns 8.300 for both
+artefacts, matching the values read out of the SFZ by hand.
+
+**This does not break the standing rule about the introspection API.** The
+rule's content is that `sendMessage` must not run concurrently with
+`renderBlock`. The read happens inside `load()`, which the processor already
+runs inside the OFF barrier where no RT call can be in flight — the same
+condition that makes the sfz-probe harness safe. The rule is now precise rather
+than blanket.
+
+Only positive CC depths are summed. A CC that shortens the release cannot
+lengthen the worst case, and subtracting it would under-report the tail, which
+is the direction that truncates audio.
+
+**Cost, measured because it would otherwise not have been.** F8.2 records that
+the `ampeg_*` CC paths are never nil, so this is 129 queries per region — 5418
+for the RR artefact. The first version timed only `loadSfzFile` and would have
+reported a load cost that silently excluded all of them. Timed separately:
+**0.6 ms**. Negligible, and now visible in the log as `tail_ms`.
+
+## J5. Still open
+
+- **The AU leg of the Reaper comparison** (J2). Needs a Reaper-saved project.
+- **Voice count under a real chord in a real host.** The render's four-note
+  chord did not misbehave, but `getNumActiveVoices` is not sampled during a
+  render, so this is still inferred rather than measured.
+- **Nobody has listened to it.** `rr.wav` and `xy.wav` exist; that is not the
+  same thing.
+- **Signing** (§A2), still load-blocking on Apple hosts, still unaddressed.

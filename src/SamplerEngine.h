@@ -69,9 +69,12 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <sfizz.hpp>
+#include <sfizz_message.h>
 
 #include <atomic>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 class SamplerEngine
 {
@@ -87,6 +90,8 @@ public:
         int numRegions = 0;      // what actually survived — see below
         int numVoices = 0;       // sfizz's polyphony, logged not remembered
         double loadMs = 0.0;
+        double tailMs = 0.0;
+        double tailSeconds = 0.0;
         juce::String detail;
     };
 
@@ -114,6 +119,24 @@ public:
     bool isLoaded() const noexcept   { return loaded_; }
     int  numRegions() const noexcept { return numRegions_; }
 
+    /** Any thread. Worst-case release across every region, in seconds.
+
+        Read from sfizz ONCE at load time and cached, because the processor
+        needs it from `getTailLengthSeconds()` on the message thread and the
+        introspection API is documented RT.
+
+        The standing rule is "do not call the introspection API from the
+        message thread", and this does not break it. The rule's actual content
+        is that `sendMessage` must not run concurrently with `renderBlock`;
+        `measureTailSeconds()` is called from inside `load()`, which the caller
+        already runs inside the OFF barrier, where no RT call can be in flight.
+        That is exactly the condition that makes the sfz-probe harness safe.
+    */
+    double tailSeconds() const noexcept
+    {
+        return tailSeconds_.load (std::memory_order_relaxed);
+    }
+
     // Instrumentation drain. Answers "did this thing ever render anything",
     // which is the only question that separates silence-because-not-loaded
     // from silence-because-every-region-was-culled without a DAW in the loop.
@@ -140,6 +163,9 @@ public:
 private:
     void dispatch (int delay, const juce::MidiMessage& message) noexcept;
 
+    /** OFF. Only valid inside the caller's suspend window. */
+    double measureTailSeconds (int regionCount);
+
     sfz::Sfizz synth_;
 
     // Only used when the host hands us a mono bus. Sized in prepare().
@@ -150,6 +176,11 @@ private:
     double preparedRate_ = 0.0;
     bool loaded_ = false;
     int numRegions_ = 0;
+
+    // Written on the OFF thread at load, read from the message thread by
+    // getTailLengthSeconds. Genuinely concurrent with nothing in particular,
+    // so genuinely atomic.
+    std::atomic<double> tailSeconds_ { 0.0 };
 
     // Instrumentation — genuinely cross-thread, genuinely atomic.
     std::atomic<std::uint64_t> blocksRendered_ { 0 };
