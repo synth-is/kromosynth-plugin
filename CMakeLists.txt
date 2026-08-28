@@ -51,6 +51,18 @@ set(KROMOSYNTH_BROWSER_INSET "0" CACHE STRING
 set(KROMOSYNTH_WEB_APP_URL "https://synth.is" CACHE STRING
     "Deployed synth.is web app origin loaded into the plugin webview")
 
+# The instrument the sampler engine loads, compiled in as a define.
+#
+# A cache variable rather than a code edit, so switching artefacts is a
+# reconfigure. Deliberately NOT unified with the sfz-probe harness, which takes
+# argv: the whole point of the dump is comparing two artefacts, and a define
+# would make that two reconfigures. See STAGE0_FINDINGS.md F1.
+#
+# Empty is a valid configuration and means "build the engine, load nothing".
+# The plugin logs that and plays silence rather than failing.
+set(KROMOSYNTH_SFZ_PATH "" CACHE STRING
+    "Absolute path to the .sfz instrument the sampler engine loads")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

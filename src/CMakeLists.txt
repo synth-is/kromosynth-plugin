@@ -37,6 +37,13 @@ target_sources(KromosynthPlugin PRIVATE
     PluginEditor.h
 )
 
+if(KROMOSYNTH_BUILD_SAMPLER)
+    target_sources(KromosynthPlugin PRIVATE
+        SamplerEngine.cpp
+        SamplerEngine.h
+    )
+endif()
+
 kromosynth_configure_target(KromosynthPlugin)
 
 target_compile_definitions(KromosynthPlugin PRIVATE
@@ -71,7 +78,31 @@ target_link_libraries(KromosynthPlugin
 # and this binary ships to nobody. Add juce::juce_recommended_lto_flags when
 # Stage 1 starts producing signed builds.
 
+# KROMOSYNTH_HAS_SAMPLER is defined in BOTH configurations, 1 or 0, rather than
+# defined-or-absent. The sources use `#if KROMOSYNTH_HAS_SAMPLER`, and an
+# undefined identifier there is silently 0 — which is correct C++ and a bad
+# place to rely on silence.
 if(KROMOSYNTH_BUILD_SAMPLER)
     target_link_libraries(KromosynthPlugin PRIVATE sfizz::sfizz)
-    target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_SAMPLER=1)
+    target_compile_definitions(KromosynthPlugin PRIVATE
+        KROMOSYNTH_HAS_SAMPLER=1
+        KROMOSYNTH_SFZ_PATH="${KROMOSYNTH_SFZ_PATH}")
+
+    # Configure-time, because the runtime symptom of a typo'd path is an
+    # instrument that loads and plays silence — the same symptom as F11's
+    # culled-region case, and indistinguishable from it in a DAW. Catch it
+    # where it is cheap.
+    #
+    # Empty stays legal: it means "engine built, nothing loaded".
+    if(KROMOSYNTH_SFZ_PATH AND NOT EXISTS "${KROMOSYNTH_SFZ_PATH}")
+        message(FATAL_ERROR
+            "KROMOSYNTH_SFZ_PATH points at a file that does not exist:\n"
+            "    ${KROMOSYNTH_SFZ_PATH}\n"
+            "Note the two on-disk artefact layouts recorded in "
+            "STAGE0_FINDINGS.md E5: the hub uses ARTIFACT_STORAGE_PATH with "
+            "anonymous/<artifactId>, the local dev tree uses "
+            "<runId>/<artifactId>.")
+    endif()
+else()
+    target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_SAMPLER=0)
 endif()

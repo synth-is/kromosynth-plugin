@@ -2327,3 +2327,219 @@ polyphony budget should assume 5, not 10 — but only for artefacts regenerated
 after this fix. **Every XY artefact currently on disk still has the overlap**,
 including the one in `data/vi-artifacts/ymn5rj11wx4kuhk/`. Regenerating them is
 a separate decision.
+
+---
+
+# I. TASK 3 — THE PLUGIN ENGINE — session of 2026-08-27 (third)
+
+The plugin plays. `SamplerEngine` exists, the archive is no longer dropped, and
+the AU renders audio under `auval` at every sample rate it tests.
+
+**The headline is a prediction failing in the useful direction.** The open
+question flagged as "most likely to block Stage 1" — release-build cold-open
+time — is not a problem, and the Debug numbers that made it look like one
+overstated it by roughly two orders of magnitude.
+
+## I1. The archive is no longer dropped, measured rather than asserted
+
+Every prior session recorded "nothing in `src/` references sfizz, so the linker
+drops the archive" as a reasoned claim. It is now a measurement, before and
+after:
+
+| | before | after |
+|---|---|---|
+| `nm Synth.is \| grep -c sfizz` (Debug AU) | **0** | **17** |
+| Debug AU binary | 34.3 MB | 40.5 MB |
+
+The Debug archive is 37.5 MB and the binary grew by 6.2 MB, so the linker is
+still discarding most of it correctly. Only what the engine references is
+pulled in.
+
+## I2. Release cold-open — the Stage 1 blocker is not one
+
+`release` could never have answered this: it inherits `stage0`, which sets
+`KROMOSYNTH_BUILD_SAMPLER=OFF`, and it also sets `KROMOSYNTH_UNIVERSAL_BINARY=ON`,
+which `cmake/Sfizz.cmake` hard-errors on (§E2). **The question was
+unmeasurable, not unmeasured.** Added `sampler-release`: Release, sampler ON,
+native arch, separate build dir.
+
+| | Debug | Release |
+|---|---|---|
+| `libsfizz_internal.a` | 37.5 MB | **3.8 MB** |
+| AU binary | 40.5 MB | **12.6 MB** |
+| `loadSfzFile`, cold | 44.9 ms | **31.9 ms** |
+| `loadSfzFile`, warm | 19.7 ms | **6.0–7.6 ms** |
+| full `auval` wall clock | 2.96 s | **0.91 s cold, 0.32 s warm** |
+
+Loading a 42-region, 15 MB artefact costs single-digit milliseconds warm. The
+reason is `config::preloadSize` — sfizz reads the first 8192 frames of each
+sample and streams the rest, so a 42-sample instrument preloads about 2.75 MB,
+not 15 MB.
+
+**The earlier 641–1661 ms figures in this session's planning were a bad
+proxy.** They were whole-process wall clock for `sfz-probe`, which is dominated
+by process startup and the probe's own 255-path introspection. Measuring the
+load from inside the thing that does it gave a number 100× smaller. A proxy
+that shares no code with the thing it stands in for is not a measurement of it.
+
+## I3. `renderBlock` renders silence, twice over, with no Release diagnostic
+
+Found by reading, before writing the engine, and it is why the render is
+chunked rather than passed straight through.
+
+`Synth::renderBlock` zeroes the output buffer first (`Synth.cpp:1102`), then
+asks `BufferPool::getStereoBuffer(numFrames)`. `BufferPool` sizes its buffers
+to exactly the last `setBufferSize` and returns an empty holder when asked for
+more (`BufferPool.h:133-136`). `renderBlock` then returns at
+`Synth.cpp:1130-1133` behind a bare `DBG()`, which is compiled out in Release.
+
+The same trap a second time: `setSamplesPerBlock` carries
+`ASSERT(samplesPerBlock <= config::maxBlockSize)` with `maxBlockSize` 8192
+(`Config.h:25`), and `ASSERT` is also a no-op in Release
+(`utility/Debug.h:60`).
+
+So an oversized block is a silent instrument with an empty log, by two
+independent routes. The engine chunks at `min(hostBlock, preparedBlock, 8192)`.
+
+**Verified rather than assumed.** The first auval run reported
+`max_chunks=1` — the loop had never looped, so the defence was untested code
+guarding an untested failure. Temporarily forcing the prepared block to 64 and
+rerunning gave `max_chunks=64` against a 4096-frame host block, with auval
+still passing and audio still rendering. Reverted; the finding stays in the
+source comment.
+
+That experiment also showed **chunking is not bit-identical**: the same auval
+render peaked at 0.157102 unchunked and 0.157467 at a forced 64. sfizz smooths
+controls per block, so a smaller block is finer granularity. Inherent to any
+block-size change rather than a defect, and the argument for chunking at the
+prepared size rather than at some fixed small one.
+
+## I4. `suspendProcessing` IS the OFF barrier — read from JUCE, not assumed
+
+The open question was: `setSampleRate` and `setSamplesPerBlock` are documented
+OFF, JUCE calls `prepareToPlay` before `processBlock`, but hosts change sample
+rate mid-session — what is the correct guard?
+
+`suspendProcessing(true/false)` is sufficient, for both our formats at this
+JUCE pin:
+
+- Both wrappers hold `AudioProcessor::getCallbackLock()` across the **whole**
+  `processBlock` call and test `isSuspended()` **inside** that lock
+  (`juce_audio_plugin_client_AU_1.mm:2189-2203`,
+  `juce_audio_plugin_client_VST3.cpp:3714-3735`).
+- `AudioProcessor::suspendProcessing` takes the same lock
+  (`juce_AudioProcessor.cpp:583-587`).
+
+So it cannot return while a block is in flight, and no later block can enter
+our code until the flag clears. The same lock supplies the happens-before edge
+that makes the engine pointer swap legal without atomics.
+
+One AU path calls `prepareToPlay` while **already holding** that lock
+(`AU_1.mm:804-809`, the offline-render property setter).
+`juce::CriticalSection` is a recursive pthread mutex
+(`juce_SharedCode_posix.h:42`), so this re-acquires rather than deadlocking —
+and on that path the audio thread is already excluded by the same lock, so it
+does not need to be a barrier.
+
+**Held as a source reading, not a measurement.** It is a statement about these
+two wrappers at JUCE 9.0.1, and a host that changes sample rate mid-session has
+not actually been observed doing it here.
+
+## I5. `auval` exits 0 for a completely broken instrument
+
+Pointed `KROMOSYNTH_SFZ_PATH` at `tools/sfz-probe/testdata/negative-control.sfz`
+and rebuilt. The F11 guard fired exactly as designed:
+
+```
+sampler_load ok=0 regions=0 voices=64 ms=1.6
+  detail="parsed, but every region was culled: check default_path ..."
+```
+
+and **auval exited 0 anyway**, with every test passing.
+
+This is worth stating plainly because it bounds what the Task 1 and Task 3
+auval results mean. `auval` validates the AU *contract* — properties, formats,
+sample rates, channel configurations, render without crashing. It does not
+validate that the instrument makes a sound. A VI artefact with a broken
+`default_path` would pass every automated check in this repository and be
+silent in the DAW. The `sampler_load` and `sampler_render_stats` log lines are
+the only things that catch it.
+
+## I6. The render did happen — but only after the diagnostic was fixed
+
+The first auval run under the finished engine reported
+`blocks=0 frames=0 peak=0.000000`, which reads exactly like the F11 failure
+surviving to the audio thread.
+
+It was the diagnostic. `logRenderStats` had a once-only guard, and auval calls
+`releaseResources` during its property and configuration passes long before it
+renders anything, so the single line it emitted latched at zero for a plugin
+that went on to work correctly. Removing the guard and logging cumulatively
+gives the real answer:
+
+```
+sampler_render_stats reason=destructor blocks=24 frames=18633
+  peak=0.157102 max_host_block=4096 max_chunks=1
+```
+
+**Sixth instance across five sessions of the standing rule.** A diagnostic that
+reports the exact failure it was built to detect, for a healthy build, is worse
+than no diagnostic — it would have sent the next hour into sfizz. Caught only
+because the rule says to check the instrument first.
+
+Both artefacts render: RR peaks at 0.157102, XY at 0.151058, 20 regions, load
+27.0 ms Debug.
+
+## I7. What the engine does, and the three things that are deliberate
+
+`SamplerEngine`, one concrete class, no abstraction — there is still only one
+engine (top-level `CMakeLists.txt`), and the Faust engine is still gated on
+`EXPERIMENT_01`.
+
+- **The engine does not own the OFF barrier; the processor does.** The barrier
+  is a JUCE concept, and an engine reaching up into `suspendProcessing` would
+  be harder to test and to reuse.
+- **The `sfz::Sfizz` instance is created lazily on the first `prepareToPlay`,
+  not in the constructor.** Hosts instantiate during scans and time out doing
+  it. This keeps the scan footprint at exactly what Task 1 measured and makes
+  every millisecond sfizz costs attributable to activation. Given I2, this now
+  looks like more caution than the numbers require — keeping it anyway, because
+  the numbers are for two artefacts on a warm page cache.
+- **A failed load leaves `loaded_` false, so the caller retries on every
+  `prepareToPlay`.** A failed load of a culled file costs 0.7 ms, and an
+  artefact that appears later is then picked up. The cost is a repeated log
+  line, which the negative-control run shows as three identical lines.
+
+MIDI translation is deliberately dumb and complete. Every CC goes through
+verbatim, because sfizz implements all-sound-off, all-notes-off and
+reset-all-controllers itself inside `cc()` (`Synth.cpp:1485-1492`) — filtering
+would break panic handling. Two consequences: sfizz's API has **no channel
+argument anywhere**, so the instrument is omni by construction; and §F8.3's
+injected cc7/cc10/cc11 bindings now move when the host moves them.
+
+`KROMOSYNTH_SFZ_PATH` is a cache variable with a **configure-time** existence
+check, deliberately not unified with the harness's argv (§F1). Configure-time
+because the runtime symptom of a typo is an instrument that loads and plays
+silence — the same symptom as I5, and indistinguishable from it in a DAW.
+
+## I8. Still open after this session
+
+- **`getTailLengthSeconds()` returns 0.0 and is now wrong.** Both artefacts
+  declare `ampeg_release=0.3` with `ampeg_release_oncc73=8`, so the real tail
+  runs 0.3 s to 8.3 s depending on CC73. A host that believes 0.0 truncates
+  release tails on bounce or freeze — exactly the artefact §C's A/B trap would
+  surface as "the plugin sounds wrong compared to the audition". Left wrong
+  with the reasoning in the source. The Stage 1 fix is to read `ampeg_release`
+  and its CC depth through the introspection API **at load time**, which is
+  legal inside the suspend window where no RT call can be in flight.
+- **VST3 is entirely untested with audio.** `auval` is AU-only, and there is no
+  VST3 host on this machine. §A3.1c found the formats diverge on UI layout;
+  whether they diverge on audio is unknown. This is the largest untested
+  surface left.
+- **Voice count under a real chord in a real host.** Left at sfizz's default 64
+  (`Config.h:37`), which is about twelve notes at §G4's five voices each.
+  `setNumVoices` deliberately not called: voice stealing is audible and that
+  decision should follow a measurement.
+- **Does it sound right, or only measure right?** Everything in this section is
+  a number. Nobody has listened to it in a DAW.
+- **Signing** (§A2) is still load-blocking on Apple hosts and still unaddressed.

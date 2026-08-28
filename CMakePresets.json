@@ -80,6 +80,17 @@
       "description": "Gated on Task 1 passing. Requires the third_party/sfizz submodule.",
       "binaryDir": "${sourceDir}/build/sampler",
       "cacheVariables": { "KROMOSYNTH_BUILD_SAMPLER": "ON" }
+    },
+    {
+      "name": "sampler-release",
+      "inherits": "sampler",
+      "displayName": "Task 2 — sampler, Release, native arch",
+      "description": "The only preset that can answer the cold-open question. `release` cannot: it inherits stage0, which sets KROMOSYNTH_BUILD_SAMPLER=OFF, and it also sets KROMOSYNTH_UNIVERSAL_BINARY=ON, which cmake/Sfizz.cmake hard-errors on (E2, no single PROJECT_SYSTEM_PROCESSOR value produces correct flags for both slices). Native arch only, so this is a MEASURING build and not a distributable one — the universal question is still open and still gated on the pin question in WP §9.",
+      "binaryDir": "${sourceDir}/build/sampler-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "KROMOSYNTH_UNIVERSAL_BINARY": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -91,6 +102,7 @@
     { "name": "stage0-inset", "configurePreset": "stage0-inset" },
     { "name": "stage0-xcode", "configurePreset": "stage0-xcode", "configuration": "Debug" },
     { "name": "release", "configurePreset": "release", "jobs": 0 },
-    { "name": "sampler", "configurePreset": "sampler", "jobs": 0 }
+    { "name": "sampler", "configurePreset": "sampler", "jobs": 0 },
+    { "name": "sampler-release", "configurePreset": "sampler-release", "jobs": 0 }
   ]
 }
