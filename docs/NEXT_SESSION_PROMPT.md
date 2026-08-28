@@ -33,8 +33,8 @@ validation. Report failures as findings, not as things to work around.
 
 ## Repository state
 
-`kromosynth-plugin`: clean, ~15 commits, **still no remote configured**. Björn
-said he would set one up; it has not happened, so nothing here is backed up.
+`kromosynth-plugin`: clean, 18 commits, no remote yet — Björn is handling it.
+Do not raise it again.
 
 `kromosynth-projects`: the daw-plugin documents are now tracked (`1d6c840`,
 `48fda2c`). Five untracked files remain, none cited by anything tracked.
@@ -175,9 +175,11 @@ Every one of these was earned this session.
   was in the vendored submodule while it was being guessed (§N1).
 - Non-ASCII in C++ string literals is mangled. ASCII or `juce::CharPointer_UTF8`.
 - Selective git staging; never `git add -A` in a repo with unrelated WIP.
-- **Load-bearing work outside version control is a recurring failure here.**
-  Four hub-only fixes in `kromosynth-recommend`, the entire `daw-plugin/`
-  directory, and a pre-registered rule cited by a committed result. Check.
+- **Load-bearing work outside version control turned up three times in one
+  session** — four hub-only fixes in `kromosynth-recommend`, the whole
+  `daw-plugin/` directory, and a pre-registered rule cited by a committed
+  result. Worth a glance when something is referenced but never diffed. Not
+  worth repeating as advice: Björn is aware and it is his call.
 
 ## Elsewhere, not the plugin
 
