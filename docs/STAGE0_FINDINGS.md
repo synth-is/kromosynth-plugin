@@ -2758,3 +2758,54 @@ missing is not a clean measurement environment for anything realtime.
 first one where the missing evidence was not on my screen at all.** Worth
 generalising: when a tool is driven non-interactively, its interactive output
 channel still exists and is invisible. Ask what the human sees.
+
+## J7. The dialog, screenshotted — two invented project tokens, and a resampler
+
+Björn screenshotted what Reaper had been showing. Two dialogs, and both matter.
+
+**"Project Load Warning: Project tokens not recognized: RENDER_CHANNELS,
+RENDER_SRATE."** Both were invented. §J2 recorded that `RENDER_SRATE` "has no
+effect"; the truth is that it is not a project token at all and Reaper was
+saying so on screen the whole time.
+
+Note the trap for next time: **both strings are present in the Reaper binary**,
+so `strings | grep RENDER_` finds them and looks like confirmation. They exist
+in some other scope. Grepping a binary for a token proves the token exists
+somewhere, not that it is valid where you are about to write it.
+
+The real control is `RENDER_FMT`, whose **first field is the render sample
+rate** (0 meaning "follow the project"). And `SAMPLERATE`'s second field is a
+force flag: at 0 Reaper follows the audio device, which on this machine is
+missing, so the rate was an arbitrary fallback. Corrected to
+`SAMPLERATE 48000 1 0` and `RENDER_FMT 48000 2 0`.
+
+**This removes a resampler that was sitting inside every measurement.** Before,
+the plugin ran at 48 kHz and Reaper wrote a 44.1 kHz file, and §J2 explained
+the resulting peak mismatch as resampling without treating it as a defect. With
+the rates matched:
+
+| | plugin internal peak | file peak |
+|---|---|---|
+| before (48k plugin, 44.1k file) | 0.284902 | 0.290205 |
+| after (48k throughout) | 0.285012 | **0.285012** |
+
+Exact to six decimals. The render harness is now transparent, which it needed
+to be before anything is compared through it. The §J3 velocity-layer result
+survived the resampler because crest factor is scale-invariant, but that was
+luck rather than design.
+
+**"Error opening CoreAudio device: AirPods Pro."** Separate dialog, with a "Do
+not show this window again" checkbox. Offline rendering does not need the
+device, so renders complete — but combined with the `SAMPLERATE` force flag
+above, a missing device was silently choosing the project sample rate.
+
+**Also visible in the screenshot: the title bar reads "REAPER v7.79 —
+EVALUATION LICENSE."** Relevant only because an unlicensed Reaper shows a nag
+dialog on startup, which is a third thing standing between this harness and
+being genuinely unattended. Worth knowing before relying on it in any automated
+loop.
+
+**Generalisation, now a standing rule.** When a tool is driven
+non-interactively, its interactive output channel still exists and is invisible
+from here. Two separate wrong conclusions in this session came from evidence
+that was on a screen rather than on stdout. Ask what the human sees, early.

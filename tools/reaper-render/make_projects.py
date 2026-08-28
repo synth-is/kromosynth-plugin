@@ -171,18 +171,16 @@ def fx_block(kind, vst3_int_id, vst3_uid, vst3_label):
 
 PROJECT = """<REAPER_PROJECT 0.1 "7.79/macOS-arm64" 1
   TEMPO 120 4 4
-  SAMPLERATE 44100 0 0
+  SAMPLERATE {rate} 1 0
   RENDER_FILE ""
   RENDER_PATTERN ""
-  RENDER_FMT 0 2 0
+  RENDER_FMT {rate} 2 0
   RENDER_1X 0
   RENDER_RANGE 1 0 0 18 1000
   RENDER_RESAMPLE 3 0 1
   RENDER_ADDTOPROJ 0
   RENDER_STEMS 0
   RENDER_DITHER 0
-  RENDER_CHANNELS 2
-  RENDER_SRATE 48000
   <RENDER_CFG
     {render_cfg}
   >
@@ -205,6 +203,24 @@ PROJECT = """<REAPER_PROJECT 0.1 "7.79/macOS-arm64" 1
   >
 >
 """
+
+# Project sample rate. SAMPLERATE's second field is a FORCE flag: at 0 Reaper
+# follows the audio device instead, which on a machine whose device is missing
+# means an arbitrary fallback. At 1 the project rate is authoritative, which is
+# what a reproducible render needs.
+#
+# RENDER_FMT's first field is the render sample rate; 0 means "use the project
+# rate". Set explicitly so the file rate and the rate the plugin is prepared at
+# are the same number, and no resampler sits between the plugin and the
+# measurement.
+#
+# RENDER_CHANNELS and RENDER_SRATE are NOT project tokens. Both strings exist
+# in the Reaper binary, so grepping for them is not evidence, and an earlier
+# version of this file used both. Reaper reported them in a "Project tokens not
+# recognized" dialog -- which was invisible here, because the dialog went to a
+# human's screen and not to stdout. See STAGE0_FINDINGS.md J6/J7.
+SAMPLE_RATE = 48000
+
 
 # "evaw" + int32 bit depth. 24 bit is 144 dB of headroom, far more than a
 # format comparison needs, and it avoids guessing a float-flag encoding.
@@ -231,6 +247,7 @@ def main():
             midi=midi_source_block("      "),
             fx=fx_block(kind, vst3_int_id, vst3_uid, vst3_label),
             render_cfg=RENDER_CFG_WAV24,
+            rate=SAMPLE_RATE,
         )
         path = os.path.join(out_dir, kind + ".rpp")
         with open(path, "w") as handle:
