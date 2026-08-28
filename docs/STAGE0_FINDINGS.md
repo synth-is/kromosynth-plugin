@@ -3129,3 +3129,80 @@ scripts/notarize.sh
 has been granted a permanent security exception, so a clean load here proves
 nothing about a fresh install. This is the one part of the signing question
 that cannot be answered on the development machine.
+
+## L5. Certificate obtained; signing verified end to end except notarisation
+
+Developer ID Application certificate created and installed:
+
+```
+Developer ID Application: Nemur net ehf. (ATA8MQ4L7K)
+```
+
+Built with `-DKROMOSYNTH_SIGN_IDENTITY="Developer ID Application: Nemur net ehf. (ATA8MQ4L7K)"`.
+The **installed** bundles — the ones hosts actually load, which is what §L2's
+ordering work was about — now read:
+
+| | before | after |
+|---|---|---|
+| flags | `0x2(adhoc)` | `0x10000(runtime)`, adhoc bit gone |
+| Authority | none | Developer ID Application → Developer ID CA → Apple Root CA |
+| TeamIdentifier | not set | `ATA8MQ4L7K` |
+| Timestamp | none | secure timestamp present |
+| `spctl -t install` | **rejected** | **Unnotarized Developer ID** |
+
+`auval` passes under Developer ID + hardened runtime.
+
+`spctl` moving from *rejected* to *Unnotarized Developer ID* is the expected
+intermediate state: the signature is trusted, the notarisation ticket is not yet
+present. §L1's reference plugins both read *Notarized Developer ID*.
+
+### Certificate validity is unusually short — worth checking
+
+```
+notBefore = Aug 28 13:40:41 2026 GMT
+notAfter  = Feb  1 22:12:15 2027 GMT
+```
+
+**157 days.** Developer ID Application certificates are normally issued for five
+years, so this is worth understanding rather than ignoring — most likely it is
+pinned to the membership's renewal date.
+
+Two consequences, and the first is reassuring:
+
+- **Already-signed and notarised builds keep working after expiry.** This is
+  exactly what `--timestamp` buys: the secure timestamp proves the signature was
+  made while the certificate was valid. Without it, every signature would break
+  on expiry. Worth knowing that flag is load-bearing rather than decorative.
+- **New builds cannot be signed after 1 Feb 2027** without re-issuing. If the
+  short validity is not intentional it is better resolved now than during a
+  release.
+
+### Remaining: notarisation credentials
+
+Cannot be done for Björn — it needs an app-specific password from
+appleid.apple.com, not the Apple ID password:
+
+```
+xcrun notarytool store-credentials "kromosynth" \
+    --apple-id "<apple id>" \
+    --team-id "ATA8MQ4L7K" \
+    --password "<app-specific password>"
+
+scripts/notarize.sh
+```
+
+After stapling, `spctl` should read *Notarized Developer ID*, matching §L1's
+reference plugins. `scripts/notarize.sh` checks exactly that and fails if not.
+
+### Then the part that cannot be done on this machine
+
+§A2: GarageBand here holds a permanent security exception, granted while
+testing the ad-hoc build. A clean load on this Mac proves nothing. The claim
+being tested — that a properly signed and notarised plugin never shows the
+"Lower Security Settings" dialog — needs a Mac that has never been given the
+exception.
+
+Note also that the certificate was created using an Xcode 27 launched from
+Downloads, while `xcode-select` points at `/Applications/Xcode.app` (26.6).
+Irrelevant for certificate creation, and `notarytool` from 26.6 is fine, but
+worth knowing the toolchain building the plugin is not the one that was open.
