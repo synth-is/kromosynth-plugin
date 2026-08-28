@@ -2809,3 +2809,137 @@ loop.
 non-interactively, its interactive output channel still exists and is invisible
 from here. Two separate wrong conclusions in this session came from evidence
 that was on a screen rather than on stdout. Ask what the human sees, early.
+
+---
+
+# K. LISTENING FOUND WHAT MEASURING MISSED
+
+Björn listened to the renders. His report: *"I hear one sound getting louder 3
+times, then a chord, seemingly of the same sound."*
+
+He is right, my §J3 conclusion was wrong, and the evidence had been in front of
+me the whole time.
+
+## K1. What §J3 got wrong
+
+§J3 reported the three velocity bands giving "three distinct crest values" and
+concluded the velocity layers work. The values were **0.193114 / 0.191251 /
+0.190306** — a 1.5% spread. §G6's note 55, the case that motivated the method,
+spread 2.8% and 8.3%.
+
+I called them distinct without asking *distinct by more than what*. §G7.3
+already established that a statistic compared for equality needs a tolerance;
+I applied the statistic and skipped the tolerance. A 1.5% spread is not
+evidence of three different samples — it is evidence of three nearly identical
+ones, which is exactly what it turned out to be.
+
+**The plugin was never the problem.** It switches samples correctly at exactly
+the declared boundaries, as §G6 measured. The samples it switches between are
+the same sound.
+
+## K2. The measurement, done properly
+
+For each pair of velocity layers, fit the best scalar gain `k` minimising
+`|A - kB|`, then report the residual energy. Near 0% means "same waveform,
+different gain only" — which is what a listener hears as one sound getting
+louder.
+
+All 21 velocity-layer pairs in the RR artefact, across all 7 keycentres:
+
+| key | v1 vs v2 | v1 vs v3 | v2 vs v3 |
+|---|---|---|---|
+| 048 | 1.23% | 3.37% | 0.71% |
+| 055 | 1.93% | 5.33% | 1.10% |
+| 062 | 1.39% | 3.73% | 0.75% |
+| 069 | 1.56% | 4.18% | 0.83% |
+| 076 | 2.02% | 5.32% | 1.03% |
+| 083 | 2.03% | 5.32% | 1.03% |
+| 084 | 1.76% | 4.64% | 0.91% |
+
+**Median 1.76%, maximum 5.33%.** Every velocity layer in the instrument is the
+same waveform at a different gain. The feature is decorative, exactly as §G5
+found for round robins.
+
+## K3. Root cause — velocity barely reaches the synthesis, and normalisation
+finishes the job
+
+Two independent mechanisms, both verified:
+
+**1. Velocity enters the CPPN in exactly one place, and is commented out in
+another.** `kromosynth/util/gpu-functions.js`:
+
+```js
+line 16:  return ((rangeFraction * 2) - 1); //* this.constants.velocity;
+line 27:  return extraInput * this.constants.velocity;
+```
+
+It survives only as a scalar on one input signal to the network. That is enough
+to perturb the output slightly — which is why the residuals are 1-5% rather
+than 0% — and nothing like enough to make a velocity layer.
+
+**2. Every rendered sample is normalised to full scale.** All 42 WAVs in the
+artefact peak at **exactly 0.999969** (32767/32768). Whatever level difference
+velocity did produce is erased before the sample reaches the SFZ. The SFZ's
+`amp_veltrack` then re-applies a pure gain at playback.
+
+Net effect: one sound, three gains. Which is what was heard.
+
+## K4. §G5 explained — round robins are asked for the same thing twice
+
+§G5 found 10 of 21 round-robin pairs byte-identical and left it "unexplained",
+leaning toward "something conditional in the render path".
+
+It is not conditional. `kromosynth-vi/src/services/sampleMatrix.js` builds
+`renderParams` inside the round-robin loop, but `rr` only reaches it through
+`layerParams`, which is null when there are no per-sound layer parameters. With
+`layerParams` null, `renderParams` for `rr=1` and `rr=2` is **identical**: same
+`noteDelta`, same `velocity`, same `duration`, null geometrics.
+
+The render service is handed the same genome and the same parameters twice.
+Byte-identical output is the *correct* result. The 11 pairs that do differ
+differ through non-determinism in the render path, not intent — which also
+explains §G5's "not uniform across velocity bands" observation, recorded there
+as evidence for a conditional path. It is evidence of non-determinism instead.
+
+Noted in passing, not the active bug: `velocity: layerParams?.velocity || vel.velocity`
+uses `||`, so a legitimate layer velocity of 0 would silently fall through to
+the default.
+
+## K5. Why the instruments needed a listener
+
+Three separate measurements said this instrument was fine:
+
+- §F3: 42 regions, zero unknown opcodes, nothing rejected.
+- §G6: velocity switching at exactly the declared boundaries.
+- §J3: velocity layers surviving the whole plugin path.
+
+All three are true. None of them asked whether the samples differ, because
+every one of them was a test of the *sampler*, and the sampler is correct.
+Sample content was never in the test set.
+
+Björn heard it in about ten seconds.
+
+**Standing rule.** A measurement chain that only ever tests the playback path
+cannot detect an instrument whose content is degenerate. Every statistic here
+was scale-invariant *by design* — chosen precisely so gain changes would not
+confuse it — which made the whole apparatus structurally blind to "same sound,
+different gain". When every instrument in a chain is invariant to X, nothing in
+the chain can see X.
+
+## K6. Also: the test file is badly shaped
+
+"not for four seconds" — the render is 10 s with the last note-off at 5 s and a
+0.3 s release, so roughly 4.7 s of trailing silence. That is the test MIDI's
+fault. Worth fixing before the next listen, along with holding notes long
+enough to hear the body rather than the attack.
+
+## K7. Consequences
+
+- The plugin work in §I and §J stands. Nothing here is a plugin defect.
+- **Velocity layers and round robins are both hollow in `kromosynth-vi`
+  output.** Two of the three variation axes the VI generator advertises
+  currently produce one sound. This is a generator finding and it is more
+  consequential than anything in the plugin.
+- §E6.2/§H fixed the *key range* overlap. This is a different and larger
+  problem in the same generator.
+- Every VI artefact on disk is affected.
