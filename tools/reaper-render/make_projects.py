@@ -21,6 +21,28 @@ producing a project with a silently unresolved FX slot.
 
 Usage:
     python3 make_projects.py <output-dir>
+
+Then render, and ALWAYS with these flags:
+
+    REAPER=/Applications/REAPER.app/Contents/MacOS/REAPER
+    $REAPER -nosplash -ignoreerrors -splashlog /tmp/r.log \\
+            -renderproject <output-dir>/vst3.rpp
+
+The flags are not cosmetic and they are not optional.
+
+Without them Reaper puts up a modal dialog that a human has to dismiss, so the
+"headless" render silently is not one. Discovered only because Bjorn mentioned
+he had been clicking them away.
+
+-splashlog is the diagnostic. It writes, per FX:
+
+    Project: loading t1 FX: <name>     attempting
+    Project: loaded  t1 FX: <name>     instantiated      <- VST3 does this
+    Project: offline t1 FX: <name>     gave up, shelved  <- AU does this
+
+That line is the ONLY thing distinguishing "the plugin rendered silence" from
+"there was never a plugin". A silent WAV looks exactly like the F11
+culled-region failure, so never read a render result without reading this too.
 """
 
 import base64

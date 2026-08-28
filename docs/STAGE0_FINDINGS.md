@@ -2690,3 +2690,71 @@ reported a load cost that silently excluded all of them. Timed separately:
 - **Nobody has listened to it.** `rr.wav` and `xy.wav` exist; that is not the
   same thing.
 - **Signing** (§A2), still load-blocking on Apple hosts, still unaddressed.
+
+## J6. The "headless" renders were not headless, and the AU diagnosis was wrong
+
+Björn reported that Reaper was putting up a modal dialog on every invocation,
+which he had been dismissing by hand — including five times during the §J2
+probe loop. So every render in §J2 to §J4 was human-attended without my knowing
+it. Two consequences, one procedural and one factual.
+
+**Procedural.** `REAPER -renderproject` is not unattended by default. Three
+flags fix it, and the third is not cosmetic:
+
+```
+-nosplash                  no splash window
+-ignoreerrors              do not show errors on load
+-splashlog /path/to.log    write the load messages to a FILE, not a dialog
+```
+
+**Factual — §J2's conclusion was wrong.** §J2 said five hand-written `<AU>`
+formats "all failed to instantiate anything" and inferred the block was not
+being parsed. The splashlog says otherwise:
+
+```
+Project: loading t1 FX: AUi: Synth.is: Synth.is
+Project: offline t1 FX: AUi: Synth.is: Synth.is     [1914 ms]
+```
+
+Reaper **parses the block, resolves the name, attempts the load, spends 1.9
+seconds on it, and then shelves the FX offline.** That is a completely
+different failure from "the syntax is wrong", and I had no way to see it
+because the evidence was in a dialog on Björn's screen rather than on stdout.
+
+The control that settles the reading — and which should have been run first,
+again — is the VST3 project that demonstrably works:
+
+| | message | time | instance constructed |
+|---|---|---|---|
+| VST3 | `Project: loaded t1 FX` | 1316 ms | **yes** |
+| AU | `Project: offline t1 FX` | 1914 ms | no |
+
+`loaded` versus `offline` is the discriminator, and neither is visible in the
+rendered WAV.
+
+**Cause, partially identified, not fixed.** Reaper keeps two AU caches:
+`reaper-auplugins_arm64.ini`, which holds display names, and
+`reaper-auplugins_arm64-bc.ini`, which holds the four-character
+type/subtype/manufacturer codes needed to actually instantiate a component.
+Our plugin is in the first (`Synth.is: Synth.is=<inst>`) and **absent from the
+second**. Reaper knows the name and not how to load it.
+
+Adding a hand-computed line for `aumu`/`Krm0`/`Sthi` — codes confirmed against
+`auval` — changed the failure from 1914 ms to **10 ms**, so the entry is read
+and the diagnosis is in the right area, but it still shelves the FX. The `-bc`
+format has fields still being guessed at. The edit was reverted and the file
+verified byte-identical to its backup; guessing at another application's
+config on someone else's machine is where this stops.
+
+**The fix is a Reaper-saved project**, which populates both caches properly.
+
+**Also noted:** Reaper additionally warns that a previously-selected audio
+device (AirPods) is unavailable. Renders still complete, since offline
+rendering does not need the device, but §A3.1e already flagged that this
+machine's audio device configuration is unusual, and a host whose device is
+missing is not a clean measurement environment for anything realtime.
+
+**Fifth instance this session of the verify-the-diagnostic-first rule, and the
+first one where the missing evidence was not on my screen at all.** Worth
+generalising: when a tool is driven non-interactively, its interactive output
+channel still exists and is invisible. Ask what the human sees.
