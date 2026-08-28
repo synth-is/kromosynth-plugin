@@ -2943,3 +2943,60 @@ enough to hear the body rather than the attack.
 - §E6.2/§H fixed the *key range* overlap. This is a different and larger
   problem in the same generator.
 - Every VI artefact on disk is affected.
+
+## K8. CORRECTION — §K3 and §K4 over-claimed, and §K7 built a plan on it
+
+Björn's response to §K, and he is right on both counts.
+
+**On velocity (§K3).** Velocity *is* a signal into the CPPN networks and *can*
+affect articulation — "sometimes it sounds like hitting a string at different
+intensities". So the mechanism is intended and working, and
+`gpu-functions.js:16` being commented out is a design choice, not a regression
+I had discovered. Further, normalising each sample and letting `amp_veltrack`
+supply the level is **standard sampler practice**, not a bug that "erases" the
+velocity difference.
+
+What survives is much narrower and still worth having: **for this particular
+genome, velocity produces about 2% timbral change**, so its three velocity
+layers are perceptually one sound. That is a property of the sound, not a fault
+in the pipeline. Some genomes will articulate strongly under velocity; this one
+does not.
+
+**On round robins (§K4).** The web app has performance pads that can change
+network weights, and per-RR-layer settings can be assigned. That is exactly
+what `layerParamsPerSound` carries. It is an optional request field defaulting
+to `null` (`vi.js:158`), and the artefact under test was generated without it.
+
+So §K4's "the render service is asked for the same thing twice" is accurate as
+a description and **wrong as a diagnosis**. Nothing is broken. Round robins
+were not given variation because none was requested. §G5's byte-identical pairs
+are the correct output for that request.
+
+The residual product question — whether accepting `roundRobins: 2` without per-
+layer params should silently produce duplicates — is a footgun worth a thought,
+not a defect.
+
+**On scope (§K7), which is the real error.** Björn: *"aren't we just playing the
+files as they are defined by the SFZ?"* Yes. The plugin's contract is to play
+what the SFZ points at. Whether those files differ from each other is a VI
+generation concern and was never a plugin question.
+
+§K correctly attributed the observation away from the plugin and then
+incorrectly escalated it into "two of the three variation axes are hollow" and
+a recommendation to change project priorities. **A finding about one test
+artefact was generalised into a finding about the generator, and then into a
+plan.** The measurement in §K2 stands; every inference stacked on top of it
+did not.
+
+**Standing rule.** Attributing a finding outside the component under test is
+the *start* of the reasoning, not the end. Before escalating it into a defect
+in that other component, check whether the behaviour is configured, intended,
+or documented there — and prefer asking the person who built it over inferring
+from its source. Two of the three §K conclusions would have been avoided by one
+question.
+
+**What actually remains actionable**, and it is small: a VI whose layers are
+near-identical is larger than it needs to be for no benefit. A cheap residual
+check at generation time — fit a gain between layers, report the leftover —
+could warn "these 3 velocity layers are 98% identical, 1 would do". That is a
+genuine improvement and it is nobody's bug.
