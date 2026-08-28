@@ -1,242 +1,196 @@
 # Next session prompt
 
-Copy-paste into a fresh session. Written at the end of the plugin-engine
-session, 2026-08-27 (third session that day). Supersedes
-`NEXT_SESSION_PROMPT.2026-08-27b.md`.
+Copy-paste into a fresh session. Written at the end of the signing + shell
+session, 2026-08-28. Supersedes `NEXT_SESSION_PROMPT.2026-08-28a.md`.
 
 ---
 
-Continue work on the Synth.is DAW plugin. Task 1 (webview) passed. Task 2
-(SFZ conformance) is answered by measurement. **Task 3, the plugin engine, is
-written and works** — see §I of `STAGE0_FINDINGS.md`.
-
-The archive is no longer dropped: `nm` on the Debug AU went from 0 to 17 sfizz
-symbols. The AU renders audio under `auval` at every sample rate it tests, for
-both artefacts on disk.
+Continue work on the Synth.is DAW plugin. **Stage 0 is complete and Stage 1 has
+started.** The plugin is signed, notarised, loads in GarageBand with no security
+dialog, plays instruments, and serves its own offline UI from which you can
+switch between them.
 
 Use the filesystem MCP and the shell. Be critical; I want pushback, not
 validation. Report failures as findings, not as things to work around.
 
 ## Context to load
 
-- `docs/STAGE0_FINDINGS.md` — read **§I in full** first; it is this session's
-  starting state. §F and §G are the SFZ format answers and are still accurate.
-  §C (audition stays in the webview, the plugin plays instruments) is the scope
-  decision that still matters. The TASK 1 VERDICT at the top is still accurate.
-- `src/SamplerEngine.{h,cpp}` — the engine. The header comment is the
-  thread-safety contract and the reason the render is chunked; both are load-
-  bearing and both are read out of vendored source with line numbers.
-- `src/PluginProcessor.cpp` — the OFF-thread barrier lives in `prepareToPlay`
-  and is the one part of that file that is **not** disposable.
-- `tools/sfz-probe/main.cpp` — still the reference for direct sfizz use, and
-  now also the regression test for `kromosynth-vi` (§H3).
-- `cmake/Sfizz.cmake` — two upstream workarounds with the reasoning inline. Do
-  not remove either without reading §E2 and §E3.
+- `docs/STAGE0_FINDINGS.md` — read **§L, §M and §N first**; they are this
+  session's state. §A–§K are the Stage 0 record and still accurate, with
+  corrections recorded in place (§K8 and §L6 are corrections to earlier
+  findings — read those alongside what they correct, not instead of it).
 - `kromosynth-projects/Evolutionary Sound Discovery Platform/daw-plugin/WP_SYNTHIS_PLUGIN.md`
-  — **stale in known ways.** Six Task 1 findings plus everything in §E, §F, §G,
-  §H and now §I are unreconciled into it. STAGE0_FINDINGS.md is the newer truth.
+  — **reconciled 2026-08-28.** §11 is the reconciliation table; §12 is the
+  two-web-contexts decision that Stage 1 is built on. No longer stale.
+- `src/ShellPage.h` — the local UI. The invoke-protocol comment cites JUCE's
+  own frontend source; check against it rather than trusting the comment.
+- `src/InstrumentLibrary.{h,cpp}` — the local library and its path-traversal
+  guard.
+- `src/SamplerEngine.h` — the thread-safety contract and why the render is
+  chunked. Both read out of vendored source with line numbers.
+- `cmake/Signing.cmake`, `scripts/notarize.sh` — signing and notarisation, both
+  working. The ordering comment in Signing.cmake is load-bearing.
 
 ## Repository state
 
-`kromosynth-plugin` has **four** unpushed commits and no remote configured at
-all — "Björn pushes" currently has nowhere to push to. Worth deciding whether
-that is intentional (§E4.5's mirror question is adjacent).
+`kromosynth-plugin`: clean, ~15 commits, **still no remote configured**. Björn
+said he would set one up; it has not happened, so nothing here is backed up.
 
-`kromosynth-recommend`: `M src/routes/internalRoutes.js` (§E6.1) still
-uncommitted and still not deployed to the hub. The live service still returns
-500s.
+`kromosynth-projects`: the daw-plugin documents are now tracked (`1d6c840`,
+`48fda2c`). Five untracked files remain, none cited by anything tracked.
 
-`kromosynth-vi`: the §E6.2 `calculateKeyRange` fix is staged but **not
-committed** — that repo has unrelated WIP (§H).
+`kromosynth-recommend`: fully deployed and committed, including four
+uncommitted hub-only fixes found and committed on 2026-08-28 (`78c615f`).
 
 ## Build
 
 ```
-cmake --preset sampler         -DKROMOSYNTH_SFZ_PATH=/abs/path/instrument.sfz
-cmake --build --preset sampler
-
-cmake --preset sampler-release -DKROMOSYNTH_SFZ_PATH=/abs/path/instrument.sfz
+cmake --preset sampler-release \
+      -DKROMOSYNTH_SFZ_PATH=/abs/path/instrument.sfz \
+      -DKROMOSYNTH_SIGN_IDENTITY="Developer ID Application: Nemur net ehf. (ATA8MQ4L7K)"
 cmake --build --preset sampler-release
+./scripts/notarize.sh            # ~5 min, installs and staples
 
 auval -v aumu Krm0 Sthi
-tail -f ~/Library/Logs/Synth.is/stage0-<host>.log
+/Applications/pluginval.app/Contents/MacOS/pluginval --strictness-level 10 \
+    --skip-gui-tests --random-seed 0x1234 --validate <bundle>
+tail -f ~/Library/Logs/Synth.is/stage0-*.log
 ```
 
-`sampler-release` is new this session. `release` cannot build the sampler: it
-inherits `stage0` (sampler OFF) and sets universal ON, which `cmake/Sfizz.cmake`
-hard-errors on. The cold-open question was unmeasurable, not unmeasured.
+**Any rebuild re-signs and un-notarises.** Re-run `notarize.sh` before testing
+in an Apple host, or GarageBand will refuse the build.
 
-Empty `KROMOSYNTH_SFZ_PATH` is legal and means "engine built, nothing loaded".
-A non-empty path that does not exist is a configure-time `FATAL_ERROR`.
+**The certificate expires 1 Feb 2027** — 157 days from issue, where Developer ID
+certificates are normally five years. Already-notarised builds survive expiry
+because `--timestamp` proves the signature predates it; new builds will not be
+signable. Worth understanding before then (§L5).
 
-Test artefacts:
+Local instrument library: `~/Music/Synth.is/Instruments/<id>/instrument.sfz`,
+currently holding copies of the `rr` and `xy` artefacts.
 
-- velocity layers + round robins:
-  `~/Developer/apps/synth.is/kromosynth-vi/data/vi-artifacts/anonymous/b234fe6d-8423-489c-b60d-275b4471b069/`
-- XY morph:
-  `~/Developer/apps/synth.is/kromosynth-vi/data/vi-artifacts/ymn5rj11wx4kuhk/3f2477c2-b260-46ff-a08f-28cde501a84f/`
-- deliberately broken (F11 negative control):
-  `tools/sfz-probe/testdata/negative-control.sfz`
+Test tools, both developer-only and never shipped:
+`tools/sfz-probe` (sfizz directly), `tools/engine-probe` (SamplerEngine through
+arbitrary channel layouts), `tools/reaper-render` (headless DAW render — always
+with `-nosplash -ignoreerrors -splashlog`).
 
-## TASK — pick from these, they are not ordered by size
+## TASK — pick from these
 
 **Propose the design before writing it.**
 
-### 1. The AU leg of the Reaper render comparison.
+### 1. The site component and acquisition. The largest remaining piece.
 
-`tools/reaper-render/make_projects.py` renders fixed MIDI through the plugin via
-`REAPER -renderproject`. The VST3 leg works. The AU leg does not: five
-hand-written `<AU>` FXCHAIN header formats all failed to instantiate anything
-(§J2), and Reaper's AU serialisation is undocumented. It needs a project Reaper
-saved itself -- a two-minute GUI step, not a code problem.
+§12: a second `WebBrowserComponent` with native integration **off**, showing
+`https://synth.is`, and a channel back. The site cannot call native functions,
+so acquisition works by navigation interception — the site navigates to a
+sentinel URL, `pageAboutToLoad` recognises it, returns `false`, and the plugin
+acts.
 
-Note `pluginval` already shows AU and VST3 producing identical output with a
-pinned seed (§J1), so this is confirmation rather than discovery.
+The plugin half is small. **The web app half is Björn's** and needs discussing
+before either is written: what the sentinel URL looks like, what it carries, and
+what the plugin does with it (it must download the artefact itself — sfizz needs
+real files, and anything in the webview's OPFS is unreachable).
 
-### 1b. VST3 with audio -- LARGELY ANSWERED, see §J1.
+### 2. Gate 0 — the only thing that can still invalidate the architecture.
 
-`auval` is AU-only. §A3.1c already found the formats diverge on UI layout;
-whether they diverge on audio is unknown.
+`daw-plugin/EXPERIMENT_01_DSP_EXECUTION.md`, still **"protocol,
+pre-registered"** with no result. Runs in `kromosynth-render`, no JUCE, no
+plugin. Decides how an evolved `.dsp` becomes sound: WASM interpreted, WASM AOT,
+native AOT, or libfaust JIT (which cannot ship on iOS).
 
-**This is automatable with nothing new.** `REAPER -renderproject file.rpp`
-renders and exits. Reaper 7.79 is installed and hosts both AU and VST3
-in-process, so the same MIDI can go through both formats and the two WAVs can
-be diffed numerically — a number rather than an impression, per the standing
-rule. Live 11 Suite and Live 12 Beta are also installed for a second opinion.
+Everything else on this list is additive. This one is falsifying: if nothing
+reaches the polyphony target on Apple silicon, the WP's own gate says the Faust
+engine ships desktop-only and iOS carries the sampler alone — which changes what
+the plugin is. Better known before more is built on top.
 
-The fiddly part is producing the `.rpp`. Hand-writing one with a correctly
-identified VST3 is error-prone; the cheap move is to have Björn build the
-project once in the GUI (two tracks, one AU, one VST3, one shared MIDI item,
-same instrument) and commit it as a fixture. After that the comparison is a
-shell command and repeats forever.
+Note it wants a session that can sit with long measurements.
 
-### 2. Does it sound right, or only measure right?
+### 3. Display names. Small, blocked on a decision.
 
-Everything in §I is a number. Nobody has listened to it in a DAW. §C warns
-about exactly this A/B trap: the webview plays through the system output at the
-page's sample rate, the plugin through the host's bus, and a user who auditions
-then loads will compare them. **Note §I3's finding before doing this** —
-chunking is not bit-identical, so block size is very slightly audible, and any
-A/B has to hold it fixed. The standing rule about A/B listening applies: prefer
-a rendered diff over an impression, which task 1 above now makes cheap.
+Instruments currently show a ULID or a directory name (§N2). Neither is a name
+and the VI service emits neither. The SFZ header already carries `Range`,
+`Velocity Layers`, `Round Robins`, `XY Morph` — which would label better than
+either identifier. **Decide the convention with Björn before implementing**; do
+not accrete one.
 
-### 3. `getTailLengthSeconds()` — DONE, see §J4.
+### 4. Explicit bus layout. Small, and currently a false claim.
 
-Reads `ampeg_release` and its CC depths from sfizz at load time, caches in an
-atomic, returns 8.300 for both artefacts. Costs 0.6 ms. The remaining question
-is whether reporting the WORST case (8.3 s) rather than the default-CC case
-(0.3 s, measured) is the right trade -- it makes a host render 8 s of silence
-after every bounce.
+`auval` reports `[0, -1]` — the plugin advertises any output count to 8 — while
+`process()` fills two channels and clears the rest, and auval warns about the
+missing channel layout. Not broken (`engine-probe` confirms 1/2/6 all behave as
+described) but it claims more than it honours.
 
-### 4. Voice count under a real chord in a real host.
+### 5. Periodic stats flush. Small, and backwards today.
 
-Left at sfizz's default 64 (`Config.h:37`), about twelve notes at §G4's five
-voices each. `setNumVoices` deliberately not called: voice stealing is audible
-and the decision should follow a measurement. The Reaper render's four-note
-chord did not misbehave, but `getNumActiveVoices` is not sampled during a
-render, so this is still inferred. Adding a max-voices field to the render
-stats would settle it with the harness that already exists.
-
-### 5. Logic. Still the one untested host that matters.
-
-AU-only, so it inherits §A3.1c's resize finding at its worst, and it shares
-`AUHostingServiceXPC` with GarageBand, so it settles whether the storage
-boundary is the DAW or the hosting process. Now also the cheapest way to get
-tasks 2 and 4 at once.
+`sampler_render_stats` writes only on `releaseResources` and the destructor, so
+the log is silent exactly while the plugin is alive and working. §M1: this cost
+a channel-layout investigation to answer "did it make a sound". A low-frequency
+flush would make it a glance.
 
 ## Constraints
 
 - sfizz pinned at tag **1.2.3**, verified at configure time. `SFIZZ_USE_SNDFILE`
-  stays OFF and two assertions in `cmake/Sfizz.cmake` enforce it. Do not vendor
-  libsndfile.
-- **liquidsfz is deferred, not rejected** (§F2).
-- macOS AU + VST3 only. No Windows, Linux, iOS, CLAP.
-- Universal builds with the sampler hard-error by design (§E2). `sampler-release`
-  is a MEASURING build, native arch only, not a distributable one.
-- **No Faust engine.** Gated on `EXPERIMENT_01_DSP_EXECUTION.md`, still at
-  "protocol, pre-registered". The plugin already plays Faust-derived sounds
-  today, as samples, because the render already happened; Stage 2 buys live
-  parametric control, not access.
-- **No engine abstraction** until there is a second engine. One concrete class.
-- No auth, no quota, no local library. No UI, no webview bridge, no parameters,
-  no state.
-- No dependencies beyond JUCE and sfizz without asking. `pluginval` is a
-  developer tool in the `sfz-probe` category — never shipped, never linked — and
-  is the only way to turn §I4's barrier claim from a source reading into a
-  measurement, because its higher strictness levels change sample rate and block
-  size mid-session and call the plugin from unexpected threads. Available via
-  `brew install --cask pluginval`.
-- Do not adopt the `KROMOSYNTH_BROWSER_INSET` workaround. Recorded diagnostic,
-  not a fix.
-- git commits fine; do not push.
+  stays OFF. **liquidsfz is deferred, not rejected** (§F2), and §E4 found the
+  library repo archived — §9 of the WP defers this to Stage 3 on the milder
+  reading and should be revisited.
+- macOS AU + VST3 only. Universal builds with the sampler hard-error by design
+  (§E2); `sampler-release` is native-arch and a measuring build.
+- **No Faust engine** until Gate 0 returns.
+- **No engine abstraction** until there is a second engine.
+- Native integration stays **off** on any component showing the live site.
+- git commits fine; still no remote to push to.
 
 ## Standing rules
 
+Every one of these was earned this session.
+
 - Propose significant changes before writing them.
-- State hypotheses as hypotheses until log data settles them. §I4 is a source
-  reading and is labelled one.
 - **When a diagnostic and the thing it measures can both be broken, verify the
-  diagnostic first.** Six instances now across five sessions. §I6 is the most
-  recent: a once-only guard latched the render counter at zero and reported the
-  exact failure it was built to detect, for a healthy build.
-- **Never round-trip a measurement through its own display string** (§F9).
-- **A proxy that shares no code with the thing it stands in for is not a
-  measurement of it** (§I2). Whole-process wall clock for `sfz-probe` overstated
-  the sfizz load cost by about 100x.
-- **Build the minimal control first** (§G7.2).
-- A statistic you compare for exact equality cannot be normalised (§G7.3).
-- **Defensive code that never runs is not verified.** §I3: the chunk loop
-  reported `max_chunks=1` until it was deliberately forced. Force it, or say it
+  diagnostic first.** Seven instances now. The expensive failures all
+  *succeeded incorrectly*: a latched render counter reporting zero on a healthy
+  build (§I6), `auval` passing a fully culled instrument (§I5), a silent Reaper
+  render that was a missing plugin (§J2), a pre-flight that rejected a valid
+  signature via SIGPIPE (§L7), `spctl` reporting notarised for an unstapled
+  bundle (§L7). An error message is a cheap failure; a green light is not.
+- **When a tool is driven non-interactively, its interactive output channel
+  still exists and is invisible.** Two wrong conclusions came from evidence on
+  Björn's screen rather than stdout (§J6, §J7). Ask what the human sees, early.
+- **A proxy sharing no code with the thing it stands in for is not a
+  measurement of it** (§I2). Overstated sfizz's load cost by 100×.
+- **Grepping a binary for a token proves it exists somewhere, not that it is
+  valid where you are writing it** (§J7).
+- **Do not generalise from one example.** Two bugs this session from reading one
+  artefact's header and one plugin's signature (§N2, §L1).
+- **A statistic compared for equality needs a tolerance** (§G7.3). §J3 read a
+  1.5% spread as "distinct" and called hollow velocity layers working; a
+  listener caught it in ten seconds (§K).
+- **A chain of scale-invariant statistics cannot see a gain-only difference**
+  (§K5). When every instrument is invariant to X, nothing in the chain sees X.
+- **Attributing a finding outside the component under test is the start of the
+  reasoning, not the end** (§K8). Check whether the behaviour is configured or
+  intended there, and prefer asking the person who built it over inferring from
+  source.
+- **Defensive code that never runs is not verified** (§I3). Force it or say it
   is untested.
-- Read the actual tree you are reasoning about (§E1).
-- Every async callback crossing the C++/JS or C++/host boundary needs
-  `Component::SafePointer` or equivalent.
-- **Non-ASCII in C++ string literals is mangled.** ASCII or
-  `juce::CharPointer_UTF8`. Violated again this session, in a diagnostic string,
-  and caught by reading the log rather than by remembering the rule.
+- Read the actual tree you are reasoning about (§E1). The JUCE invoke protocol
+  was in the vendored submodule while it was being guessed (§N1).
+- Non-ASCII in C++ string literals is mangled. ASCII or `juce::CharPointer_UTF8`.
 - Selective git staging; never `git add -A` in a repo with unrelated WIP.
+- **Load-bearing work outside version control is a recurring failure here.**
+  Four hub-only fixes in `kromosynth-recommend`, the entire `daw-plugin/`
+  directory, and a pre-registered rule cited by a committed result. Check.
 
-## Two `kromosynth-vi` items, both measured rather than argued
+## Elsewhere, not the plugin
 
-Neither is in the plugin.
-
-- **§E6.2 / §H — FIXED**, staged but not committed. `calculateKeyRange` and its
-  hand-copied duplicate `dsKeyRange` both now use
-  `Math.ceil((a + b) / 2) - 1`. Verified three ways including by `sfz-probe`
-  against regenerated output. **Every XY artefact currently on disk still has
-  the overlap.** Regenerating them is a separate decision.
-- **§G5: 10 of 21 round-robin pairs in the RR artefact are byte-identical.**
-  42 WAVs, 32 distinct checksums. On those keys the feature is decorative. Not
-  uniform across velocity bands, which argues against "round robins were never
-  implemented" and toward something conditional in the render path.
-  **Unexplained.**
-
-## Also outstanding, cheap
-
-- "Host still alive after removing the plugin" — last unticked row of the
-  GarageBand matrix.
-- `git clone --mirror` of sfizz onto own storage (§E4.5), about 22 MB. Related
-  to the no-remote question above.
-- Deploy the `kromosynth-recommend` fix to the hub (§E6.1).
-- `.github/workflows/build.yml` runs a preset that does not exist
-  (`stage0-release`). The repo has no remote, so CI has never run. Fix before
-  adding one — and note there are now two more presets it could run.
-
-## Reconciliation debt, still growing
-
-`WP_SYNTHIS_PLUGIN.md` has absorbed none of the findings in STAGE0_FINDINGS.md.
-The most consequential:
-
-- §A2 signing moves earlier than Stage 1.
-- §C audition routing — **decided**: audition stays in the webview, the plugin
-  plays instruments, the quota gate fires at acquisition. The WP does not say
-  so.
-- §A3.1c AU and VST3 diverge on UI layout.
-- §E4 the sfizz maintenance premise in §3 is false — the library repository is
-  archived, and §9's fallback is in better health than the engine it chose.
-- **§G2 contradicts §D2 and vindicates the generator.** sfizz multiplies
-  stacked `amplitude_oncc`, exactly as `generateXYMorphSFZ` asserts.
-- **§G4 is a new constraint on the XY design.** Five voices per note, always.
-- **§I5 bounds what every automated result in this repo means.** `auval` exits
-  0 for an instrument with zero surviving regions. It validates the AU
-  contract, not that anything makes a sound.
+- **`kromosynth-vi` display metadata** — see task 3.
+- **§K stands corrected by §K8.** In the tested artefact the velocity layers are
+  one waveform at three gains (median 1.76% residual) and the round robins were
+  identical because `layerParamsPerSound` was not supplied. **Neither is a
+  defect** — velocity is a CPPN input by design, per-RR settings are an optional
+  request field the performance pads populate. What remains useful: a VI whose
+  layers are near-identical is larger than it needs to be, and a residual check
+  at generation time could say so.
+- **Gate 0 / EXPERIMENT_01** — see task 2.
+- **The Faust substrate track** is separate and moving: `E1_RESULT_2026-08-27`,
+  `E2_RESULT_2026-08-28`. E2's verdict is that its rule does not resolve because
+  20–23% of the archive is inaudible — which rhymes with §K5 and may deserve the
+  same treatment.
