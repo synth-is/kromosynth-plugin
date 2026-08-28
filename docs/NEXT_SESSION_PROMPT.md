@@ -85,11 +85,19 @@ Test artefacts:
 ### 1. VST3 with audio. The largest untested surface.
 
 `auval` is AU-only. §A3.1c already found the formats diverge on UI layout;
-whether they diverge on audio is unknown, and nothing in this repository can
-currently tell. Options, in rough order of cost: install a VST3 host, build
-JUCE's own AudioPluginHost from the vendored tree, or get `pluginval` (neither
-it nor any VST3 host is on this machine). Building AudioPluginHost from the
-submodule adds no new dependency and is probably the honest first move.
+whether they diverge on audio is unknown.
+
+**This is automatable with nothing new.** `REAPER -renderproject file.rpp`
+renders and exits. Reaper 7.79 is installed and hosts both AU and VST3
+in-process, so the same MIDI can go through both formats and the two WAVs can
+be diffed numerically — a number rather than an impression, per the standing
+rule. Live 11 Suite and Live 12 Beta are also installed for a second opinion.
+
+The fiddly part is producing the `.rpp`. Hand-writing one with a correctly
+identified VST3 is error-prone; the cheap move is to have Björn build the
+project once in the GUI (two tracks, one AU, one VST3, one shared MIDI item,
+same instrument) and commit it as a fixture. After that the comparison is a
+shell command and repeats forever.
 
 ### 2. Does it sound right, or only measure right?
 
@@ -99,7 +107,7 @@ page's sample rate, the plugin through the host's bus, and a user who auditions
 then loads will compare them. **Note §I3's finding before doing this** —
 chunking is not bit-identical, so block size is very slightly audible, and any
 A/B has to hold it fixed. The standing rule about A/B listening applies: prefer
-a rendered diff over an impression.
+a rendered diff over an impression, which task 1 above now makes cheap.
 
 ### 3. `getTailLengthSeconds()` — known wrong, fix documented but not done.
 
@@ -140,9 +148,12 @@ tasks 2 and 4 at once.
 - **No engine abstraction** until there is a second engine. One concrete class.
 - No auth, no quota, no local library. No UI, no webview bridge, no parameters,
   no state.
-- No dependencies beyond JUCE and sfizz without asking. (Task 1 above is the
-  live exception to discuss — AudioPluginHost is inside the JUCE submodule and
-  so is arguably not a new dependency.)
+- No dependencies beyond JUCE and sfizz without asking. `pluginval` is a
+  developer tool in the `sfz-probe` category — never shipped, never linked — and
+  is the only way to turn §I4's barrier claim from a source reading into a
+  measurement, because its higher strictness levels change sample rate and block
+  size mid-session and call the plugin from unexpected threads. Available via
+  `brew install --cask pluginval`.
 - Do not adopt the `KROMOSYNTH_BROWSER_INSET` workaround. Recorded diagnostic,
   not a fix.
 - git commits fine; do not push.

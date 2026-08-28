@@ -2532,10 +2532,19 @@ silence — the same symptom as I5, and indistinguishable from it in a DAW.
   with the reasoning in the source. The Stage 1 fix is to read `ampeg_release`
   and its CC depth through the introspection API **at load time**, which is
   legal inside the suspend window where no RT call can be in flight.
-- **VST3 is entirely untested with audio.** `auval` is AU-only, and there is no
-  VST3 host on this machine. §A3.1c found the formats diverge on UI layout;
-  whether they diverge on audio is unknown. This is the largest untested
-  surface left.
+- **VST3 is entirely untested with audio.** `auval` is AU-only. §A3.1c found
+  the formats diverge on UI layout; whether they diverge on audio is unknown.
+  This is the largest untested surface left.
+
+  **Correction, same session:** an earlier draft of this line said "and there is
+  no VST3 host on this machine". That is false, and §A3.1c three sections above
+  says so — Reaper 7.79 and Live 12 Beta were both driven in VST3 during Task 1,
+  and Live 11 Suite is also installed. The true statement is narrower: there was
+  no known way to drive one *without a human at the keyboard*. That is also
+  false. `REAPER -renderproject file.rpp` renders and exits, so an AU-versus-VST3
+  audio comparison is automatable in a host already in the matrix, with no new
+  dependency. Recorded rather than quietly edited because the error was reading
+  past a finding in this same document.
 - **Voice count under a real chord in a real host.** Left at sfizz's default 64
   (`Config.h:37`), which is about twelve notes at §G4's five voices each.
   `setNumVoices` deliberately not called: voice stealing is audible and that
