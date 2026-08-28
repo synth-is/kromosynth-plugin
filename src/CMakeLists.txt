@@ -87,7 +87,6 @@ if(KROMOSYNTH_BUILD_SAMPLER)
     target_compile_definitions(KromosynthPlugin PRIVATE
         KROMOSYNTH_HAS_SAMPLER=1
         KROMOSYNTH_SFZ_PATH="${KROMOSYNTH_SFZ_PATH}")
-
     # Configure-time, because the runtime symptom of a typo'd path is an
     # instrument that loads and plays silence — the same symptom as F11's
     # culled-region case, and indistinguishable from it in a DAW. Catch it
@@ -106,3 +105,7 @@ if(KROMOSYNTH_BUILD_SAMPLER)
 else()
     target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_SAMPLER=0)
 endif()
+
+# Must come AFTER juce_add_plugin, because it appends POST_BUILD steps that
+# have to run after JUCE's own ad-hoc sign and copy. See cmake/Signing.cmake.
+kromosynth_sign_plugin_targets(KromosynthPlugin)

@@ -95,6 +95,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(KromosynthOptions)
 include(JuceLicenceCheck)
+include(Signing)
 
 # ── JUCE ─────────────────────────────────────────────────────────────────────
 # Vendored as a pinned git submodule. One dependency mechanism only: no

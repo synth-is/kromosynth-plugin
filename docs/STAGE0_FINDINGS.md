@@ -3000,3 +3000,118 @@ near-identical is larger than it needs to be for no benefit. A cheap residual
 check at generation time — fit a gain between layers, report the leftover —
 could warn "these 3 velocity layers are 98% identical, 1 would do". That is a
 genuine improvement and it is nobody's bug.
+
+---
+
+# L. SIGNING — infrastructure built, certificate outstanding
+
+§A2 established that signing is load-blocking on Apple hosts rather than a
+Stage 1 formality. Everything except the certificate is now in place.
+
+## L1. The target configuration, measured off working plugins
+
+§A2 asked that its own inference — that Developer ID + notarisation avoids the
+"Lower Security Settings" dialog — be re-verified rather than trusted. Read off
+the two commercial samplers already installed on the dev machine:
+
+| plugin | signature | hardened runtime | entitlements | `spctl -t install` |
+|---|---|---|---|---|
+| sforzando | Developer ID (Plogue) | **no** | none | accepted, Notarized Developer ID |
+| DecentSampler | Developer ID (Decidedly) | yes | none | accepted, Notarized Developer ID |
+| **ours, before** | ad-hoc | no | none | **rejected** |
+
+Three things follow.
+
+**1. §A2's inference is confirmed at the assessment level.** `spctl` rejects
+ours and accepts both of theirs. That assessment is what produces the dialog.
+
+**2. Neither commercial plugin ships any entitlements.** This is the finding
+that saves work: the hardened runtime needs no exceptions for a plugin of this
+shape, *including the webview*, because WKWebView's JIT runs in a separate
+WebContent process and is not ours to declare. There is deliberately no
+entitlements plist in this repository. If one ever becomes necessary that is a
+finding to record, not a file to add quietly.
+
+**3. sforzando is notarised without the hardened runtime; DecentSampler has
+it.** Apple has required hardened runtime for new submissions since 2019, so
+sforzando is a legacy allowance and DecentSampler is the model to copy. Reading
+only sforzando would have produced the wrong conclusion — a second reference
+was worth the thirty seconds.
+
+## L2. Ordering was the part that could have failed silently
+
+`juce_add_plugin` attaches two POST_BUILD steps to each format target, in this
+order (`JUCEUtils.cmake:1044`, `:1055`):
+
+1. `_juce_adhoc_sign` — the "Replacing invalid signature with ad-hoc signature"
+   line in the build log
+2. `_juce_copy_dir` — copy to `~/Library/Audio/Plug-Ins/...`
+
+Anything added afterwards runs after **both**. So signing only the build
+artefact leaves the **installed** copy carrying JUCE's ad-hoc signature — and
+the installed copy is the one every host loads. The build log would show
+successful signing, `codesign --verify` on the build tree would pass, and the
+plugin would still be refused by GarageBand.
+
+`cmake/Signing.cmake` therefore re-signs the artefact and then re-copies it,
+reusing JUCE's own `copyDir.cmake` so the two cannot drift.
+
+**Verified rather than assumed.** With `KROMOSYNTH_SIGN_IDENTITY="-"` (ad-hoc,
+but through our path rather than JUCE's), the *installed* bundles moved from
+`flags=0x2(adhoc)` to `flags=0x10002(adhoc,runtime)`. The hardened runtime
+reached the copy the hosts load, which is what the ordering question was about.
+
+**`auval` still passes with the hardened runtime enabled.** Worth checking
+separately: the hardened runtime restricts dyld behaviour and JIT, and a plugin
+that loads fine unsigned can fail under it.
+
+## L3. What is built
+
+- `cmake/Signing.cmake` — `KROMOSYNTH_SIGN_IDENTITY` (empty default, so current
+  behaviour is unchanged) and `KROMOSYNTH_HARDENED_RUNTIME` (ON). Signs with
+  `--timestamp --options runtime`, then verifies with
+  `--verify --deep --strict` at build time, because a signature `codesign`
+  accepts but strict verification rejects is a real failure mode and finding it
+  at notarisation costs an upload round trip.
+
+  Deliberately **not** `--deep` when signing. Apple documents it as deprecated,
+  and it applies the outer bundle's flags to nested code. These bundles have no
+  nested code — sfizz and JUCE are both static — so a single non-recursive
+  signature is correct and honest about that assumption.
+
+- `scripts/notarize.sh` — zip via `ditto -c -k --keepParent` (the `zip` command
+  mangles bundle symlinks), submit, staple both bundles, then verify with
+  `spctl`. Pre-flight rejects an ad-hoc or non-hardened build **before**
+  uploading; confirmed working against the current ad-hoc build.
+
+  Stapling is the step that gets skipped. Without it every load needs a
+  successful network check against Apple; a stapled bundle carries its own
+  ticket. For a plugin loaded during a DAW's startup scan, unstapled on a flaky
+  network means a plugin that intermittently fails to appear.
+
+## L4. Outstanding — one certificate
+
+Björn has an Apple Developer Program membership (used for iOS App Store
+publishing). **A Developer ID Application certificate is a different
+certificate from the Apple Distribution one used for the App Store**, though
+both come with the same membership. It needs creating and installing on this
+Mac:
+
+```
+Xcode > Settings > Accounts > Manage Certificates > + > Developer ID Application
+```
+
+Only the team's Account Holder or an Admin can create one. Then:
+
+```
+security find-identity -v -p codesigning        # confirm it landed
+cmake --preset sampler-release -DKROMOSYNTH_SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)"
+cmake --build --preset sampler-release
+xcrun notarytool store-credentials "kromosynth" --apple-id ... --team-id ... --password <app-specific>
+scripts/notarize.sh
+```
+
+**And then test somewhere else.** §A2 records that GarageBand on this machine
+has been granted a permanent security exception, so a clean load here proves
+nothing about a fresh install. This is the one part of the signing question
+that cannot be answered on the development machine.
