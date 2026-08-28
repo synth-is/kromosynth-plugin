@@ -3098,10 +3098,24 @@ both come with the same membership. It needs creating and installing on this
 Mac:
 
 ```
-Xcode > Settings > Accounts > Manage Certificates > + > Developer ID Application
+Xcode > Settings > Apple Accounts > (Apple ID) > (Team)
+    > Manage Certificates... > + > Developer ID Application
 ```
 
-Only the team's Account Holder or an Admin can create one. Then:
+The pane is **"Apple Accounts"**, not "Accounts" — renamed in Xcode 26. This
+machine has Xcode 26.6 (build 17F113) and `xcode-select` points at it.
+
+Only the team's **Account Holder** can create a Developer ID certificate; an
+Admin cannot. If the `+` menu does not offer it, the web path works:
+
+1. Keychain Access → Certificate Assistant → Request a Certificate From a
+   Certificate Authority → save to disk. This puts the private key in the login
+   keychain and produces a `.certSigningRequest`.
+2. developer.apple.com/account → Certificates, IDs & Profiles → Certificates →
+   `+` → Developer ID Application → upload the CSR.
+3. Download the `.cer` and double-click to install.
+
+Then:
 
 ```
 security find-identity -v -p codesigning        # confirm it landed

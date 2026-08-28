@@ -11,10 +11,23 @@
 # 1. A Developer ID Application certificate in the login keychain. Note this is
 #    NOT the same certificate as the "Apple Distribution" one used to ship an
 #    iOS app to the App Store, even though both come with the same Apple
-#    Developer Program membership. Create it via
-#    Xcode > Settings > Accounts > Manage Certificates > + > Developer ID
-#    Application, or on developer.apple.com. Only the team's Account Holder or
-#    an Admin can create one.
+#    Developer Program membership.
+#
+#    Xcode > Settings > Apple Accounts > (pick the Apple ID) > (pick the Team)
+#        > Manage Certificates... > + > Developer ID Application
+#
+#    The pane is "Apple Accounts", not "Accounts" -- renamed in Xcode 26.
+#    Only the team's Account Holder can create a Developer ID certificate; an
+#    Admin cannot. If the + menu does not offer it, use the web path instead:
+#
+#      a. Keychain Access > Certificate Assistant > Request a Certificate From
+#         a Certificate Authority. Save to disk. This creates the private key
+#         in the login keychain and a .certSigningRequest file.
+#      b. developer.apple.com/account > Certificates, IDs & Profiles >
+#         Certificates > + > Developer ID Application. Upload the CSR.
+#      c. Download the .cer and double-click to install.
+#
+#    Either way, confirm it landed:
 #
 #        security find-identity -v -p codesigning
 #
