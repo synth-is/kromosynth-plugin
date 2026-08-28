@@ -3443,3 +3443,122 @@ honour. Worth an explicit bus layout at Stage 1.
 
 `auval` also warns: "Source AU supports multi-channel output but does not
 provide a channel layout."
+
+---
+
+# N. STAGE 1 — the shell and the bridge work in a real host
+
+The plugin serves its own UI, lists what is on disk, and switches instrument on
+a click. Confirmed by Björn in GarageBand: two instruments listed, both load,
+both play, and they sound different.
+
+```
+Instruments                     2 instruments        [Refresh]
+  ● 01KPXZJ94GPQEEAZFA6F91YR1W
+  ○ xy
+Loaded · 42 regions · 8.3 s tail
+```
+
+## N1. The bridge protocol was guessed, and failed loudly
+
+First attempt called `backend.callNativeFunction(name, args)`. No such method:
+
+```
+TypeError: backend.callNativeFunction is not a function.
+```
+
+The shell rendered, styled, from the resource provider, with
+`window.__JUCE__.backend` present — so the entire plumbing was correct and only
+the calling convention was invented. The real contract was in the vendored tree
+the whole time
+(`juce_gui_extra/native/typescript/webview-interop/src/index.ts:81-99`):
+
+```
+emit   '__juce__invoke'    { name, params, resultId }
+listen '__juce__complete'  { promiseId, result }
+```
+
+JUCE ships a helper module wrapping this, but importing it would mean a bundler
+and a `node_modules` for one function. Reimplemented inline in ~15 lines with
+the upstream file and line numbers in a comment, so it can be checked against
+source rather than trusted.
+
+**Worth contrasting with the day's other failures.** This one cost one
+screenshot: it threw an exception naming the exact missing method. The
+expensive failures — J2's silent AU, I6's latched counter, the pre-flight
+SIGPIPE — all *succeeded incorrectly*. An error message is a cheap failure.
+
+## N2. Display names: a real gap, and my second generalisation from one sample
+
+`readDisplayName` matched only `Sounds:` (plural), read off the RR artefact.
+The XY generator writes `Sound:` (singular) under an "XY Morph" title, so every
+XY instrument silently fell back to its directory name — visible in the
+screenshot as `xy` beside a ULID. Fixed to match both.
+
+**But fixing it only replaces one identifier with another.** A ULID is not a
+name and neither is a folder. The VI service does not emit a display name, and
+inventing a format it does not write would create a second convention nobody
+agreed to.
+
+The header does carry descriptive material the generator already writes —
+`Range: C3 - C6`, `Velocity Layers: 3`, `Round Robins: 2`, `XY Morph` — which
+would label an instrument far better than either identifier. **Proposed, not
+implemented:** it is a UI convention and those should be decided rather than
+accreted. Recorded as an open question for the VI service.
+
+## N3. What shipped
+
+- `InstrumentLibrary` — scans `~/Music/Synth.is/Instruments/<id>/instrument.sfz`,
+  the §E5 artefact layout, so a downloaded artefact drops in unchanged.
+  `~/Music` rather than Application Support because these are the user's
+  instruments: visible, backup-able, movable.
+- `ShellPage.h` — one dependency-free page. No fonts, no CDN, no images: every
+  external reference would be a network request on a surface whose entire
+  justification is working without a network.
+- Four native functions: `listInstruments`, `loadInstrument`, `getStatus`,
+  `getLibraryRoot`.
+- `loadInstrument` takes the same `suspendProcessing` barrier as
+  `prepareToPlay`. sfizz's `loadSfzFile` is OFF-annotated and that does not
+  change because the caller is JavaScript.
+- The shell reports `ok` and `regions` separately rather than collapsing them,
+  because F11 established `loadSfzFile` returns true when every region was
+  culled. One green tick would appear on a silent instrument.
+- `pathFor` rejects ids containing separators or `..` — the id arrives from
+  JavaScript — and does not distinguish rejected from absent, which would be a
+  directory oracle.
+
+## N4. `pageAboutToLoad` is now a security boundary
+
+At Stage 0 it returned `true` unconditionally, deliberately, to observe the
+real app. With `window.__JUCE__.backend` on the component, an off-origin
+navigation would carry the native surface to whatever received it — a sign-in
+redirect to a third-party identity provider being the obvious path. Off-origin
+is now blocked and handed to the system browser, which is also what §7 Stage 1
+already wanted for auth.
+
+The Stage 0 comment in `src/CMakeLists.txt` explaining why native integration
+was OFF is **kept, not deleted**. Its objection — that a resource provider's
+virtual origin would break the web app's BrowserRouter and make the
+cross-origin-isolation question unanswerable — still stands, and is exactly why
+there are now two components rather than one.
+
+## N5. Also visible in the screenshot
+
+GarageBand renders its own header ("Classic Electric Piano", the Manual
+dropdown) above our view, consistent with §A1's out-of-process AU hosting. The
+shell does not get the full window height and should not assume it.
+
+## N6. Open
+
+- **The site component and acquisition.** Second `WebBrowserComponent`, native
+  integration OFF, plus the sentinel-URL hook in the web app so
+  `pageAboutToLoad` can intercept "add this to my plugin". Plugin half is
+  small; the web app half is Björn's.
+- **Display names** (N2). Needs the VI service, or a decision to label from the
+  descriptive header fields.
+- **Explicit bus layout** (§M3). The plugin advertises `[0, -1]` — any output
+  count to 8 — while `process()` fills two and clears the rest.
+- **Stats flush is teardown-only.** `sampler_render_stats` writes on
+  `releaseResources` and the destructor, so while the plugin is alive and
+  working the log says nothing. A periodic flush would have made "did it make
+  sound" a glance instead of an investigation (§M1).

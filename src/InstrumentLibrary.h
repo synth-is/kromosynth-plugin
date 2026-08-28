@@ -67,11 +67,17 @@ private:
             // Generated: 2026-08-27T14:27:03.908Z
             // Sounds: 01KPXZJ94GPQEEAZFA6F91YR1W
 
-        None of which is a *name*. So this is best-effort and falls back to the
-        directory id, which is at least stable and unique. A real display name
-        wants a metadata file the VI service writes -- noted rather than
-        invented here, because guessing at a format the generator does not emit
-        would create a second convention nobody agreed to.
+        and the XY generator writes "Sound:" singular under an "XY Morph"
+        title. None of which is a *name*: a ULID is an identifier, and so is
+        the directory it falls back to.
+
+        KNOWN GAP, not a bug to fix here. A usable display name needs the VI
+        service to emit one, and inventing a format the generator does not
+        write would create a second convention nobody agreed to. The header
+        does carry genuinely descriptive material -- "Range: C3 - C6",
+        "Velocity Layers: 3", "XY Morph" -- which would make a better label
+        than either identifier. Proposed rather than implemented: it is a UI
+        convention, and those should be decided rather than accreted.
     */
     static juce::String readDisplayName (const juce::File& sfz, const juce::String& fallbackId);
 };

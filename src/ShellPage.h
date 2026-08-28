@@ -112,15 +112,50 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
 // saying so plainly beats a page that silently does nothing.
 const backend = window.__JUCE__ && window.__JUCE__.backend;
 
+// The invoke protocol, implemented against JUCE's own frontend source rather
+// than guessed. The first version of this called backend.callNativeFunction(),
+// which does not exist -- the shell rendered, the bridge was present, and every
+// call threw "callNativeFunction is not a function".
+//
+// The real contract (juce_gui_extra/native/typescript/webview-interop/src/
+// index.ts:81-99) is an event pair:
+//
+//   emit  '__juce__invoke'   { name, params, resultId }
+//   listen '__juce__complete' { promiseId, result }
+//
+// JUCE ships a helper module that wraps this, but importing it would mean a
+// bundler and a node_modules for one function. Reimplemented here, in about
+// fifteen lines, with the source reference above so the next person can check
+// it against upstream rather than trusting this comment.
+let nextPromiseId = 0;
+const pending = new Map();
+
+if (backend) {
+  backend.addEventListener('__juce__complete', function (payload) {
+    const entry = pending.get(payload.promiseId);
+    if (entry) {
+      entry(payload.result);
+      pending.delete(payload.promiseId);
+    }
+  });
+}
+
 function setStatus (text, kind) {
   const el = document.getElementById('status');
   el.textContent = text;
   el.className = kind || '';
 }
 
-async function call (name, ...args) {
-  if (!backend) throw new Error('native bridge unavailable');
-  return backend.callNativeFunction(name, args);
+function call (name, ...args) {
+  if (!backend) return Promise.reject(new Error('native bridge unavailable'));
+
+  return new Promise(function (resolve) {
+    const id = nextPromiseId++;
+    pending.set(id, resolve);
+    backend.emitEvent('__juce__invoke', {
+      name: name, params: args, resultId: id
+    });
+  });
 }
 
 let entries = [];

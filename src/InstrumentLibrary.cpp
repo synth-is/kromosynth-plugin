@@ -28,9 +28,12 @@ juce::String InstrumentLibrary::readDisplayName (const juce::File& sfz,
 
         const auto body = trimmed.substring (2).trim();
 
-        // "Sounds: 01KPXZ..." is the closest thing the generator emits to an
-        // identity. Not a name, and labelled as such in the header comment.
-        if (body.startsWithIgnoreCase ("Sounds:"))
+        // Both spellings. kromosynth-vi writes "Sounds:" from the standard VI
+        // generator and "Sound:" from the XY morph one -- found by reading two
+        // artefacts after the first version, which matched only the plural,
+        // silently fell back to the directory name for every XY instrument.
+        // Generalising from one example, again.
+        if (body.startsWithIgnoreCase ("Sounds:") || body.startsWithIgnoreCase ("Sound:"))
         {
             const auto value = body.fromFirstOccurrenceOf (":", false, false).trim();
 
