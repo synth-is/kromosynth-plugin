@@ -3350,3 +3350,96 @@ validation passed on its own merits.
 
 **Do not rebuild before running that test.** A rebuild re-signs and
 un-notarises.
+
+---
+
+# M. §A2 CLOSED — GarageBand loads the notarised plugin with no dialog
+
+```
+15:20:59  processor_constructed host=AUHostingServiceXPC_arrow wrapper=AU
+15:20:59  prepareToPlay sampleRate=44100 blockSize=1024
+15:20:59  sampler_load ok=1 regions=42 voices=64 ms=33.8 tail_s=8.300
+15:22:05  editor_constructed
+15:22:05  editor_resized w=640 h=400 -> w=1280 h=800
+15:22:06  page_finished_loading https://synth.is/
+```
+
+No security dialog. **§A2 is closed**: an ad-hoc signed build made GarageBand
+demand "Lower Security Settings"; a Developer ID signed, notarised, stapled
+build loads silently. The inference recorded in §A2 item 2 is now a
+measurement, and per §L6 the test was valid on this machine because the
+installed cdhash `587654cb…` is not in GarageBand's three-entry exception list.
+
+Corroborating §A1, the host is `AUHostingServiceXPC_arrow` — Apple hosts load
+out of process. The webview reached `https://synth.is` and the probe reports
+`persist: SURVIVED age=236984s`, i.e. storage from ~2.7 days ago survived,
+consistent with §A4.
+
+## M1. The render was silent, and that reading was ambiguous
+
+The same log shows `blocks=758 frames=776192 peak=0.000000` — 17.6 seconds of
+silence. Björn had chosen GarageBand's **mono** variant, and mono is the one
+configuration nothing had ever exercised: `auval`, `pluginval` and the Reaper
+harness are all stereo, and neither validator offers a channel-configuration
+option.
+
+`SamplerEngine::process` branches on channel count:
+
+```
+numChannels >= 2  ->  render in place into the host's buffer
+numChannels == 1  ->  render into a stereo scratch, average to mono
+```
+
+So `peak=0` had two candidate explanations that look identical in the log: no
+notes were played, or the mono path is broken.
+
+`auval` does run a "1 Channel Test" and it passes — but it only checks that
+rendering does not crash, never that it produces sound. Same shape as §I5: a
+green result that was never capable of being red.
+
+## M2. `tools/engine-probe` — driving the engine through layouts no host offers
+
+New developer tool. Links `SamplerEngine` with `juce_audio_basics` and sfizz,
+no plugin wrapper and no audio device, so it can render a known note through
+arbitrary channel counts.
+
+```
+load  ok=1 regions=42 voices=64  45.8 ms  tail 8.300 s
+note 60 velocity 100, 200 blocks of 512 at 48000 Hz
+
+channels        peak          rms     verdict
+1           0.128248     0.024579     audible
+2           0.128297     0.024579     audible
+6           0.128297     0.014191     audible
+
+mono/stereo peak ratio: 1.000
+```
+
+**The mono path is correct.** Peak matches stereo to three decimals; the
+averaging preserves level for this broadly centred source. The 6-channel row
+matches on peak with lower RMS, which is exactly right given `process()` clears
+channels ≥ 2 — the energy is spread over six channels instead of two.
+
+So the GarageBand silence is **not** an engine defect. The remaining
+explanation is the ordinary one: no notes were played. The plugin only makes
+sound in response to MIDI, and loading it, opening its window and looking at it
+produces exactly the log recorded above.
+
+**Still worth having built.** The mono path shipped untested through four
+validation passes and a signing exercise, and the first time anything exercised
+it was a user in a real host where the result was unreadable. It is now covered,
+and `engine-probe` can answer the same question for any future layout without
+needing a host.
+
+## M3. Loose end noticed while checking
+
+`auval` reports channel capabilities `[0, -1]` — the plugin claims to support
+**any** output count, 0-1 through 0-8, which is JUCE's default without an
+`isBusesLayoutSupported` override. `process()` fills channels 0 and 1 and
+clears the rest, so a host given 5.1 gets a stereo front and four silent
+channels. Not broken, and `engine-probe` confirms it behaves as described, but
+advertising eight channels while filling two is a claim the plugin cannot
+honour. Worth an explicit bus layout at Stage 1.
+
+`auval` also warns: "Source AU supports multi-channel output but does not
+provide a channel layout."

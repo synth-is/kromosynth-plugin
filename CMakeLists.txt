@@ -128,4 +128,5 @@ add_subdirectory(src)
 # part of any deliverable. See tools/sfz-probe/main.cpp.
 if(KROMOSYNTH_BUILD_SAMPLER)
     add_subdirectory(tools/sfz-probe)
+    add_subdirectory(tools/engine-probe)
 endif()
