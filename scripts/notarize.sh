@@ -100,23 +100,46 @@ fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 # Every one of these checks exists because the corresponding failure is
 # expensive: notarisation is a multi-minute round trip, and an ad-hoc signature
 # or a missing timestamp is rejected only after the upload completes.
+#
+# NO PIPELINES HERE, deliberately. The first version used
+#
+#     if ! codesign -dvvv "$bundle" 2>&1 | grep -q '^Authority=...'; then
+#
+# which rejected a CORRECTLY signed bundle while printing the very Authority
+# line it claimed was missing. `grep -q` exits at its first match and closes the
+# pipe; codesign then dies of SIGPIPE and returns 141; `set -o pipefail` above
+# promotes that to a pipeline failure. Verified: the identical command returns
+# 0 without pipefail and 141 with it.
+#
+# So codesign runs ONCE per bundle into a variable, matched with `case`.
+# Cheaper, and it cannot fail this way.
 
 for bundle in "$AU" "$VST3"; do
     [[ -d "$bundle" ]] || fail "not built: $bundle
 Run: cmake --build --preset sampler-release"
 
-    if ! codesign -dvvv "$bundle" 2>&1 | grep -q '^Authority=Developer ID Application'; then
-        actual=$(codesign -dvvv "$bundle" 2>&1 | grep -E '^(Signature|Authority)=' | head -1)
-        fail "$bundle is not Developer ID signed.
-Found: ${actual:-no signature}
-Notarisation will reject it. Reconfigure with -DKROMOSYNTH_SIGN_IDENTITY=..."
-    fi
+    info=$(codesign -dvvv "$bundle" 2>&1) || fail "codesign could not read $bundle"
 
-    if ! codesign -dvvv "$bundle" 2>&1 | grep -q 'flags=.*runtime'; then
-        fail "$bundle lacks the hardened runtime.
+    case "$info" in
+        *"Authority=Developer ID Application"*) ;;
+        *) fail "$bundle is not Developer ID signed.
+Notarisation will reject it. Reconfigure with -DKROMOSYNTH_SIGN_IDENTITY=..." ;;
+    esac
+
+    case "$info" in
+        *runtime*) ;;
+        *) fail "$bundle lacks the hardened runtime.
 Apple requires it for notarisation. Reconfigure with
--DKROMOSYNTH_HARDENED_RUNTIME=ON"
-    fi
+-DKROMOSYNTH_HARDENED_RUNTIME=ON" ;;
+    esac
+
+    case "$info" in
+        *"Timestamp="*) ;;
+        # Without a secure timestamp the signature stops verifying the day the
+        # certificate expires, which for this team is 1 Feb 2027 rather than
+        # five years out. See L5.
+        *) fail "$bundle has no secure timestamp. Sign with --timestamp." ;;
+    esac
 
     codesign --verify --deep --strict --verbose=2 "$bundle" \
         || fail "$bundle fails signature verification"
@@ -163,21 +186,78 @@ done
 # assessment. Check it rather than trusting that submission success implies it.
 
 echo
-for bundle in "$AU" "$VST3"; do
+echo "Installing the stapled bundles."
+
+# The script does this itself rather than telling you to rebuild, because
+# "rebuild to reinstall" is wrong in both directions:
+#
+#   - If nothing changed, CMake does not re-link, so the POST_BUILD copy never
+#     runs and the INSTALLED bundles stay at their pre-staple state. Observed:
+#     spctl said "Notarized Developer ID" (it checked with Apple over the
+#     network) while `stapler validate` said no ticket was attached. The online
+#     check masked the missing staple exactly as long as the network was up.
+#   - If something did change, the rebuild re-signs, which invalidates the
+#     ticket and requires notarising again.
+#
+# ditto rather than cp, to preserve the bundle structure and extended
+# attributes the signature is computed over.
+
+install_bundle() {
+    local src="$1" dir="$2"
+    mkdir -p "$dir"
+    rm -rf "${dir:?}/$(basename "$src")"
+    ditto "$src" "$dir/$(basename "$src")"
+}
+
+install_bundle "$AU"   "$HOME/Library/Audio/Plug-Ins/Components"
+install_bundle "$VST3" "$HOME/Library/Audio/Plug-Ins/VST3"
+
+# ── Verify, because "notarised" and "Gatekeeper accepts it" are not the same ──
+#
+# A2's whole point is that the host's assessment is what matters. spctl is that
+# assessment. Check it rather than trusting that submission success implies it.
+#
+# And check the STAPLE separately. spctl alone will happily report a bundle as
+# notarised by asking Apple over the network, which says nothing about whether
+# the ticket travels with the bundle. A DAW scanning plugins at startup on a
+# flaky connection is precisely where that difference shows up.
+
+echo
+for bundle in "$HOME/Library/Audio/Plug-Ins/Components/$(basename "$AU")" \
+              "$HOME/Library/Audio/Plug-Ins/VST3/$(basename "$VST3")"; do
     printf '%-34s ' "$(basename "$bundle")"
-    if spctl -a -vvv -t install "$bundle" 2>&1 | grep -q 'source=Notarized Developer ID'; then
-        echo "accepted, Notarized Developer ID"
-    else
-        echo "NOT ACCEPTED"
-        spctl -a -vvv -t install "$bundle" 2>&1 | sed 's/^/    /'
-        exit 1
-    fi
+
+    # Same no-pipeline rule as the pre-flight: `| grep -q` under pipefail
+    # reports failure via SIGPIPE even on a match.
+    assessment=$(spctl -a -vvv -t install "$bundle" 2>&1 || true)
+    stapled=$(xcrun stapler validate "$bundle" 2>&1 || true)
+
+    case "$assessment" in
+        *"source=Notarized Developer ID"*) ;;
+        *)
+            echo "NOT ACCEPTED"
+            printf '%s\n' "$assessment" | sed 's/^/    /'
+            exit 1
+            ;;
+    esac
+
+    case "$stapled" in
+        *"validate action worked"*)
+            echo "accepted, Notarized Developer ID, ticket stapled"
+            ;;
+        *)
+            echo "notarised but NOT STAPLED"
+            printf '%s\n' "$stapled" | sed 's/^/    /'
+            exit 1
+            ;;
+    esac
 done
 
 echo
-echo "Done. Reinstall so the hosts pick up the stapled bundles:"
-echo "  cmake --build --preset sampler-release"
+echo "Installed and stapled. Do NOT rebuild before testing: a rebuild re-signs,"
+echo "which invalidates the ticket and requires notarising again."
 echo
-echo "Then re-test on a machine that has NOT been granted a security exception."
-echo "This one has: A2 records GarageBand being permanently excepted here, so a"
-echo "clean load on this Mac does not prove a clean load anywhere else."
+echo "Now load Synth.is in GarageBand. Per L6 the security exception on this"
+echo "machine is scoped to three superseded ad-hoc builds, so this build is not"
+echo "pre-approved and the test is valid here: loading with no dialog means"
+echo "library validation passed."

@@ -3263,3 +3263,90 @@ appeared, I accepted it") and then inferred a mechanism ("the host now has a
 permanent exception") without locating where that state lived. The inference
 sat in the findings for three days and produced a wrong constraint on how the
 work could be verified. Locating the state took one search.
+
+## L7. Notarised, stapled, installed — and two bugs in my own script found by running it
+
+```
+Submission ID 74705a37-a548-4f9a-b8df-00d1a21dd194   status: Accepted
+Synth.is.component   accepted, Notarized Developer ID, ticket stapled
+Synth.is.vst3        accepted, Notarized Developer ID, ticket stapled
+auval                PASS
+```
+
+Both installed bundles now match §L1's reference plugins exactly: Developer ID
+chain, `flags=0x10000(runtime)`, secure timestamp, notarised, stapled.
+
+### Bug 1 — the pre-flight rejected a correctly signed bundle
+
+Björn ran the script and got:
+
+```
+ERROR: ...Synth.is.component is not Developer ID signed.
+Found: Authority=Developer ID Application: Nemur net ehf. (ATA8MQ4L7K)
+```
+
+The check printed the exact evidence that should have made it pass. Cause:
+
+```bash
+set -euo pipefail
+...
+if ! codesign -dvvv "$bundle" 2>&1 | grep -q '^Authority=Developer ID Application'; then
+```
+
+`grep -q` exits at its first match and closes the pipe. `codesign` then dies of
+SIGPIPE and returns 141. `pipefail` promotes that to a pipeline failure, so a
+**successful match reads as failure**. Verified directly: the identical command
+returns 0 without `pipefail` and 141 with it.
+
+The same construction appeared again in the final `spctl` check, where it would
+have failed at the last step after a successful upload. Both replaced with a
+single `codesign` call into a variable and pure-shell `case` matching — no
+pipeline, and it runs `codesign` once per bundle instead of three times.
+
+### Bug 2 — "rebuild to reinstall" was wrong in both directions
+
+The script closed by telling the user to `cmake --build` to pick up the stapled
+bundles. Doing so produced:
+
+```
+spctl:             source=Notarized Developer ID
+stapler validate:  does not have a ticket stapled to it
+```
+
+Notarised by Gatekeeper's reckoning, unstapled in fact. Two independent
+problems:
+
+- **Nothing had changed, so CMake did not re-link**, so the POST_BUILD copy
+  never ran and the *installed* bundles remained at their pre-staple state.
+- **Had anything changed, the rebuild would have re-signed**, invalidating the
+  ticket and requiring another notarisation round trip.
+
+`spctl` masked it. It reported "Notarized Developer ID" by asking Apple over
+the network, which says nothing about whether the ticket travels with the
+bundle. **A stapled and an unstapled bundle are indistinguishable to `spctl`
+while the network is up** — and a DAW scanning plugins at startup on a poor
+connection is exactly where the difference appears.
+
+`notarize.sh` now installs the stapled bundles itself with `ditto`, and
+verifies `stapler validate` *separately* from `spctl` rather than treating one
+as evidence of the other.
+
+### The pattern, now unmistakable
+
+Both bugs are the same shape as §I6, §I5, §F11, §J2 and the ArcadeDB guards:
+**a check that cannot fail in the direction it is watching for.** The pre-flight
+reported failure on success; `spctl` reported success on a partial failure. In
+this session that shape has now appeared in a render-stats counter, an `auval`
+result, an SFZ load return value, a Reaper render, four ArcadeDB date guards,
+and twice in the script written to guard against it.
+
+### Ready for the GarageBand test
+
+Installed AU cdhash: `587654cb00cb5c344f230f876f2cfdc2b20cfcfb`.
+GarageBand's exception list holds three superseded ad-hoc hashes, none matching
+(§L6). So this build is **not** pre-approved and the test is valid on this
+machine: loading with no "Lower Security Settings" dialog means library
+validation passed on its own merits.
+
+**Do not rebuild before running that test.** A rebuild re-signs and
+un-notarises.
