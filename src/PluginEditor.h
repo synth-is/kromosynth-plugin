@@ -12,6 +12,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "ArtifactAcquisition.h"
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
@@ -55,6 +56,17 @@ private:
         */
         juce::String allowedOrigin;
 
+        /** Set on the site component only.
+
+            When true, pageAboutToLoad checks for an acquisition sentinel BEFORE
+            the origin check and before anything is logged unredacted. The order
+            matters twice over: the sentinel's scheme is not the allowed origin,
+            so an origin-first check would hand it to launchInDefaultBrowser and
+            leak the ticket to whatever the OS opens; and the log line at the top
+            of the handler would otherwise write the ticket to disk.
+        */
+        bool interceptsSentinels = false;
+
         bool pageAboutToLoad (const juce::String& url) override;
         void pageFinishedLoading (const juce::String& url) override;
         bool pageLoadHadNetworkError (const juce::String& errorInfo) override;
@@ -66,7 +78,44 @@ private:
     };
 
     KromosynthAudioProcessor& proc_;
+
+    // The shell: local, resource-provider served, native bridge ON.
     std::unique_ptr<InstrumentedBrowser> browser_;
+
+    // The site: https://synth.is, native bridge OFF, sentinel interception ON.
+    // Two components rather than one, per WP section 12: a single component
+    // cannot be both trusted enough for window.__JUCE__ and open enough to
+    // follow a sign-in redirect.
+    std::unique_ptr<InstrumentedBrowser> site_;
+
+    /** The way back from the site.
+
+        The site has no bridge, so it cannot call the plugin to return to the
+        library. The plugin therefore owns this chrome. It is deliberately the
+        plugin's own strip and not something the web app renders, because the
+        web app must not be able to remove the only exit.
+    */
+    class SiteBar : public juce::Component
+    {
+    public:
+        explicit SiteBar (std::function<void()> onBack);
+        void paint (juce::Graphics&) override;
+        void resized() override;
+
+        juce::TextButton back { "< Library" };
+    };
+
+    std::unique_ptr<SiteBar> siteBar_;
+
+    /** Swaps which surface is visible. */
+    void showSite (bool shouldShowSite);
+
+    bool siteVisible_ = false;
+
+    // WebBrowserComponent has no URL getter in JUCE 9 -- goToURL only, no
+    // getCurrentURL -- so "has the site been navigated yet" is tracked here
+    // rather than asked of the component.
+    bool siteLoaded_ = false;
 
     // ---------------------------------------------------------------------
     // DISPOSABLE DIAGNOSTIC — delete once §A3.1c has an owner.

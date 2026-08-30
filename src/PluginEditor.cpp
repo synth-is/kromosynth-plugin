@@ -221,11 +221,67 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             o->setProperty ("regions", r.numRegions);
             o->setProperty ("tailSeconds", r.tailSeconds);
             done (juce::var (o));
+        })
+        .withNativeFunction ("openSite",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            showSite (true);
+            done (juce::var (true));
+        })
+        .withNativeFunction ("getAcquisitions",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // Polled by the shell rather than pushed from the worker thread.
+            // A push would have to cross threads into an editor that may have
+            // been destroyed since the download started; a poll cannot.
+            juce::Array<juce::var> out;
+
+            for (const auto& s : proc_.acquisitions().snapshot())
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty ("id", s.artifactId);
+                o->setProperty ("message", s.message);
+                o->setProperty ("progress", s.progress);
+                o->setProperty ("finished", s.finished);
+                o->setProperty ("ok", s.ok);
+                out.add (juce::var (o));
+            }
+
+            done (juce::var (out));
+        })
+        .withNativeFunction ("clearFinishedAcquisitions",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            proc_.acquisitions().clearFinished();
+            done (juce::var (true));
         });
 
     browser_ = std::make_unique<InstrumentedBrowser> (options, proc_);
     browser_->allowedOrigin = juce::WebBrowserComponent::getResourceProviderRoot();
     addAndMakeVisible (*browser_);
+
+    // ── The site ─────────────────────────────────────────────────────────────
+    //
+    // Native integration OFF and allowedOrigin EMPTY, both deliberate and both
+    // the opposite of the shell above. Off-origin navigation has to be allowed
+    // here: signing in redirects to an identity provider, and blocking that
+    // would break the only thing this surface exists for. That is safe only
+    // because there is no bridge on this component to carry off-origin -- which
+    // is precisely the pairing WP section 12 requires, and why this cannot be
+    // one component with a flag.
+    //
+    // Created but not shown. The shell is what opens on launch, because the
+    // shell is the surface that works offline.
+    site_ = std::make_unique<InstrumentedBrowser> (
+        Options{}.withKeepPageLoadedWhenBrowserIsHidden(), proc_);
+    site_->interceptsSentinels = true;
+    addChildComponent (*site_);
+
+    siteBar_ = std::make_unique<SiteBar> ([this] { showSite (false); });
+    addChildComponent (*siteBar_);
 #endif
 
     // Resizable with a wide range, because "does it resize" is a gate
@@ -271,8 +327,19 @@ void KromosynthAudioProcessorEditor::paint (juce::Graphics& g)
 
 void KromosynthAudioProcessorEditor::resized()
 {
+    auto bounds = getLocalBounds();
+
+    if (siteBar_ != nullptr)
+        siteBar_->setBounds (bounds.removeFromTop (siteVisible_ ? 32 : 0));
+
+    if (site_ != nullptr)
+        site_->setBounds (bounds);
+
     if (browser_ != nullptr)
     {
+        // The shell keeps the full area. It is the surface the inset
+        // diagnostic was measured against, and giving it a different rectangle
+        // depending on whether the site strip exists would invalidate that.
         auto area = getLocalBounds();
 
 #if KROMOSYNTH_BROWSER_INSET > 0
@@ -334,8 +401,83 @@ void KromosynthAudioProcessorEditor::StubContent::paint (juce::Graphics&) {}
 
 // ── Lifecycle hooks ──────────────────────────────────────────────────────────
 
+KromosynthAudioProcessorEditor::SiteBar::SiteBar (std::function<void()> onBack)
+{
+    back.onClick = std::move (onBack);
+    addAndMakeVisible (back);
+}
+
+void KromosynthAudioProcessorEditor::SiteBar::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour::fromRGB (0x1a, 0x1d, 0x21));
+}
+
+void KromosynthAudioProcessorEditor::SiteBar::resized()
+{
+    back.setBounds (getLocalBounds().removeFromLeft (110).reduced (4));
+}
+
+void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
+{
+    if (site_ == nullptr || siteBar_ == nullptr || browser_ == nullptr)
+        return;
+
+    siteVisible_ = shouldShowSite;
+
+    // Loaded lazily, and only once. Navigating on every open would throw away
+    // whatever the user had reached -- including a half-completed sign-in.
+    if (shouldShowSite && ! siteLoaded_)
+    {
+        proc_.logEvent ("navigating to site " KROMOSYNTH_WEB_APP_URL);
+        site_->goToURL (KROMOSYNTH_WEB_APP_URL);
+        siteLoaded_ = true;
+    }
+
+    site_->setVisible (shouldShowSite);
+    siteBar_->setVisible (shouldShowSite);
+    browser_->setVisible (! shouldShowSite);
+
+    proc_.logEvent (shouldShowSite ? "surface_site" : "surface_shell");
+
+    resized();
+}
+
 bool KromosynthAudioProcessorEditor::InstrumentedBrowser::pageAboutToLoad (const juce::String& url)
 {
+    // Sentinel FIRST, and redacted logging with it.
+    //
+    // Both orderings below are load-bearing. The unconditional log line that
+    // used to open this function would have written a ticket to
+    // ~/Library/Logs in plaintext, and the origin check that follows would
+    // have treated the sentinel as an off-origin navigation and handed it to
+    // launchInDefaultBrowser -- leaking the ticket to whatever the OS opens
+    // with it. Neither is recoverable after the fact.
+    if (interceptsSentinels && kromosynth::acquisition::isSentinel (url))
+    {
+        proc_.logEvent ("acquisition_sentinel "
+                        + kromosynth::acquisition::redactForLog (url));
+
+        if (auto request = kromosynth::acquisition::parseSentinel (url))
+        {
+            const bool queued = proc_.acquisitions().start (
+                *request,
+                KROMOSYNTH_VI_SERVICE_URL,
+                InstrumentLibrary::root());
+
+            proc_.logEvent (queued ? "acquisition_queued " + request->artifactId
+                                   : "acquisition_already_running " + request->artifactId);
+        }
+        else
+        {
+            // isSentinel said yes and parseSentinel said no, so the site sent a
+            // malformed one. Still blocked: letting it through because we could
+            // not parse it is how the ticket would reach the network.
+            proc_.logEvent ("acquisition_sentinel_malformed");
+        }
+
+        return false;
+    }
+
     proc_.logEvent ("page_about_to_load " + url);
 
     if (allowedOrigin.isEmpty() || url.startsWith (allowedOrigin))

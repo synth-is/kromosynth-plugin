@@ -28,6 +28,7 @@ class SamplerEngine;
 #endif
 
 #include "InstrumentLibrary.h"
+#include "AcquisitionRunner.h"
 
 class KromosynthAudioProcessor : public juce::AudioProcessor
 {
@@ -114,6 +115,20 @@ public:
     const InstrumentLibrary& library() const noexcept { return library_; }
    #endif
 
+    /** Downloads in flight and their outcomes.
+
+        Lives here rather than on the editor so a download survives the editor
+        being destroyed, which hosts do on every window close. See
+        AcquisitionRunner.h.
+
+        Outside the sampler guard on purpose. Acquiring an instrument is an HTTP
+        fetch and a ZIP unpack into ~/Music; none of it involves sfizz. Guarding
+        it would make downloads depend on an audio engine they never call --
+        accidental coupling that stays invisible until someone builds without
+        the sampler.
+    */
+    AcquisitionRunner& acquisitions() noexcept { return acquisitions_; }
+
 private:
    #if KROMOSYNTH_HAS_SAMPLER
     // The compiled-in SFZ path, resolved in one place so the empty-path and
@@ -141,6 +156,8 @@ private:
     // Message-thread only.
     LoadOutcome current_;
    #endif
+
+    AcquisitionRunner acquisitions_;
 
     juce::File logFile_;
 

@@ -27,7 +27,7 @@ juce_add_plugin(KromosynthPlugin
     NEEDS_MIDI_OUTPUT        FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
 
-    COPY_PLUGIN_AFTER_BUILD  TRUE
+    COPY_PLUGIN_AFTER_BUILD  ${KROMOSYNTH_COPY_AFTER_BUILD}
 )
 
 target_sources(KromosynthPlugin PRIVATE
@@ -37,6 +37,10 @@ target_sources(KromosynthPlugin PRIVATE
     PluginEditor.h
     InstrumentLibrary.cpp
     InstrumentLibrary.h
+    ArtifactAcquisition.cpp
+    ArtifactAcquisition.h
+    AcquisitionRunner.cpp
+    AcquisitionRunner.h
     ShellPage.h
 )
 
@@ -71,6 +75,7 @@ target_compile_definitions(KromosynthPlugin PRIVATE
     # semantics, with native integration OFF. Neither compromises the other.
     # See WP_SYNTHIS_PLUGIN.md §12.
     KROMOSYNTH_WEB_APP_URL="${KROMOSYNTH_WEB_APP_URL}"
+    KROMOSYNTH_VI_SERVICE_URL="${KROMOSYNTH_VI_SERVICE_URL}"
     KROMOSYNTH_WEBVIEW_PROBE=$<BOOL:${KROMOSYNTH_WEBVIEW_PROBE}>
     KROMOSYNTH_PROBE_DELAY_MS=${KROMOSYNTH_PROBE_DELAY_MS}
     KROMOSYNTH_EDITOR_STUB=$<BOOL:${KROMOSYNTH_EDITOR_STUB}>

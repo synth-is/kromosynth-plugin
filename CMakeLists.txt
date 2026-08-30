@@ -39,6 +39,22 @@ set(KROMOSYNTH_PROBE_DELAY_MS "3000" CACHE STRING
 # docs/STAGE0_FINDINGS.md §A3.1c.
 option(KROMOSYNTH_EDITOR_STUB "Build editor with a plain component instead of the webview" OFF)
 
+# ── Whether a build installs itself ──────────────────────────────────────────
+#
+# ON reproduces the historical behaviour exactly: JUCE copies each built bundle
+# to ~/Library/Audio/Plug-Ins, and cmake/Signing.cmake re-copies over it.
+#
+# OFF exists for compile verification. A plugin build otherwise overwrites the
+# installed bundle and, with KROMOSYNTH_SIGN_IDENTITY empty, replaces a
+# Developer ID signed and notarised copy with an ad-hoc one -- silently, as a
+# side effect of checking whether the code compiles. That is a destructive
+# default for a question as small as "does it build".
+#
+# Turning this OFF also suppresses the signing re-copy, because that step is
+# guarded on JUCE_PLUGIN_COPY_DIR, which JUCE only sets when the copy is on.
+option(KROMOSYNTH_COPY_AFTER_BUILD
+       "Copy built plugin bundles into ~/Library/Audio/Plug-Ins" ON)
+
 # §A3.1c occlusion test. Pixels trimmed from the bottom and right of the
 # browser's bounds so JUCE's ResizableCornerComponent (18x18) is not covered by
 # the native WKWebView NSView. 0 = off. 24 exposes the grip with margin.
@@ -50,6 +66,15 @@ set(KROMOSYNTH_BROWSER_INSET "0" CACHE STRING
 # .env.example (APP_PUBLIC_URL=https://synth.is), not guessed.
 set(KROMOSYNTH_WEB_APP_URL "https://synth.is" CACHE STRING
     "Deployed synth.is web app origin loaded into the plugin webview")
+
+# Where the plugin fetches artefacts from, using the ticket the site hands it
+# over the sentinel URL (WP_SYNTHIS_PLUGIN SS13). A separate host from the web
+# app, and read from nginx.conf's vi.synth.is server block rather than guessed.
+#
+# A cache variable so acquire-probe and a local kromosynth-vi can be pointed at
+# each other without editing code.
+set(KROMOSYNTH_VI_SERVICE_URL "https://vi.synth.is" CACHE STRING
+    "kromosynth-vi origin the plugin downloads instrument archives from")
 
 # The instrument the sampler engine loads, compiled in as a define.
 #

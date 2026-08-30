@@ -101,6 +101,7 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
 <header>
   <h1>Instruments</h1>
   <span class="count" id="count"></span>
+  <button id="browse">Browse synth.is</button>
   <button id="refresh">Refresh</button>
 </header>
 <main id="list"></main>
@@ -246,6 +247,49 @@ async function refresh () {
 }
 
 document.getElementById('refresh').addEventListener('click', refresh);
+
+// The only way into the site surface. The site cannot put the user back here --
+// it has no bridge -- so the return trip is the plugin's own strip, drawn in
+// C++ above the site component.
+document.getElementById('browse').addEventListener('click', function () {
+  call('openSite').catch(function (e) { setStatus(String(e), 'err'); });
+});
+
+// Downloads are polled, not pushed. They run on a pool thread owned by the
+// processor and outlive this editor, so there is nothing for them to push to.
+// One second is well inside human patience and nowhere near often enough to
+// matter for a call that reads a vector under a lock.
+var sawActive = false;
+
+async function pollAcquisitions () {
+  if (!backend) return;
+  try {
+    const jobs = await call('getAcquisitions');
+    if (!jobs || !jobs.length) return;
+
+    const active = jobs.filter(function (j) { return !j.finished; });
+
+    if (active.length) {
+      sawActive = true;
+      const j = active[0];
+      const pct = j.progress >= 0 ? ' ' + Math.round(j.progress * 100) + '%' : '';
+      setStatus('Downloading ' + j.id + pct);
+      return;
+    }
+
+    // Everything finished. Report the outcomes once, then clear them so the
+    // list does not grow for the life of the session.
+    const failed = jobs.filter(function (j) { return !j.ok; });
+    setStatus(failed.length ? failed[0].message
+                            : 'Downloaded ' + jobs.length + ' instrument(s).',
+              failed.length ? 'err' : undefined);
+    await call('clearFinishedAcquisitions');
+
+    if (sawActive) { sawActive = false; refresh(); }
+  } catch (e) { /* a poll that fails is not worth a visible error */ }
+}
+
+setInterval(pollAcquisitions, 1000);
 refresh();
 </script>
 </body>
