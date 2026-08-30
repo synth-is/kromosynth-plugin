@@ -130,3 +130,9 @@ if(KROMOSYNTH_BUILD_SAMPLER)
     add_subdirectory(tools/sfz-probe)
     add_subdirectory(tools/engine-probe)
 endif()
+
+# acquire-probe links juce_core only -- no sfizz, no webview, no audio device --
+# so it is not gated behind the sampler. It exists to exercise the acquisition
+# path without building the plugin, because a plugin rebuild re-signs and
+# un-notarises the installed bundle (STAGE0_FINDINGS L5, L7).
+add_subdirectory(tools/acquire-probe)
