@@ -132,11 +132,25 @@ void tidyStaging (const juce::File& libraryRoot)
 {
     const auto staging = libraryRoot.getChildFile (kStagingDirName);
 
-    if (staging.isDirectory()
-        && staging.getNumberOfChildFiles (juce::File::findFilesAndDirectories) == 0)
-    {
+    if (! staging.isDirectory())
+        return;
+
+    // ignoreHiddenFiles matters and is not cosmetic. JUCE counts hidden files by
+    // default, and Finder drops a .DS_Store into any directory it looks at --
+    // including this one. Without the flag the emptiness test is permanently
+    // false on a real Mac, and the staging directory is never removed, while a
+    // scratch directory under /tmp never acquires a .DS_Store and the selftest
+    // passes. The test did not share the failure mode with the thing it stood
+    // in for.
+    //
+    // deleteRecursively then removes the .DS_Store along with the directory,
+    // which is right: it is Finder's litter inside our staging area, not
+    // anybody's data.
+    const auto realChildren = staging.getNumberOfChildFiles (
+        juce::File::findFilesAndDirectories | juce::File::ignoreHiddenFiles);
+
+    if (realChildren == 0)
         staging.deleteRecursively();
-    }
 }
 
 /** Runs tidyStaging on the way out, however we leave.

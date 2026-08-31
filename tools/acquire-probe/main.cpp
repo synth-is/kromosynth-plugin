@@ -248,6 +248,34 @@ int selftest (const juce::File& scratch)
             check (! failLib.getChildFile (".incoming").exists(),
                    "a failed fetch leaves no staging directory behind");
         }
+
+        // Finder drops a .DS_Store into directories it looks at, including the
+        // staging directory. JUCE counts hidden files unless told not to, so
+        // that one file made the emptiness check permanently false and the
+        // staging directory survived every download on a real machine.
+        //
+        // The earlier version of this selftest could not have caught it: a
+        // scratch directory under /tmp never acquires a .DS_Store, so the test
+        // environment did not share the failure mode with the thing it stood in
+        // for. Planting one is the whole point of this case.
+        {
+            const auto dsLib = scratch.getChildFile ("library4");
+            dsLib.createDirectory();
+
+            const auto zip = zips.getChildFile ("dsstore.zip");
+            makeZip (zip, { "instrument.sfz", "samples/a.wav" }, blocks);
+
+            const auto staging = dsLib.getChildFile (".incoming");
+            staging.createDirectory();
+            staging.getChildFile (".DS_Store").replaceWithText ("finder litter");
+            check (staging.getChildFile (".DS_Store").existsAsFile(),
+                   "the .DS_Store fixture was actually written");
+
+            check (installFromArchive (zip, "ds-victim", dsLib).ok,
+                   "install succeeds with Finder litter in staging");
+            check (! staging.exists(),
+                   "staging is removed even when it holds only a .DS_Store");
+        }
     }
 
     line ("");
