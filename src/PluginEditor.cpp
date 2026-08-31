@@ -428,8 +428,17 @@ void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
     // whatever the user had reached -- including a half-completed sign-in.
     if (shouldShowSite && ! siteLoaded_)
     {
-        proc_.logEvent ("navigating to site " KROMOSYNTH_WEB_APP_URL);
-        site_->goToURL (KROMOSYNTH_WEB_APP_URL);
+        // ?client=synthis-plugin lets the web app know where it is without
+        // sniffing the User-Agent. The embedded WKWebView UA is detectable
+        // (STAGE0_FINDINGS B3), but that fingerprint also matches Electron
+        // shells and in-app browsers, so the app treats it as a fallback and
+        // this parameter as the statement. See packages/web/src/services/
+        // pluginHost.js.
+        const juce::String url = juce::String (KROMOSYNTH_WEB_APP_URL)
+                               + "?client=synthis-plugin";
+
+        proc_.logEvent ("navigating to site " + url);
+        site_->goToURL (url);
         siteLoaded_ = true;
     }
 
