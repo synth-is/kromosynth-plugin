@@ -58,6 +58,16 @@ public:
     */
     juce::File pathFor (const juce::String& id) const;
 
+    /** Reads the display name from an instrument's synthis.json, written at
+        acquisition time from the label the site showed.
+
+        Empty when the file is absent or malformed, so callers fall back to the
+        SFZ header. Public because it is a stateless reader of a documented file
+        format and because scan() walks a fixed root, which leaves no other way
+        to exercise it against a fixture.
+    */
+    static juce::String readSidecarName (const juce::File& instrumentFolder);
+
 private:
     /** Reads a display name out of the SFZ comment header if one is there.
 

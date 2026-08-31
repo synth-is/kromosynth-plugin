@@ -7,6 +7,24 @@ juce::File InstrumentLibrary::root()
                .getChildFile ("Instruments");
 }
 
+juce::String InstrumentLibrary::readSidecarName (const juce::File& folder)
+{
+    const auto sidecar = folder.getChildFile ("synthis.json");
+
+    if (! sidecar.existsAsFile())
+        return {};
+
+    // Fails quietly to empty. A malformed sidecar should cost the instrument
+    // its nice label, not its place in the list -- the SFZ is the thing that
+    // makes it playable, and this file is decoration on top of it.
+    const auto parsed = juce::JSON::parse (sidecar.loadFileAsString());
+
+    if (auto* obj = parsed.getDynamicObject())
+        return obj->getProperty ("name").toString().trim();
+
+    return {};
+}
+
 juce::String InstrumentLibrary::readDisplayName (const juce::File& sfz,
                                                  const juce::String& fallbackId)
 {
@@ -72,7 +90,14 @@ std::vector<InstrumentLibrary::Entry> InstrumentLibrary::scan() const
         Entry entry;
         entry.id = folder.getFileName();
         entry.sfz = sfz;
-        entry.name = readDisplayName (sfz, entry.id);
+        // The sidecar wins when present. It holds the label the site showed on
+        // the card the user clicked, which is the only name they have ever seen
+        // for this instrument. The SFZ header's "Sounds:" ULID is a fallback for
+        // instruments that predate acquisition or were placed here by hand.
+        entry.name = readSidecarName (folder);
+
+        if (entry.name.isEmpty())
+            entry.name = readDisplayName (sfz, entry.id);
 
         entries.push_back (std::move (entry));
     }

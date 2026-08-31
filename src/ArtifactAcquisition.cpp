@@ -11,6 +11,7 @@ namespace
 constexpr const char* kHttpsFallbackPath = "/__synthis_plugin/acquire";
 constexpr const char* kTicketHeader = "X-Extraction-Ticket";
 constexpr const char* kStagingDirName = ".incoming";
+constexpr const char* kSidecarName = "synthis.json";
 constexpr int kConnectionTimeoutMs = 20000;
 
 /** Reads one query parameter. juce::URL parses these for us; doing it by hand
@@ -101,6 +102,29 @@ std::optional<juce::String> findInstrumentPrefix (juce::ZipFile& zip)
     }
 
     return best;
+}
+
+/** Cleans a label for display.
+
+    Not a path component, so the strict isSafeComponent rules would be wrong
+    here -- a name may legitimately contain spaces and punctuation. What it must
+    not contain is control characters, which would corrupt the sidecar and the
+    list, or unbounded length, which would push everything else off the row.
+
+    An empty result is fine: the caller falls back to the existing behaviour.
+*/
+juce::String sanitiseDisplayName (const juce::String& raw)
+{
+    juce::String cleaned;
+    cleaned.preallocateBytes (128);
+
+    for (auto c : raw)
+    {
+        if (c >= 32 && c != 127)
+            cleaned << juce::String::charToString (c);
+    }
+
+    return cleaned.trim().substring (0, 96);
 }
 
 /** Deletes a staging leftover without caring whether it was there. */
@@ -204,6 +228,7 @@ std::optional<Request> parseSentinel (const juce::String& url)
     r.artifactId = param (parsed, "artifact");
     r.fileName   = param (parsed, "file");
     r.ticket     = param (parsed, "ticket");
+    r.name       = sanitiseDisplayName (param (parsed, "name"));
 
     if (! r.isValid())
         return std::nullopt;
@@ -233,7 +258,8 @@ juce::String redactForLog (const juce::String& url)
 
 Result installFromArchive (const juce::File& archive,
                            const juce::String& artifactId,
-                           const juce::File& libraryRoot)
+                           const juce::File& libraryRoot,
+                           const juce::String& displayName)
 {
     if (! isSafeComponent (artifactId))
         return { false, {}, "Refusing an unsafe artefact id" };
@@ -302,6 +328,20 @@ Result installFromArchive (const juce::File& archive,
 
     const auto destination = libraryRoot.getChildFile (artifactId);
     const auto replaced = staging.getChildFile (artifactId + ".replaced");
+
+    // Written into the staging copy, so it arrives with the atomic move rather
+    // than as a second step afterwards. A directory that appeared without its
+    // sidecar would show the old ULID until the next download rewrote it.
+    if (displayName.isNotEmpty())
+    {
+        auto* meta = new juce::DynamicObject();
+        meta->setProperty ("name", displayName);
+        meta->setProperty ("artifactId", artifactId);
+        meta->setProperty ("acquiredAt", juce::Time::getCurrentTime().toISO8601 (true));
+
+        unpacked.getChildFile (kSidecarName)
+                .replaceWithText (juce::JSON::toString (juce::var (meta)));
+    }
 
     discard (replaced);
 
@@ -433,7 +473,8 @@ Result fetchAndInstall (const Request& request,
         }
     }
 
-    auto result = installFromArchive (archive, request.artifactId, libraryRoot);
+    auto result = installFromArchive (archive, request.artifactId, libraryRoot,
+                                      request.name);
 
     discard (archive);
 

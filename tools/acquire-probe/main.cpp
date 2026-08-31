@@ -117,6 +117,27 @@ int selftest (const juce::File& scratch)
                    .has_value(),
                "accepts the documented https fallback");
 
+        // Names carry spaces and a '#'. Percent-decoding them is juce::URL's
+        // job, and this checks it is actually happening rather than the raw
+        // escapes landing in the library list.
+        {
+            auto named = parseSentinel (
+                "synthis://acquire?artifact=a&file=f.zip&ticket=t"
+                "&name=Virtual%20Instrument%20%23JP9YS");
+            check (named.has_value() && named->name == "Virtual Instrument #JP9YS",
+                   "decodes a display name with spaces and a hash");
+
+            auto unnamed = parseSentinel ("synthis://acquire?artifact=a&file=f.zip&ticket=t");
+            check (unnamed.has_value() && unnamed->name.isEmpty(),
+                   "a sentinel with no name is still valid");
+
+            auto nasty = parseSentinel (
+                "synthis://acquire?artifact=a&file=f.zip&ticket=t&name=%09bad%0Aname");
+            check (nasty.has_value() && ! nasty->name.containsChar ('\n')
+                       && ! nasty->name.containsChar ('\t'),
+                   "strips control characters from a display name");
+        }
+
         const auto redacted = redactForLog (good);
         check (! redacted.contains ("v1.abc.def"), "redaction removes the ticket value");
         check (! redacted.contains ("abc"), "redaction leaves no fragment of it");
@@ -275,6 +296,39 @@ int selftest (const juce::File& scratch)
                    "install succeeds with Finder litter in staging");
             check (! staging.exists(),
                    "staging is removed even when it holds only a .DS_Store");
+        }
+
+        // The naming sidecar, end to end: written at install, then read back
+        // through the same code the library list uses.
+        {
+            const auto nameLib = scratch.getChildFile ("library5");
+            nameLib.createDirectory();
+
+            const auto zip = zips.getChildFile ("named.zip");
+            makeZip (zip, { "instrument.sfz", "samples/a.wav" }, blocks);
+
+            const juce::String label = "Virtual Instrument #JP9YS";
+            check (installFromArchive (zip, "named-1", nameLib, label).ok,
+                   "installs with a display name");
+
+            const auto dir = nameLib.getChildFile ("named-1");
+            check (dir.getChildFile ("synthis.json").existsAsFile(), "sidecar written");
+            check (InstrumentLibrary::readSidecarName (dir) == label,
+                   "the library reads back the name the site sent");
+
+            // Without a name the sidecar must not appear at all, or every
+            // hand-placed instrument would gain an empty one.
+            check (installFromArchive (zip, "named-2", nameLib).ok, "installs without a name");
+            check (! nameLib.getChildFile ("named-2").getChildFile ("synthis.json").exists(),
+                   "no sidecar when no name was supplied");
+            check (InstrumentLibrary::readSidecarName (nameLib.getChildFile ("named-2")).isEmpty(),
+                   "absent sidecar reads as empty so the caller falls back");
+
+            // A corrupt sidecar must cost the label, not the instrument.
+            const auto broken = nameLib.getChildFile ("named-1").getChildFile ("synthis.json");
+            broken.replaceWithText ("{ this is not json");
+            check (InstrumentLibrary::readSidecarName (nameLib.getChildFile ("named-1")).isEmpty(),
+                   "a malformed sidecar reads as empty rather than throwing");
         }
     }
 

@@ -87,6 +87,19 @@ struct Request
     juce::String fileName;
     juce::String ticket;
 
+    /** Optional human label, supplied by the site.
+
+        Without it an acquired instrument shows as whatever the SFZ header's
+        "Sounds:" line holds -- a ULID -- or failing that the directory name,
+        which is a UUID. Neither is something anyone can pick out of a list.
+
+        The site sends the same identifier it showed on the card that was
+        clicked, so the plugin displays what the user just saw. Deliberately not
+        derived independently here: a plugin that invented a different label
+        from the same artefact would be worse than a plain one.
+    */
+    juce::String name;
+
     bool isValid() const noexcept
     {
         return artifactId.isNotEmpty() && fileName.isNotEmpty() && ticket.isNotEmpty();
@@ -155,9 +168,13 @@ Result fetchAndInstall (const Request& request,
     fetchAndInstall so the ZIP-shape normalisation can be tested against
     fixtures without a network, which is the part with three cases and
     therefore the part most likely to be wrong.
+
+    @param displayName optional; written to a sidecar the library reads in
+                       preference to the SFZ header.
 */
 Result installFromArchive (const juce::File& archive,
                            const juce::String& artifactId,
-                           const juce::File& libraryRoot);
+                           const juce::File& libraryRoot,
+                           const juce::String& displayName = {});
 
 } // namespace kromosynth::acquisition
