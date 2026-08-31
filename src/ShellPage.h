@@ -259,7 +259,16 @@ document.getElementById('browse').addEventListener('click', function () {
 // processor and outlive this editor, so there is nothing for them to push to.
 // One second is well inside human patience and nowhere near often enough to
 // matter for a call that reads a vector under a lock.
-var sawActive = false;
+//
+// This poll will usually MISS the running state entirely. A download starts
+// while the user is on the site, so the shell is hidden, and WKWebView throttles
+// timers in a hidden view. The shell typically wakes up to find the job already
+// finished. That is normal, and the reason the refresh below is unconditional:
+// an earlier version only refreshed if it had seen the job while active, which
+// meant the list silently failed to update and the user had to press Refresh.
+//
+// Refreshing on every finished batch is safe because this is the only clearer.
+// The SiteBar deliberately does not clear, so each batch is processed once.
 
 async function pollAcquisitions () {
   if (!backend) return;
@@ -270,7 +279,6 @@ async function pollAcquisitions () {
     const active = jobs.filter(function (j) { return !j.finished; });
 
     if (active.length) {
-      sawActive = true;
       const j = active[0];
       const pct = j.progress >= 0 ? ' ' + Math.round(j.progress * 100) + '%' : '';
       setStatus('Downloading ' + j.id + pct);
@@ -285,7 +293,7 @@ async function pollAcquisitions () {
               failed.length ? 'err' : undefined);
     await call('clearFinishedAcquisitions');
 
-    if (sawActive) { sawActive = false; refresh(); }
+    refresh();
   } catch (e) { /* a poll that fails is not worth a visible error */ }
 }
 

@@ -247,12 +247,19 @@ juce::String redactForLog (const juce::String& url)
     const juce::URL parsed (url);
     const auto artifact = param (parsed, "artifact");
     const auto hasTicket = param (parsed, "ticket").isNotEmpty();
+    const auto name = sanitiseDisplayName (param (parsed, "name"));
 
     // Never interpolate the ticket, not even a prefix of it. A truncated
     // credential in a log is still a credential in a log, and "just the first
     // few characters" is how that argument always starts.
+    //
+    // The name IS logged. It is not a credential, and its absence was the whole
+    // question when an acquired instrument turned up labelled with a ULID: the
+    // log could not distinguish "the site sent no name" from "the plugin
+    // dropped it", which took a diff of the deployed bundle to settle.
     return withoutQuery (url)
          + " artifact=" + (artifact.isNotEmpty() ? artifact : juce::String ("?"))
+         + " name=" + (name.isNotEmpty() ? name.quoted() : juce::String ("absent"))
          + " ticket=" + (hasTicket ? "present" : "absent");
 }
 
