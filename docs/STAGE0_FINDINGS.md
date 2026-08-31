@@ -3562,3 +3562,171 @@ shell does not get the full window height and should not assume it.
   `releaseResources` and the destructor, so while the plugin is alive and
   working the log says nothing. A periodic flush would have made "did it make
   sound" a glance instead of an investigation (§M1).
+
+---
+
+# O. Acquisition — the site hands the plugin a file (2026-08-31)
+
+Stage 1, WP_SYNTHIS_PLUGIN §12–13. Working end to end and verified against the
+live system at every layer, not against a stand-in: HMAC minting through the
+real quota exemptions, ticket verification at `/vi/plugin-file`, a custom scheme
+reaching `pageAboutToLoad` in a live WKWebView, ZIP normalisation, atomic
+install, naming, and three separate acquisition paths.
+
+## O1. §13's three open questions, and the two that were wrong
+
+Answered by reading the tree before writing code. Recorded in full in
+WP_SYNTHIS_PLUGIN §13; the corrections in brief:
+
+- **"The two services share no secret, across two machines."** Wrong twice.
+  They already share `INTERNAL_API_KEY` (`kromosynth-vi/src/services/genomeService.js:8`,
+  validated at `kromosynth-recommend/src/middleware/auth.js:165`), and both run
+  on the hub — one `SYNTH_ROOT` in `pm2/ecosystem.config.js`, both proxied to
+  `127.0.0.1`. One env var on one box.
+
+- **"The server already knows about own-entry and re-download exemptions."**
+  Half right, and the wrong half mattered. `isOwnEntry` and `hasDownloadedEntry`
+  live in `takeoutRoutes.js` at the call site. `QuotaService.checkAndRecordExtraction`
+  has neither — it stores `entryId` and never reads it back. A new endpoint would
+  have inherited nothing and charged users for their own instruments. Hence
+  minting inside `POST /api/takeout/:entryId/download` rather than a new route.
+
+- **"Cloudflare may already front these routes."** It does not. Flexible SSL,
+  plain `proxy_pass` to `127.0.0.1:3090`, no Access rule — confirmed by an
+  unauthenticated request reaching Express. But the web app downloads by anchor
+  click (`takeoutDownload.js:118-124`, `viRenderingService.js:183`), and an
+  anchor navigation cannot carry a header, so enforcing tickets on `/vi/file/`
+  would have broken every browser download. Separate route instead.
+
+**Accepted knowingly:** the ticket protects no bytes. `/vi/file/` remains open
+and CORS-wildcarded. What it buys is that the plugin holds no account
+credential, the surface is labelled for the funnel, and the PKCE seam stays
+clean.
+
+## O2. The artefact is a ZIP, and its shape varies three ways
+
+Not in the WP, and `InstrumentLibrary::scan()` recognises only the first shape.
+From `artifactManager.js`:
+
+| case | contents |
+|---|---|
+| single-format sfz | `instrument.sfz`, `samples/`, `metadata.json` at root |
+| multi-format | `sfz/instrument.sfz`, `sfz/samples/`, plus a dir per format |
+| non-sfz primary | conversion root contents, **no `instrument.sfz`** |
+| single-sample | a bare `.wav`, not a ZIP at all |
+
+`ArtifactAcquisition` finds the shallowest `instrument.sfz`, extracts only that
+subtree, and refuses an archive with none — installing a directory `scan()`
+silently skips would look like a download that vanished.
+
+## O3. Four checks that could not fail in the direction they watched
+
+The session's actual yield. Each passed while the thing it guarded was broken.
+
+1. **Staging leak.** The selftest asserted "staging is cleaned up" and exercised
+   `installFromArchive` only. `fetchAndInstall` creates the staging directory and
+   has eight early returns, none of which reached the cleanup. Found by the
+   end-to-end run, fixed with a scope guard so a future early return cannot
+   reintroduce it.
+
+2. **`.DS_Store`.** `getNumberOfChildFiles` counts hidden files unless passed
+   `ignoreHiddenFiles`. Finder drops a `.DS_Store` into any directory it looks
+   at, so the emptiness test was permanently false on a real Mac and the staging
+   directory survived every download. A `/tmp` scratch directory never acquires
+   one — the test environment did not share the failure mode with production.
+   The selftest now plants a `.DS_Store`, verified failing (40/41) before
+   passing (41/41).
+
+3. **`sawActive`.** The shell refreshed its list only if it had observed a
+   download while running. But a download always starts while the user is on the
+   site, so the shell is hidden, and WKWebView throttles timers in hidden views:
+   the shell woke to find the job finished, cleared it, and skipped the refresh.
+   The gate guarded against a repeat that cannot happen — the shell is the only
+   clearer.
+
+4. **Wrong entry point.** `watchAndAcquire` was wired into `VirtualInstrumentPanel`
+   only. Re-render goes through `handleRerender` in `TakeoutView.jsx`, which
+   shares no code with it, so re-rendering inside the plugin did nothing visible.
+   Two call sites that look equivalent and are not — twice in one session, the
+   second being `downloadTakeoutEntry` versus `downloadInstrumentEntry` (that one
+   delegates, so it was fine, but only by luck).
+
+## O4. Three JUCE APIs guessed wrong, all caught by compiling or running
+
+Continuing §N1's tally.
+
+- `WebBrowserComponent::getCurrentURL` does not exist in JUCE 9 — `goToURL` only.
+- `String::upToLastOccurrenceOf` returns the **whole string** when the separator
+  is absent (`juce_String.cpp:1629`), so a root-level `instrument.sfz` produced
+  the prefix `"instrument.sfz"` rather than `""`. The nested archive shape
+  installed; the common one did not.
+- `File::getNumberOfChildFiles` counts hidden files by default (see O3.2).
+
+What was read rather than assumed, and held: `juce_WebBrowserComponent_mac.mm:432-442`
+forwards WKWebView's navigation policy to `pageAboutToLoad`, and
+`juce_ZipFile.cpp:470,490` already guards traversal and symlinks, so
+`ArtifactAcquisition` does not re-implement either.
+
+## O5. API facts worth not re-deriving
+
+Established by querying live entries, not by reading code:
+
+- Takeout entries have **no name field**. The UI composes `Virtual Instrument #JP9YS`
+  from the id. The sentinel carries that same string so the plugin shows what the
+  user clicked.
+- Statuses in use: `completed`, `failed`, `artifacts_pruned`. The last was
+  unanticipated.
+- `sounds[0].class` sometimes holds a readable fragment (`238_buzz_drone-2_0_1`)
+  and sometimes does not (`2_2_2_PQ-4_0_1`), depending on whether the run used
+  CLAP prompt classes. Not dependable as a name source.
+- **Re-render starts from a terminal status.** The button only appears on failed
+  or pruned entries, so a naive poll reads the stale `failed` on its first tick
+  and reports failure before the retry has begun. `watchAndAcquire` waits for the
+  status to move off its starting value first.
+
+## O6. Custom scheme over https sentinel
+
+`synthis://acquire?artifact=…&file=…&name=…&ticket=…`, chosen on failure-mode
+asymmetry rather than elegance. If the plugin is not listening, a custom scheme
+goes nowhere and the failure is visible in testing; an unintercepted https
+sentinel would be a real request putting the ticket into Cloudflare's edge logs.
+
+Confirmed working on a live host (`acquisition_sentinel` at 2026-08-31T15:08:55Z).
+`parseSentinel` still accepts an https fallback form, now unexercised.
+
+The ticket is redacted in logs; the name is not, because "did the site send one"
+was a question the log could not answer and settling it took diffing the deployed
+JS bundle.
+
+## O7. Tooling added
+
+- **`tools/acquire-probe`** — drives acquisition with no plugin, host, webview or
+  audio device. 51 checks. Exists because the alternative is building the plugin,
+  which re-signs and un-notarises the installed bundle.
+- **`KROMOSYNTH_COPY_AFTER_BUILD`** (default ON) — OFF suppresses JUCE's install
+  copy and, with it, the signing re-copy, which is guarded on `JUCE_PLUGIN_COPY_DIR`.
+  A compile check no longer replaces a notarised bundle with an ad-hoc one as a
+  side effect.
+- **`scripts/build.sh`** — `verify` and `install` modes, signing identity read
+  from the keychain rather than typed. Checks afterwards that the mode did what
+  it claimed, in both directions.
+
+## O8. Open
+
+- **`/vi/file/` is unauthenticated**, `Access-Control-Allow-Origin: *`, no expiry
+  check. Known before this work and unchanged by it. Closing it needs the web
+  app's anchor-click download rebuilt.
+- **`tests/` is gitignored in kromosynth-recommend** (`.gitignore:93`) and no test
+  there is tracked. `ExtractionTicket.test.js` exists on disk only. The
+  kromosynth-vi mirror test **is** tracked, and it is the one that matters — it
+  checks a ticket minted by the other service against a published vector, and
+  nothing else would notice the two implementations drifting.
+- **`~/.gitignore_global` line 10 is a bare `render`** — unanchored, so it matches
+  any directory named `render` at any depth in every repo on this machine. Six
+  tracked source files under `packages/web/src/components/render/` live inside it
+  and are tracked only because something force-added them. New files there are
+  silently skipped by `git add`.
+- **Naming is better, not solved.** `Virtual Instrument #8NMZJ` beats a UUID and
+  is still not descriptive.
+- **Quota cost appears only after the click**, and grabbing from a feed is far
+  higher frequency than deliberate takeout.
