@@ -280,7 +280,7 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     site_->interceptsSentinels = true;
     addChildComponent (*site_);
 
-    siteBar_ = std::make_unique<SiteBar> ([this] { showSite (false); });
+    siteBar_ = std::make_unique<SiteBar> (proc_, [this] { showSite (false); });
     addChildComponent (*siteBar_);
 #endif
 
@@ -401,15 +401,117 @@ void KromosynthAudioProcessorEditor::StubContent::paint (juce::Graphics&) {}
 
 // ── Lifecycle hooks ──────────────────────────────────────────────────────────
 
-KromosynthAudioProcessorEditor::SiteBar::SiteBar (std::function<void()> onBack)
+KromosynthAudioProcessorEditor::SiteBar::SiteBar (KromosynthAudioProcessor& proc,
+                                                  std::function<void()> onBack)
+    : proc_ (proc)
 {
     back.onClick = std::move (onBack);
     addAndMakeVisible (back);
 }
 
+void KromosynthAudioProcessorEditor::SiteBar::visibilityChanged()
+{
+    // Only poll while the user can see the result. While the site is hidden the
+    // shell is up and doing its own polling, and two timers asking the same
+    // question is one too many.
+    if (isVisible())
+    {
+        timerCallback();      // paint now rather than after one tick
+        startTimer (250);
+    }
+    else
+    {
+        stopTimer();
+    }
+}
+
+juce::String KromosynthAudioProcessorEditor::SiteBar::describe (
+    const std::vector<AcquisitionRunner::Status>& jobs, bool& anyFailed)
+{
+    anyFailed = false;
+
+    if (jobs.empty())
+        return {};
+
+    int active = 0;
+    double worstProgress = 1.0;
+
+    for (const auto& j : jobs)
+    {
+        if (j.finished)
+            continue;
+
+        ++active;
+
+        if (j.progress >= 0.0)
+            worstProgress = juce::jmin (worstProgress, j.progress);
+    }
+
+    if (active > 0)
+    {
+        // No artefact id in the text. It is a UUID, it means nothing to the
+        // person reading it, and it is the widest thing that could go into a
+        // strip that also has to hold a button.
+        juce::String what = active == 1
+            ? juce::String ("Downloading instrument")
+            : "Downloading " + juce::String (active) + " instruments";
+
+        if (worstProgress < 1.0)
+            what << "  " << juce::roundToInt (worstProgress * 100.0) << "%";
+
+        return what;
+    }
+
+    // Nothing running. Report failures in preference to successes: a silent
+    // failure is the case where the user returns to the library, finds nothing
+    // new, and has no way to find out why.
+    for (const auto& j : jobs)
+    {
+        if (! j.ok)
+        {
+            anyFailed = true;
+            return j.message;
+        }
+    }
+
+    return jobs.size() == 1
+         ? juce::String ("Installed - ready in Library")
+         : "Installed " + juce::String ((int) jobs.size()) + " instruments";
+}
+
+void KromosynthAudioProcessorEditor::SiteBar::timerCallback()
+{
+    bool failed = false;
+    const auto text = describe (proc_.acquisitions().snapshot(), failed);
+
+    // Repaint only on change. This runs four times a second for as long as the
+    // site is open, and a webview is already the expensive thing on screen.
+    if (text == status_ && failed == failed_)
+        return;
+
+    status_ = text;
+    failed_ = failed;
+    repaint();
+}
+
+// Deliberately does NOT call clearFinished(). The shell does that, and exactly
+// one consumer may: if both cleared, whichever surface polled first would
+// swallow the outcome and the other would never show it. Leaving finished
+// entries in place means this bar keeps reporting the last result until the
+// user returns to the library, which is the moment it stops being useful.
 void KromosynthAudioProcessorEditor::SiteBar::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour::fromRGB (0x1a, 0x1d, 0x21));
+
+    if (status_.isEmpty())
+        return;
+
+    g.setColour (failed_ ? juce::Colour::fromRGB (0xe0, 0x6c, 0x60)
+                         : juce::Colour::fromRGB (0x9a, 0xa4, 0xae));
+    g.setFont (juce::FontOptions (12.0f));
+
+    auto area = getLocalBounds().withTrimmedLeft (120).reduced (6, 0);
+    g.drawText (status_, area, juce::Justification::centredLeft, true);
 }
 
 void KromosynthAudioProcessorEditor::SiteBar::resized()

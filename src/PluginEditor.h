@@ -88,21 +88,46 @@ private:
     // follow a sign-in redirect.
     std::unique_ptr<InstrumentedBrowser> site_;
 
-    /** The way back from the site.
+    /** The way back from the site, and the only place a download is visible
+        while the user is on it.
 
         The site has no bridge, so it cannot call the plugin to return to the
-        library. The plugin therefore owns this chrome. It is deliberately the
-        plugin's own strip and not something the web app renders, because the
-        web app must not be able to remove the only exit.
+        library and the plugin cannot call the site to report progress. That is
+        the WP section 12 pairing working as intended, not a gap to patch: the
+        bridge is off so that off-origin navigation is safe for sign-in.
+
+        The consequence is that download status has nowhere to live except here.
+        The shell's status line is hidden precisely when a download is running,
+        because the user is on the site when they start one.
+
+        Drawn by the process that actually knows. Anything the web app could
+        show would only mean "a ticket was handed over" -- not that the archive
+        arrived, not that it held a usable SFZ, not that it installed.
     */
-    class SiteBar : public juce::Component
+    class SiteBar : public juce::Component,
+                    private juce::Timer
     {
     public:
-        explicit SiteBar (std::function<void()> onBack);
+        SiteBar (KromosynthAudioProcessor& proc, std::function<void()> onBack);
+
         void paint (juce::Graphics&) override;
         void resized() override;
+        void visibilityChanged() override;
 
         juce::TextButton back { "< Library" };
+
+    private:
+        void timerCallback() override;
+
+        /** Renders the runner's snapshot into one line. */
+        static juce::String describe (const std::vector<AcquisitionRunner::Status>&,
+                                      bool& anyFailed);
+
+        KromosynthAudioProcessor& proc_;
+        juce::String status_;
+        bool failed_ = false;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SiteBar)
     };
 
     std::unique_ptr<SiteBar> siteBar_;
