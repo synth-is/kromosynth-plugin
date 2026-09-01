@@ -58,6 +58,29 @@ public:
     */
     juce::File pathFor (const juce::String& id) const;
 
+    /** What kind of instrument an id names, and the files it needs.
+
+        An installed instrument is a folder, and what is inside decides which
+        engine plays it: `instrument.sfz` is a rendered sample set for sfizz,
+        `instrument.wasm` plus `instrument.json` is a live Faust program. The
+        site does not have to say which; the artefact already knows.
+
+        The .wasm/.json pair is PROVISIONAL. Nothing produces one yet -- the
+        takeout path still ships a ZIP of samples -- so these names are chosen
+        here and will have to be agreed with kromosynth-vi before anything
+        depends on them.
+    */
+    enum class Kind { none, sampler, faust };
+
+    struct Resolved
+    {
+        Kind kind = Kind::none;
+        juce::File primary;    ///< instrument.sfz, or instrument.wasm
+        juce::File metadata;   ///< empty for sampler; instrument.json for Faust
+    };
+
+    Resolved resolve (const juce::String& id) const;
+
     /** Reads the display name from an instrument's synthis.json, written at
         acquisition time from the label the site showed.
 

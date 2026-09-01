@@ -55,6 +55,13 @@ for arg in "$@"; do
   esac
 done
 
+# The Faust engine is ON by default because a build that omits it routes every
+# Faust instrument in the library to the "no engine" path, which renders
+# silence and looks exactly like a broken instrument rather than a missing
+# feature. KROMOSYNTH_BUILD_FAUST=OFF in the environment turns it off
+# deliberately.
+FAUST="${KROMOSYNTH_BUILD_FAUST:-ON}"
+
 AU_DEST="$HOME/Library/Audio/Plug-Ins/Components/Synth.is.component"
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
@@ -108,6 +115,7 @@ echo "Configuring $BUILD_DIR (copy after build: $COPY)"
 cmake -S . -B "$BUILD_DIR" -G "Unix Makefiles" \
       -DCMAKE_BUILD_TYPE=Release \
       -DKROMOSYNTH_BUILD_SAMPLER=ON \
+      -DKROMOSYNTH_BUILD_FAUST="$FAUST" \
       -DKROMOSYNTH_COPY_AFTER_BUILD="$COPY" \
       -DKROMOSYNTH_SIGN_IDENTITY="$IDENTITY" \
       >/dev/null

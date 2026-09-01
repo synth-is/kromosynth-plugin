@@ -111,16 +111,39 @@ std::vector<InstrumentLibrary::Entry> InstrumentLibrary::scan() const
     return entries;
 }
 
-juce::File InstrumentLibrary::pathFor (const juce::String& id) const
+InstrumentLibrary::Resolved InstrumentLibrary::resolve (const juce::String& id) const
 {
     // Rejects anything that could escape the library root. `id` arrives from
     // JavaScript, so "../../../etc/passwd" is a string someone can send, and
     // File::getChildFile would resolve it happily.
+    //
+    // This is the ONLY place that check lives. pathFor delegates here rather
+    // than repeating it, because a second copy is a second thing to forget to
+    // update.
     if (id.isEmpty() || id.containsChar ('/') || id.containsChar ('\\')
         || id.contains (".."))
         return {};
 
-    const auto sfz = root().getChildFile (id).getChildFile ("instrument.sfz");
+    const auto folder = root().getChildFile (id);
 
-    return sfz.existsAsFile() ? sfz : juce::File{};
+    const auto sfz = folder.getChildFile ("instrument.sfz");
+    if (sfz.existsAsFile())
+        return { Kind::sampler, sfz, {} };
+
+    const auto wasm = folder.getChildFile ("instrument.wasm");
+    const auto json = folder.getChildFile ("instrument.json");
+
+    // BOTH are required. A .wasm without its .json is not a degraded
+    // instrument, it is an unplayable one: the struct size and the parameter
+    // byte offsets live in the JSON and cannot be recovered from the module.
+    if (wasm.existsAsFile() && json.existsAsFile())
+        return { Kind::faust, wasm, json };
+
+    return {};
+}
+
+juce::File InstrumentLibrary::pathFor (const juce::String& id) const
+{
+    const auto r = resolve (id);
+    return r.kind == Kind::sampler ? r.primary : juce::File{};
 }

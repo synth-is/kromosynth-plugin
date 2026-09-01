@@ -7,6 +7,17 @@
  #include "SamplerEngine.h"
 #endif
 
+#if KROMOSYNTH_HAS_FAUST
+ #include "FaustEngine.h"
+
+// Fixed for the skeleton. §2.7's per-genome cap is the real answer -- measured
+// single-voice RTF carried alongside the artefact, from which a per-platform
+// cap follows arithmetically -- and nothing carries that number yet. 8 is the
+// polyphony §3.3 asks about, so it is at least the figure the archive was
+// characterised at rather than one picked here.
+static constexpr int kFaustVoices = 8;
+#endif
+
 KromosynthAudioProcessor::KromosynthAudioProcessor()
     : juce::AudioProcessor (BusesProperties()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
@@ -105,17 +116,65 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
     LoadOutcome outcome;
     outcome.id = id;
 
-    const auto file = library_.pathFor (id);
+    // The folder decides which engine plays it -- an instrument.sfz is a
+    // rendered sample set, an instrument.wasm plus its .json is a live Faust
+    // program. The shell calls one function either way and does not have to
+    // know, because the artefact already does.
+    const auto resolved = library_.resolve (id);
 
-    if (file == juce::File{})
+    if (resolved.kind == InstrumentLibrary::Kind::none)
     {
-        // pathFor rejects ids containing separators or ".." as well as ones
+        // resolve rejects ids containing separators or ".." as well as ones
         // that simply are not there, and deliberately does not distinguish:
         // telling a caller which of the two happened is a directory oracle.
         outcome.detail = "no such instrument in the local library";
         logEvent ("instrument_load_rejected id=" + id);
         return outcome;
     }
+
+   #if KROMOSYNTH_HAS_FAUST
+    if (resolved.kind == InstrumentLibrary::Kind::faust)
+    {
+        if (faust_ == nullptr)
+        {
+            outcome.detail = "plugin not activated by the host yet";
+            logEvent ("instrument_load_deferred id=" + id);
+            return outcome;
+        }
+
+        suspendProcessing (true);
+
+        faustWasm_ = resolved.primary;
+        faustJson_ = resolved.metadata;
+
+        const auto r = faust_->load (faustWasm_, faustJson_, faustRate_,
+                                     faustBlock_, kFaustVoices);
+
+        if (r.ok)
+            active_ = Active::faust;
+
+        suspendProcessing (false);
+
+        outcome.ok = r.ok;
+        outcome.detail = r.detail;
+
+        logEvent ("instrument_load id=" + id + " kind=faust"
+                  + " ok=" + juce::String (r.ok ? 1 : 0)
+                  + " dsp=\"" + r.dspName + "\""
+                  + " voices=" + juce::String (r.voices)
+                  + " gate=" + juce::String (r.hasGate ? 1 : 0)
+                  + (r.detail.isEmpty() ? juce::String()
+                                        : " detail=\"" + r.detail + "\""));
+
+        if (r.ok)
+            current_ = outcome;
+
+        updateHostDisplay();
+        return outcome;
+    }
+   #endif
+
+    const auto file = resolved.primary;
 
     if (engine_ == nullptr)
     {
@@ -152,7 +211,10 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
                                          : " detail=\"" + result.detail + "\""));
 
     if (result.ok)
+    {
         current_ = outcome;
+        active_ = Active::sampler;
+    }
 
     // The host's reported latency and tail are now stale. Tail in particular:
     // a host that cached 8.3 s from the previous instrument will truncate or
@@ -225,6 +287,12 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
                                              : " detail=\"" + result.detail + "\"")
                   + " path=" + file.getFullPathName());
 
+        // Without this the compiled-in default SFZ loads and then plays
+        // nothing, because processBlock routes on active_ rather than on
+        // whichever engine happens to be non-null.
+        if (result.ok)
+            active_ = Active::sampler;
+
         // §G4: five voices per note on an XY instrument, at every position,
         // because sfizz does not cull voices whose amplitude modulation has
         // driven them to zero. At sfizz's default 64 (Config.h:37) that is
@@ -235,7 +303,64 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
 
     suspendProcessing (false);
    #endif
+
+   #if KROMOSYNTH_HAS_FAUST
+    suspendProcessing (true);
+
+    if (faust_ == nullptr)
+        faust_ = std::make_unique<FaustEngine>();
+
+    // Recorded here rather than inside reloadFaustIfNeeded, which returns
+    // early when no instrument is set. loadInstrument needs a rate and a block
+    // size to load AT, and the only place they arrive is here.
+    faustRate_ = sampleRate;
+    faustBlock_ = samplesPerBlock;
+
+    reloadFaustIfNeeded (sampleRate, samplesPerBlock);
+
+    suspendProcessing (false);
+   #endif
 }
+
+#if KROMOSYNTH_HAS_FAUST
+
+void KromosynthAudioProcessor::reloadFaustIfNeeded (double sampleRate, int samplesPerBlock)
+{
+    // The caller holds the suspend window.
+    if (faust_ == nullptr || faustWasm_ == juce::File{})
+        return;
+
+    // Unlike sfizz there is nothing to retune. init() writes the sample rate
+    // into the DSP struct and the block size fixes the wasm memory layout, so
+    // a change in either means loading again from the module bytes. A LARGER
+    // block is the case that would corrupt rather than merely detune: the
+    // output buffer inside the module is sized for what was asked at load.
+    if (faust_->isLoaded()
+        && juce::approximatelyEqual (faustRate_, sampleRate)
+        && faustBlock_ >= samplesPerBlock)
+        return;
+
+    const auto result = faust_->load (faustWasm_, faustJson_, sampleRate,
+                                      samplesPerBlock, kFaustVoices);
+
+    logEvent ("faust_load ok=" + juce::String (result.ok ? 1 : 0)
+              + " dsp=\"" + result.dspName + "\""
+              + " struct=" + juce::String (result.structBytes)
+              + " outputs=" + juce::String (result.outputs)
+              + " voices=" + juce::String (result.voices)
+              + " rate=" + juce::String (sampleRate)
+              + " block=" + juce::String (samplesPerBlock)
+              + " gate=" + juce::String (result.hasGate ? 1 : 0)
+              + " freq=" + juce::String (result.hasFreq ? 1 : 0)
+              + " gain=" + juce::String (result.hasGain ? 1 : 0)
+              + (result.detail.isEmpty() ? juce::String()
+                                         : " detail=\"" + result.detail + "\""));
+
+    if (! result.ok)
+        active_ = Active::none;
+}
+
+#endif
 
 void KromosynthAudioProcessor::releaseResources()
 {
@@ -249,13 +374,28 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
+    // Routed on active_ rather than on "whichever engine exists", because both
+    // engines can be built and both can be constructed while only one holds an
+    // instrument. Falling through to the sampler because it happens to be
+    // non-null would play silence over a loaded Faust instrument, and silence
+    // is the failure mode this codebase keeps having to prove it does not have.
    #if KROMOSYNTH_HAS_SAMPLER
-    if (engine_ != nullptr)
+    if (active_ == Active::sampler && engine_ != nullptr)
     {
         engine_->process (buffer, midiMessages);
         return;
     }
-   #else
+   #endif
+
+   #if KROMOSYNTH_HAS_FAUST
+    if (active_ == Active::faust && faust_ != nullptr)
+    {
+        faust_->process (buffer, midiMessages);
+        return;
+    }
+   #endif
+
+   #if ! (KROMOSYNTH_HAS_SAMPLER || KROMOSYNTH_HAS_FAUST)
     juce::ignoreUnused (midiMessages);
    #endif
 

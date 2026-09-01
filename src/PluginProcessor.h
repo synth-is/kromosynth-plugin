@@ -27,6 +27,10 @@
 class SamplerEngine;
 #endif
 
+#if KROMOSYNTH_HAS_FAUST
+class FaustEngine;
+#endif
+
 #include "InstrumentLibrary.h"
 #include "AcquisitionRunner.h"
 
@@ -165,6 +169,31 @@ private:
     // CriticalSection, and that supplies the happens-before edge. See
     // SamplerEngine.h.
     std::unique_ptr<SamplerEngine> engine_;
+   #endif
+
+   #if KROMOSYNTH_HAS_FAUST
+    // The live Faust engine. Same lazy construction and same suspend
+    // discipline as the sampler.
+    //
+    // ONE DIFFERENCE THAT MATTERS: sfizz retunes in place when the sample rate
+    // changes (Synth.cpp:1073), so the sampler loads once and re-prepares.
+    // Faust bakes the sample rate into the DSP struct at init(), and the block
+    // size into the wasm memory layout, so a host that changes either forces a
+    // full RELOAD. The paths are kept so that reload is possible without the
+    // shell being asked again.
+    std::unique_ptr<FaustEngine> faust_;
+    juce::File faustWasm_, faustJson_;
+    double faustRate_ = 0.0;
+    int faustBlock_ = 0;
+
+    void reloadFaustIfNeeded (double sampleRate, int samplesPerBlock);
+   #endif
+
+   #if KROMOSYNTH_HAS_SAMPLER || KROMOSYNTH_HAS_FAUST
+    // Which engine processBlock should call. Message-thread writes happen only
+    // inside the suspend window; see prepareToPlay.
+    enum class Active { none, sampler, faust };
+    Active active_ = Active::none;
 
     InstrumentLibrary library_;
 

@@ -17,7 +17,7 @@ project(KromosynthPlugin VERSION 0.0.1 LANGUAGES C CXX)
 
 # ── Options ──────────────────────────────────────────────────────────────────
 option(KROMOSYNTH_BUILD_SAMPLER  "Build the sfizz sampler engine (Task 2)" OFF)
-option(KROMOSYNTH_BUILD_FAUST    "Build the wasm3 Faust engine (Stage 2)" OFF)
+option(KROMOSYNTH_BUILD_FAUST    "Build the wasmtime Faust engine (Stage 2)" OFF)
 option(KROMOSYNTH_WEBVIEW_PROBE  "Inject the Stage 0 environment probe JS"  ON)
 
 # How long after page load the probe fires. Default 3000 ms is enough for React
@@ -146,6 +146,11 @@ if(KROMOSYNTH_BUILD_SAMPLER)
     include(Sfizz)
 endif()
 
+# Before src/, so wasmtime::wasmtime exists when the plugin target links it.
+if(KROMOSYNTH_BUILD_FAUST)
+    include(Wasmtime)
+endif()
+
 add_subdirectory(src)
 
 # ── Developer tools (never shipped) ──────────────────────────────────────────
@@ -162,7 +167,6 @@ endif()
 # See cmake/Wasmtime.cmake for the pin, the SHA256 verification, and why this
 # deliberately does not follow VENDORING.md.
 if(KROMOSYNTH_BUILD_FAUST)
-    include(Wasmtime)
     add_subdirectory(tools/faust-probe)
 endif()
 

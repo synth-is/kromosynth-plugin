@@ -51,6 +51,13 @@ if(KROMOSYNTH_BUILD_SAMPLER)
     )
 endif()
 
+if(KROMOSYNTH_BUILD_FAUST)
+    target_sources(KromosynthPlugin PRIVATE
+        FaustEngine.cpp
+        FaustEngine.h
+    )
+endif()
+
 kromosynth_configure_target(KromosynthPlugin)
 
 target_compile_definitions(KromosynthPlugin PRIVATE
@@ -122,6 +129,16 @@ if(KROMOSYNTH_BUILD_SAMPLER)
     endif()
 else()
     target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_SAMPLER=0)
+endif()
+
+# Same 1-or-0 convention as KROMOSYNTH_HAS_SAMPLER above, for the same reason:
+# `#if` on an undefined identifier is silently 0, which is correct C++ and a bad
+# place to rely on silence.
+if(KROMOSYNTH_BUILD_FAUST)
+    target_link_libraries(KromosynthPlugin PRIVATE wasmtime::wasmtime)
+    target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_FAUST=1)
+else()
+    target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_FAUST=0)
 endif()
 
 # Must come AFTER juce_add_plugin, because it appends POST_BUILD steps that
