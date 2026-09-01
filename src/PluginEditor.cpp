@@ -287,6 +287,24 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
 
     browser_ = std::make_unique<InstrumentedBrowser> (options, proc_);
     browser_->allowedOrigin = juce::WebBrowserComponent::getResourceProviderRoot();
+    // ── keyboard focus ──────────────────────────────────────────────────
+    //
+    // SPECULATIVE, and marked as such because it is not verified from this
+    // side: Björn's GarageBand Musical Typing keys latch in the DOWN position
+    // after a press with this plugin and not with others, which is GarageBand's
+    // OWN UI state. A plugin cannot draw those keys, so the host never saw the
+    // key-up -- which is also exactly why no note-off arrived.
+    //
+    // Our editor is a WKWebView; GarageBand's own instruments have native
+    // views. A WKWebView becomes AppKit first responder when clicked, and the
+    // shell has no text input to justify holding focus. Refusing it costs
+    // nothing here and is the one thing on this side that could plausibly be
+    // the cause.
+    setWantsKeyboardFocus (false);
+    setMouseClickGrabsKeyboardFocus (false);
+    browser_->setWantsKeyboardFocus (false);
+    browser_->setMouseClickGrabsKeyboardFocus (false);
+
     addAndMakeVisible (*browser_);
 
     // ── The site ─────────────────────────────────────────────────────────────
