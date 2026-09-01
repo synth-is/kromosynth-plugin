@@ -185,6 +185,26 @@ public:
         completely different fixes. notesOn far exceeding notesOff means the
         host is not sending them.
     */
+    /** Renders this genome offline at several pitches and returns the loudest
+        peak it produced.
+
+        Three pitches, not one. Measured over 120 archive genomes, peak spread
+        across c3/a4/a5 has a median of 3.8 dB and a maximum of 24.2 dB, and
+        44 of the 120 would have their trim wrong by more than 6 dB from a
+        single pitch. The direction is inconsistent -- some are loudest low,
+        some high -- so there is no safe pitch to pick.
+
+        Leaves the engine reset. Costs one short render per pitch.
+    */
+    float measurePeak();
+
+    /** Applied to the summed output. 1.0 is off, and off is the default: the
+        null test compares raw output against the platform reference and must
+        not be silently scaled. Only the processor sets this.
+    */
+    void setOutputGain (float g) noexcept;
+    float outputGain() const noexcept;
+
     int notesOn() const noexcept;
     int notesOff() const noexcept;
     int activeVoices() const noexcept;

@@ -169,6 +169,8 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             o->setProperty ("notesOff", st.notesOff);
             o->setProperty ("activeVoices", st.activeVoices);
             o->setProperty ("forcedStops", st.forcedStops);
+            o->setProperty ("trimDb", st.trimDb);
+            o->setProperty ("rawPeak", st.rawPeak);
             done (juce::var (o));
         })
         .withNativeFunction ("panic",

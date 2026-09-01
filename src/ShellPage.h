@@ -274,6 +274,8 @@ setInterval(async () => {
     const stuck = st.notesOn - st.notesOff;
     document.getElementById('voices').textContent =
       st.activeVoices + ' voices \u00b7 on ' + st.notesOn + ' / off ' + st.notesOff
+      + (st.rawPeak > 0 ? ' \u00b7 trim ' + st.trimDb.toFixed(1) + ' dB (raw peak '
+                          + st.rawPeak.toFixed(3) + ')' : '')
       + (stuck > 0 ? ' \u00b7 ' + stuck + ' UNRELEASED' : '')
       + (st.forcedStops > 0 ? ' \u00b7 ' + st.forcedStops + ' force-stopped' : '');
   } catch (e) { /* editor closing */ }

@@ -214,6 +214,7 @@ struct FaustEngineImpl
     std::vector<float> mix;
 
     bool sustainDown = false;
+    float outputGain = 1.0f;
 
     // Diagnostics. A stuck note has two possible causes -- the engine mishandled
     // a note-off, or no note-off arrived -- and they need completely different
@@ -468,6 +469,63 @@ void FaustEngine::setParam (FaustVoice& v, int byteOffset, float value) noexcept
     if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fSetParam, args, 3, &trap))
         wasmtime_error_delete (err);
     if (trap != nullptr) wasm_trap_delete (trap);
+}
+
+void FaustEngine::setOutputGain (float g) noexcept
+{
+    if (impl_ != nullptr) impl_->outputGain = g;
+}
+
+float FaustEngine::outputGain() const noexcept
+{
+    return impl_ == nullptr ? 1.0f : impl_->outputGain;
+}
+
+float FaustEngine::measurePeak()
+{
+    if (! loaded_) return 0.0f;
+
+    int idxFreq = -1, idxGain = -1, idxGate = -1;
+    for (const auto& prm : impl_->params)
+    {
+        if (prm.label == "freq") idxFreq = prm.byteOffset;
+        if (prm.label == "gain") idxGain = prm.byteOffset;
+        if (prm.label == "gate") idxGate = prm.byteOffset;
+    }
+
+    const int pitches[] = { 48, 69, 81 };                     // c3, a4, a5
+    const int blocks = (int) (1.5 * impl_->sampleRate) / impl_->maxBlockSize;
+
+    juce::AudioBuffer<float> scratch { 1, impl_->maxBlockSize };
+    const juce::MidiBuffer noMidi;
+
+    // Measured with the trim OFF, or the second measurement would be of the
+    // first one's result.
+    const float saved = impl_->outputGain;
+    impl_->outputGain = 1.0f;
+
+    float peak = 0.0f;
+
+    for (const int p : pitches)
+    {
+        panic();
+        // Parameter-driven, so forced release never engages: this must measure
+        // the genome, not the plugin's handling of it.
+        if (idxFreq >= 0) setParameter (idxFreq, mtof (p));
+        if (idxGain >= 0) setParameter (idxGain, 1.0f);   // full velocity, the worst case
+        if (idxGate >= 0) setParameter (idxGate, 1.0f);
+
+        for (int b = 0; b < blocks; ++b)
+        {
+            process (scratch, noMidi);
+            peak = juce::jmax (peak, scratch.getMagnitude (0, impl_->maxBlockSize));
+        }
+    }
+
+    panic();
+    impl_->outputGain = saved;
+    peak_.store (0.0f, std::memory_order_relaxed);
+    return peak;
 }
 
 int FaustEngine::forcedStops() const noexcept
@@ -801,7 +859,7 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
         // outputs == 1 for this substrate, so the mono result is copied across
         // the pair. See the header: this is the opposite of SamplerEngine.
         for (int ch = 0; ch < numChannels; ++ch)
-            buffer.copyFrom (ch, pos, impl_->mix.data(), chunk);
+            buffer.copyFrom (ch, pos, impl_->mix.data(), chunk, impl_->outputGain);
 
         pos = chunkEnd;
     }

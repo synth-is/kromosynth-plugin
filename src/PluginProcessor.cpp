@@ -16,6 +16,21 @@
 // polyphony §3.3 asks about, so it is at least the figure the archive was
 // characterised at rather than one picked here.
 static constexpr int kFaustVoices = 8;
+
+// Peak the plugin trims a Faust instrument to, matching trimForLevel in
+// kromosynth-composing so a genome trimmed there and here lands in the same
+// place.
+//
+// Measured over 120 archive genomes, raw peaks span 0.0236 to 2.3975 -- a 40 dB
+// range that nothing normalises. The loudest clips by 7.6 dB on ONE voice at
+// full velocity, before polyphony. Without a trim, choosing an instrument is a
+// coin flip between inaudible and painful, and the user cannot tell which is
+// coming.
+//
+// MEASURED AT LOAD, not carried with the artefact, because the artefact carries
+// nothing yet. ARTEFACT_NUMBERS_2026-09-01 argues it should; when it does, the
+// stored value is preferred and this measurement is skipped.
+static constexpr float kFaustTargetPeak = 0.25f;
 #endif
 
 KromosynthAudioProcessor::KromosynthAudioProcessor()
@@ -119,6 +134,8 @@ KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() co
         st.notesOff = faust_->notesOff();
         st.activeVoices = faust_->activeVoices();
         st.forcedStops = faust_->forcedStops();
+        st.trimDb = 20.0f * std::log10 (juce::jmax (1.0e-9f, faustTrim_));
+        st.rawPeak = faustRawPeak_;
     }
    #endif
     return st;
@@ -189,6 +206,9 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
             active_ = Active::faust;
 
         suspendProcessing (false);
+
+        if (r.ok)
+            applyFaustTrim();
 
         outcome.ok = r.ok;
         outcome.detail = r.detail;
@@ -392,7 +412,37 @@ void KromosynthAudioProcessor::reloadFaustIfNeeded (double sampleRate, int sampl
                                          : " detail=\"" + result.detail + "\""));
 
     if (! result.ok)
+    {
         active_ = Active::none;
+        return;
+    }
+
+    applyFaustTrim();
+}
+
+void KromosynthAudioProcessor::applyFaustTrim()
+{
+    // The caller holds the suspend window.
+    if (faust_ == nullptr || ! faust_->isLoaded()) return;
+
+    faust_->setOutputGain (1.0f);
+
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    const float peak = faust_->measurePeak();
+    const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
+
+    // A genome that measured silent gets no trim rather than an infinite one.
+    const float trim = peak > 1.0e-6f ? kFaustTargetPeak / peak : 1.0f;
+
+    faust_->setOutputGain (trim);
+    faustTrim_ = trim;
+    faustRawPeak_ = peak;
+
+    logEvent ("faust_trim raw_peak=" + juce::String (peak, 6)
+              + " target=" + juce::String (kFaustTargetPeak, 3)
+              + " trim=" + juce::String (trim, 4)
+              + " trim_db=" + juce::String (20.0f * std::log10 (juce::jmax (1.0e-9f, trim)), 1)
+              + " measure_ms=" + juce::String (ms, 1));
 }
 
 #endif
