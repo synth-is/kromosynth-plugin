@@ -272,6 +272,24 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     buffer.clear();
 }
 
+bool KromosynthAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+{
+    // An instrument: no input bus, one output bus, mono or stereo.
+    //
+    // Declared rather than left to JUCE's permissive default, which advertised
+    // 4, 5, 6, 7 and 8 channel outputs the engine cannot fill. See the header
+    // for the auval warning that surfaced it. Mono is kept because
+    // SamplerEngine::process genuinely implements it (the scratch downmix),
+    // not because a host might ask.
+    if (layouts.getMainInputChannels() != 0)
+        return false;
+
+    const auto out = layouts.getMainOutputChannelSet();
+
+    return out == juce::AudioChannelSet::mono()
+        || out == juce::AudioChannelSet::stereo();
+}
+
 juce::AudioProcessorEditor* KromosynthAudioProcessor::createEditor()
 {
     return new KromosynthAudioProcessorEditor (*this);

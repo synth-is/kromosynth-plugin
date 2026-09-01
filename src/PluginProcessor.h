@@ -43,6 +43,21 @@ public:
     void releaseResources() override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
+    // Without this override JUCE tells the AU wrapper that ANY output count is
+    // supported, and auval duly reports channel capabilities of [0, -1] with:
+    //
+    //   WARNING: Source AU supports multi-channel output but does not provide
+    //            a channel layout
+    //
+    // The warning is accurate and the declaration was the thing that was wrong.
+    // SamplerEngine::process handles exactly two cases -- a stereo pair written
+    // in place, and a mono bus downmixed through scratch -- and explicitly
+    // clears any channel from index 2 upward because "the alternative to
+    // clearing an unexpected channel is emitting whatever the host left in it".
+    // So 4, 5, 6, 7 and 8 channel layouts were advertised and would have
+    // produced silence in every channel past the second.
+    bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
+
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
