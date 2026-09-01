@@ -3711,6 +3711,66 @@ JS bundle.
   from the keychain rather than typed. Checks afterwards that the mode did what
   it claimed, in both directions.
 
+## O10. QWERTY typing latches the host's own keys — open, characterised
+
+**Date:** 2026-09-01. **Host:** GarageBand, Musical Typing. **Status:** not fixed.
+
+After a keypress, GarageBand's Musical Typing keys stay drawn in the DOWN
+position and the note never stops. **Those are the host's own UI keys.** A
+plugin cannot draw them, so this is not a stuck note with a visual side effect —
+the host never saw the key-up, and the absent note-off is a consequence rather
+than the cause.
+
+### What it is not
+
+| ruled out | how |
+|---|---|
+| the Faust engine | happens identically on SFZ instruments |
+| the sampler | happens identically on Faust instruments |
+| note handling | `faust-probe --seq`: ten overlapping notes at the host's own 44100/1024, every note-off off a block boundary, silent after 4 s, zero forced stops |
+| sample rate / block size | all three test genomes decay to exactly 0.000000 at 44100/1024 as well as 48000/512 |
+| mouse input | clicking the on-screen keys behaves correctly; only typing latches |
+| other plugins | GarageBand's own instruments do not do it |
+
+So: **our editor, keyboard events only, both engines.** The differentiator is
+that this editor is a `WebBrowserComponent` wrapping a WKWebView, and
+GarageBand's own instruments have native views.
+
+### What was tried and did not work
+
+```cpp
+setWantsKeyboardFocus (false);
+setMouseClickGrabsKeyboardFocus (false);
+browser_->setWantsKeyboardFocus (false);
+browser_->setMouseClickGrabsKeyboardFocus (false);
+```
+
+Built and installed 19:29; the log shows the failing session at 19:45, so this
+is a **measured negative**, not an untested guess. JUCE's focus flags are a
+JUCE-level model and do not override a WKWebView becoming AppKit **first
+responder**, which happens natively on click.
+
+### Where to look next
+
+- The WKWebView's `NSView` itself, via `acceptsFirstResponder` or by declining
+  to become one. JUCE 9 does not expose this on `WebBrowserComponent`, so it
+  needs the native handle out of `getPeer()` or a category.
+- Whether the latch survives clicking the host's own window first. If focus
+  never returns to the host after our view has had it once, that is a stronger
+  claim than "we hold focus".
+- Whether other webview-hosting plugins have the same symptom in GarageBand. If
+  they do, this is a WKWebView-in-AU property rather than something specific
+  here.
+
+### Why it is not blocking
+
+Mouse input on the host's on-screen keyboard works, MIDI regions and hardware
+controllers do not involve typing at all, and Panic stops anything stuck. It
+degrades one input path in one host. Recorded rather than chased because the
+session's actual objective — Stage 2 playing live Faust synthesis in a DAW —
+was met, and this is a Stage 0 editor defect that predates it and affects the
+sampler equally.
+
 ## O8. Open
 
 - **`/vi/file/` is unauthenticated**, `Access-Control-Allow-Origin: *`, no expiry

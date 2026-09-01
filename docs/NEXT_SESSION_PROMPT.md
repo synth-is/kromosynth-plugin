@@ -1,139 +1,129 @@
 # Next session — kromosynth-plugin
 
-Previous prompt preserved as `NEXT_SESSION_PROMPT.2026-08-31b.md`.
+Previous prompt preserved as `NEXT_SESSION_PROMPT.2026-09-01.md`.
 
 ## Where things stand
 
-**Stage 1 acquisition is complete and verified end to end on a live host** —
-unchanged from the previous prompt, see `NEXT_SESSION_PROMPT.2026-08-31b.md`
-for the detail.
+**Stage 2 exists and plays.** The plugin synthesises live from an evolved Faust
+genome in GarageBand: MIDI in, wasm out, no samples. That is the one job nothing
+else in the platform does — `kromosynth-live` already covers "browse, commit a
+file to the session", and §C's own table says the sampler path does not need a
+plugin for it.
 
-**Gate 0's desktop half is now measured and Stage 2 is unblocked.** The full
-result is `kromosynth-projects/Evolutionary Sound Discovery Platform/daw-plugin/EXPERIMENT_01_3_DESKTOP_RESULT.md`.
-Read it before touching any of this — it contains two corrections to itself
-(§2.5, §2.7), and reading only §0 will leave you with the version that was
-wrong.
+Verified by Björn on 2026-09-01: three instruments, all audible, all stopping.
 
-Deliberately **not** named `EXPERIMENT_01_RESULT.md`. That filename is still
-reserved for the document that fires a §5 branch, and no branch fires — see
-"What §5 needs" below.
+**Stage 1 (sampler) unchanged and unregressed.** Both engines ship in one signed
+bundle; `auval` passes.
 
-### What was built
+### The load-bearing facts
 
-`kromosynth-projects/.../faust-genome-substrate/probe/gate0/` — four files of
-host, driven by `probe/13-gate0-prepare.mjs`:
-
-- `host_wasm3.c` — wasm3 interpreter, `--math float|double`, `--block N`,
-  `--loadonly N`
-- `host_wamr.c` — WAMR fast-interp, same CLI and JSON shape
-- `host_wasmtime.c` — wasmtime v48 / Cranelift JIT, plus `--blockstats`
-- `sweep.mjs`, `compare.mjs`, `build.sh`, `CMakeLists.txt`
-
-Runtimes clone/download into `probe/out/wasm-runtime/` (gitignored). wasm3 and
-WAMR build from source; wasmtime is a prebuilt C API tarball. `build.sh` does
-wasm3; the other two have their own lines in the result doc's header.
-
-Results in `probe/out/gate0/` — `survey.json`, `selection.json`, `all.json`,
-`sweep-{wasm3,wamr,wasmtime}.json`, `sweep-{wasm3,wasmtime}-archive.json`.
-
-### What was found
-
-1. **Every elite plays on every platform. None is unplayable anywhere.** Only
-   the voice count varies. Desktop under Cranelift: 8–32+ voices, median 16,
-   100% of the archive. iOS under wasm3: 1–32 voices, median 4, 100% of the
-   archive.
-2. **The math imports must compute in DOUBLE.** faustwasm binds `_powf` to
+1. **The math imports must compute in DOUBLE.** faustwasm binds `_powf` to
    `Math.pow`, which is double and narrows on return. A C host calling `powf()`
-   diverges to **−50 dB** on a math-heavy elite — audible. In double, all four
-   engines are bit-identical to the platform reference across 33 elites.
-   **This is the single most load-bearing implementation detail for Stage 2.**
-3. **A native host is up to 2.2× faster than the browser** on the same module,
-   because every math import crosses wasm→JS in a browser and that crossing is
-   expensive. The web app is a floor this work clears, not a ceiling.
-4. **Block size is a lever in JavaScript and not one in C** — flat 128→1024.
-   Negative result, recorded so it is not measured again.
-5. The ≥4× headroom bar decomposes into ~1.3× measured genome variance and
-   ~3× unmeasured session budget.
+   diverges by **−50.5 dB** on a math-heavy elite. This is the single most
+   important implementation detail in `FaustEngine`.
+2. **The engine is bit-identical to the platform reference, 33/33.** Replaying a
+   Gate 0 `.plan` and comparing against that experiment's own render gives
+   `maxAbsDiff` exactly 0.0 on every elite. Gate 0 measured three runtimes at
+   zero against those references, so **the bar is zero, not a tolerance**. Run it
+   after any change to the engine — it caught three regressions this session that
+   nothing else would have.
+3. **wasmtime v48.0.1**, pinned with SHA256 in `cmake/Wasmtime.cmake`. Not the
+   version recorded elsewhere: the `libwasmtime.a` in that release is
+   byte-identical to the copy Gate 0 measured, checked rather than inferred.
+   This deliberately breaks `VENDORING.md`'s one-mechanism rule and keeps the
+   reason behind it.
+4. **wasmtime/Cranelift beats the wasm3 interpreter by a median 5.56×** on
+   single-voice RTF over the archive (min 2.02×, max 24.49×), which at the ≥4×
+   bar is a median cap of 16 voices against 4. iOS forbids JIT and will need an
+   interpreter; `FaustEngine` is the seam, and the abstraction gets built when
+   there is a second real consumer.
+
+### Two findings that belong to the platform, not the plugin
+
+**Half the archive does not articulate.** 16 of 33 elites publish a `gate` and
+ignore it, still sounding 2–3 s after gate-off, worst at −6.7 dB. It is
+structural, not a parameter setting: no envelope control stops the worst one at
+any value in any combination. `ELITE_ARTICULATION_2026-09-01.md`.
+
+**Level spread is 64 dB.** Reference peaks run 0.001142 to 1.792551, nothing
+normalises them, and eight voices sum with no headroom. Picking a Faust
+instrument is currently a coin flip between inaudible and painful.
+
+Both are one render to compute at export and neither is recoverable afterwards.
+Together with the measured single-voice RTF that `EXPERIMENT_01_3_DESKTOP_RESULT`
+§2.7 already proposes carrying, that is **three numbers the artefact should
+carry** and currently carries none of.
 
 ## Task — pick one
 
-### 1. Real-time probe with a time-constrained thread (recommended)
+### 1. The artefact format (recommended)
 
-The only part of the headroom bar still resting on judgement is the session
-term — how much CPU one instrument may claim before a busy DAW glitches. It
-decides whether the voice caps above are the ≥4× column or the ≥2× one, which
-on iOS is the difference between a median cap of 4 voices and 8.
+Nothing produces a Faust instrument folder. `InstrumentLibrary::resolve` invents
+`instrument.wasm` + `instrument.json` and those names are **provisional** — they
+have to be agreed with `kromosynth-vi` before anything depends on them. The
+three measured numbers above should ride along in the same change, because
+adding them later means re-rendering the archive.
 
-Add a real-time mode to `host_wasmtime.c` and `host_wasm3.c`: render one block,
-sleep to the next deadline, count misses. Report missed deadlines and worst
-overrun.
+Test instruments are hand-built at `~/Music/Synth.is/Instruments/faust-*`.
 
-**It must raise itself to a time-constrained thread policy** (macOS
-`thread_policy_set`, `THREAD_TIME_CONSTRAINT_POLICY`) — the same thing
-CoreAudio does. §2.6 already showed a normal-priority process invents overruns
-that are not there: `blocksOverBudget` bounced 1, 4, 0, 0, 0 across five
-identical runs while p99/mean sat still at ~1.2. Measuring the session term at
-normal priority would repeat that error at larger scale and produce a bar that
-is too conservative.
+### 2. Per-genome voice caps
 
-Then Björn runs one command with a typical session open and pastes the output.
-Ask him; do not guess the number.
+`kFaustVoices` is hardcoded at 8 in `PluginProcessor.cpp`. §2.7's answer is
+measured single-voice RTF carried with the artefact, from which a per-platform
+cap follows arithmetically. Waits on task 1.
 
-### 2. iOS memory, which may bind before RTF
+### 3. Gate 0's session term
 
-`EXPERIMENT_01_4.1_RESULT` §1.4 says check memory before throughput on iOS, and
-given §2.7's caps it is plausible memory is what actually binds. Measured peak
-RSS at 8 voices: wasm3 5.1–22.1 MB, WAMR 13.7–22.7 MB, wasmtime 17.6–45.1 MB.
+`rt-sweep.mjs` in the Gate 0 probe tree is built and unrun. It needs a quiet
+machine and `--label session` with a DAW playing. It decides whether the ≥4× bar
+is right or should be ≥2×, which on iOS is the difference between a median cap
+of 4 voices and 8. Note the cadence finding: free-running RTF is optimistic,
+and by how much is exactly what this measures.
 
-The hosts use **one instance per voice** — own module, own interpreter
-bytecode, own linear memory. faustwasm's poly path shares code and duplicates
-only the DSP struct, which would report lower. §5 measured the compute cost of
-that choice at 1–4%; its **memory** cost is unmeasured and is the number that
-matters for an AUv3 extension budget.
+### 4. §O10 — QWERTY typing latches the host's keys
 
-### 3. Stage 2 proper — the webview↔engine bridge
+Open and fully characterised, including a measured negative. Not blocking:
+mouse, MIDI regions and hardware controllers are all unaffected, and it hits
+the sampler equally, so it is a Stage 0 editor defect rather than Stage 2 work.
 
-Gate 0 no longer blocks it. Note the audition-routing problem from Stage 0 §O
-is still open and is the most consequential unresolved design decision.
+## Tools
 
-### 4. Developer ID certificate and notarisation
+```
+# the library exactly as the plugin sees it — no DAW, no webview
+build/stage1/tools/acquire-probe/.../acquire_probe scan
 
-Unchanged from the previous prompt.
+# does a genome make a sound, does it stop, what does it publish
+build/faust/tools/faust-probe/.../faust_probe <wasm> <json> [note] [vel] [voices]
+    --rate 44100 --block 1024      # match a host
+    --set dec=0.01                 # override any published control
+    --seq                          # ten overlapping notes, note-offs off block boundaries
+    --plan X.plan --ref X.ref.f32  # the null test
 
-## What §5 needs, and why no branch fired
+./scripts/build.sh install         # signs, installs; Faust ON by default
+```
 
-§5's rules all ask "does B clear 8 voices at ≥4× on the slowest decile". The
-measurement says the useful question is "how many voices does each genome get
-on each platform" — a continuous answer where the rule wants a pass/fail.
-
-§7 of the result doc proposed an amendment (per-genome cost gate + voice cap).
-**§2.7 supersedes it** — the gate half solves a problem that does not exist,
-since nothing is unplayable. What survives is the cap half: carry measured
-single-voice RTF alongside the artefact, derive the per-platform cap
-arithmetically. One render to compute at export; the predictor was validated
-30/30.
-
-Amending §5 is Björn's call and has not been made. Do not apply it unilaterally
-and do not write `EXPERIMENT_01_RESULT.md` until a branch actually fires.
+The shell footer shows `N voices · on X / off Y`. `notesOn` ahead of `notesOff`
+means the host is not delivering them; equal counts with voices still active
+means the engine is holding them. Those need different fixes and sound identical.
 
 ## Standing rules
 
-- Read `STAGE0_FINDINGS.md` §O before touching plugin code.
+- **Run the null test after touching the engine.** Three regressions this
+  session were green everywhere else: idle voices silenced all 33; waking on
+  `setParameter` fixed 5 and left 28; auto-idle keyed off a flag only note-on
+  ever set, so parameter-driven voices idled on their first quiet block.
+- **A green check is not evidence until you know which path it ran.** §O3. The
+  listing/loading split in 365574b is the same shape from the other side: two
+  checks that had to agree and were never made to.
+- **Measure the measurement.** The articulation table was wrong first time —
+  it classified percussive one-shots as drones by dividing noise by noise — and
+  the wrong version was convincing.
+- **Compile or run to confirm an API exists.** `m3_GetMemory` takes `size_t*`,
+  not `uint32_t*`. Fourth this way across these sessions.
 - `git:git_commit` via MCP behaves like `git commit -a`. `kromosynth-projects`
-  usually has unrelated pre-staged work — use `git add -- <paths>` then
-  `git commit -F msg -- <paths>` from the terminal.
-- **`git commit -F msg -- <paths>` silently does nothing for UNTRACKED files.**
-  It exits non-zero and prints nothing. `git add` first, then verify with
-  `git log`. This cost a silent no-op commit this session.
-- `~/.gitignore_global` line 10 is a bare unanchored `render`. Never name a
-  directory that.
-- `filesystem:write_file` writes to the real disk; `create_file` writes to a
-  sandbox. Never use `create_file` for project work.
-- `filesystem:edit_file` `oldText` must be byte-perfect. Dry-run first — a
-  dry-run this session caught an edit that would have collapsed two lines into
-  one and swallowed a section heading.
-- Nested functions and statement expressions are GCC extensions clang rejects.
-- Do not run builds or clones while a timing sweep is running.
-- The local MCP servers went unresponsive for a stretch this session — both
-  `local-terminal` and `filesystem`, with a bare `echo alive` timing out. If
-  that recurs, ask Björn to restart them rather than retrying.
+  has pre-staged WIP — use `git add -- <paths>` then `git commit -F msg --
+  <paths>` from the terminal.
+- `local-terminal` intermittently returns `null` for multi-line commands that
+  mix variable assignment with `~`. Absolute paths on one line work. `echo
+  alive` first if it recurs.
+- `rm` is blocked by the tool sandbox; ask Björn for deletions.
