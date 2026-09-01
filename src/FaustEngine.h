@@ -69,6 +69,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 struct FaustVoice;
 struct FaustEngineImpl;
@@ -124,6 +125,28 @@ public:
     // through the exact parameter path the plugin will use, rather than through
     // a separate one that could be right while the shipping path is wrong.
     void setParameter (int byteOffset, float value) noexcept;
+
+    /** Every control the genome publishes.
+
+        NOT a fixed set. Surveyed over the 120-elite archive: freq appears on
+        100%, gate on 95%, lvl on 93%, gain on 75% -- the polyphony convention
+        is near-universal. Everything else is the template the genome was grown
+        from showing through: dec on 31%, exdec 23%, att and rel on 20% each,
+        bodyDec on 16%, sus on 7%.
+
+        So a plugin cannot offer "the decay knob". It can offer whatever this
+        genome happens to have, which is what an automation surface has to be
+        built against.
+    */
+    struct Parameter
+    {
+        juce::String label;
+        int   byteOffset = 0;
+        float init = 0.0f, minimum = 0.0f, maximum = 1.0f;
+        bool  isButton = false;
+    };
+
+    const std::vector<Parameter>& parameters() const noexcept;
 
     /** Silences every voice immediately, gate or no gate.
 

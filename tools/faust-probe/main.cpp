@@ -258,6 +258,39 @@ int main (int argc, char** argv)
 
     std::printf ("dsp        \"%s\"  struct=%d B  outputs=%d  voices=%d\n",
                  load.dspName.toRawUTF8(), load.structBytes, load.outputs, load.voices);
+    // Every control this genome publishes, so "can the decay be controlled"
+    // is answered by looking rather than by hoping there is a `dec`.
+    std::puts ("\ncontrols");
+    for (const auto& prm : engine.parameters())
+        std::printf ("  %-12s %-8s init %-9g range %g .. %g\n",
+                     prm.label.toRawUTF8(), prm.isButton ? "button" : "slider",
+                     prm.init, prm.minimum, prm.maximum);
+    std::puts ("");
+
+    // --set label=value, applied after load and before the note. Overrides the
+    // genome's own init, which is what a user turning a knob would do.
+    for (int i = 3; i + 1 < argc; ++i)
+    {
+        if (juce::String (argv[i]) != "--set") continue;
+
+        const juce::String spec (argv[i + 1]);
+        const auto label = spec.upToFirstOccurrenceOf ("=", false, false);
+        const auto value = spec.fromFirstOccurrenceOf ("=", false, false).getFloatValue();
+
+        bool found = false;
+        for (const auto& prm : engine.parameters())
+            if (prm.label == label)
+            {
+                engine.setParameter (prm.byteOffset, value);
+                std::printf ("set        %s = %g\n", label.toRawUTF8(), value);
+                found = true;
+            }
+
+        if (! found)
+            std::printf ("set        %s NOT PUBLISHED by this genome — ignored\n",
+                         label.toRawUTF8());
+    }
+
     std::printf ("params     freq=%s  gain=%s  gate=%s\n",
                  load.hasFreq ? "yes" : "NO", load.hasGain ? "yes" : "NO",
                  load.hasGate ? "yes" : "NO");

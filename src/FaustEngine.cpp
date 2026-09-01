@@ -167,6 +167,7 @@ struct FaustEngineImpl
     int idxFreq = -1, idxGain = -1, idxGate = -1;
 
     juce::String dspName;
+    std::vector<FaustEngine::Parameter> params;
     std::uint64_t counter = 0;
 
     // Scratch for the mono module's output before it reaches the buffer.
@@ -217,6 +218,7 @@ FaustEngine::load (const juce::File& wasmFile,
     // Walk the ui tree for the polyphony parameters. Faust nests them in
     // vgroup/hgroup items, so this recurses rather than assuming a flat list.
     impl_->idxFreq = impl_->idxGain = impl_->idxGate = -1;
+    impl_->params.clear();
 
     std::function<void (const juce::var&)> walk = [&] (const juce::var& node)
     {
@@ -230,6 +232,16 @@ FaustEngine::load (const juce::File& wasmFile,
                 const int index = (int) item.getProperty ("index", -1);
 
                 if (index < 0) continue;
+
+                Parameter p;
+                p.label = label;
+                p.byteOffset = index;
+                p.isButton = item.getProperty ("type", "").toString() == "button";
+                p.init = (float) (double) item.getProperty ("init", 0.0);
+                p.minimum = (float) (double) item.getProperty ("min", 0.0);
+                p.maximum = (float) (double) item.getProperty ("max", 1.0);
+                impl_->params.push_back (p);
+
                 if (label == "freq") impl_->idxFreq = index;
                 else if (label == "gain") impl_->idxGain = index;
                 else if (label == "gate") impl_->idxGate = index;
@@ -424,6 +436,11 @@ void FaustEngine::panic() noexcept
     }
 
     peak_.store (0.0f, std::memory_order_relaxed);
+}
+
+const std::vector<FaustEngine::Parameter>& FaustEngine::parameters() const noexcept
+{
+    return impl_->params;
 }
 
 void FaustEngine::setParameter (int byteOffset, float value) noexcept
