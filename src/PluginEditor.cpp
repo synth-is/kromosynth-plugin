@@ -158,6 +158,13 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             return juce::WebBrowserComponent::Resource {
                 std::move (bytes), juce::String ("text/html") };
         })
+        .withNativeFunction ("panic",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            proc_.panic();
+            done (juce::var (true));
+        })
         .withNativeFunction ("listInstruments",
                              [this] (const juce::Array<juce::var>&,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)

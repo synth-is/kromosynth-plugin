@@ -108,6 +108,20 @@ double KromosynthAudioProcessor::getTailLengthSeconds() const
    #endif
 }
 
+void KromosynthAudioProcessor::panic()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    suspendProcessing (true);
+
+   #if KROMOSYNTH_HAS_FAUST
+    if (faust_ != nullptr) faust_->panic();
+   #endif
+
+    suspendProcessing (false);
+    logEvent ("panic");
+}
+
 KromosynthAudioProcessor::LoadOutcome
 KromosynthAudioProcessor::loadInstrument (const juce::String& id)
 {
@@ -143,6 +157,11 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         }
 
         suspendProcessing (true);
+
+        // Whatever was sounding must stop before the module bytes go away.
+        // Without this, loading a second instrument to escape a stuck drone
+        // would be the natural thing to try and would not work.
+        faust_->panic();
 
         faustWasm_ = resolved.primary;
         faustJson_ = resolved.metadata;

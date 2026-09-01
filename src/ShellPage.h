@@ -103,6 +103,7 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   <span class="count" id="count"></span>
   <button id="browse">Browse synth.is</button>
   <button id="refresh">Refresh</button>
+  <button id="panic">Panic</button>
 </header>
 <main id="list"></main>
 <footer id="status">Loading&hellip;</footer>
@@ -252,6 +253,14 @@ async function refresh () {
 }
 
 document.getElementById('refresh').addEventListener('click', refresh);
+
+// A DAW's panic is not guaranteed to reach a plugin and GarageBand shows none.
+// 16 of 33 measured archive genomes ignore their own gate, so without this the
+// only way to stop a stuck drone is to delete the track.
+document.getElementById('panic').addEventListener('click', async () => {
+  await call('panic');
+  setStatus('Panicked \u2014 all voices reinitialised.');
+});
 
 // The only way into the site surface. The site cannot put the user back here --
 // it has no bridge -- so the return trip is the plugin's own strip, drawn in

@@ -125,6 +125,20 @@ public:
     // a separate one that could be right while the shipping path is wrong.
     void setParameter (int byteOffset, float value) noexcept;
 
+    /** Silences every voice immediately, gate or no gate.
+
+        reset() closes the gate and trusts the genome to fall silent. A
+        MEASURED 16 of 33 archive elites do not: they publish a `gate`
+        parameter and ignore it, still sounding 2-3 s after gate-off, the worst
+        at only -6.7 dB below its own peak. On such a genome reset() is not a
+        panic, it is a request the DSP may decline.
+
+        This is the one that cannot be declined -- it re-runs init(), which
+        zeroes the DSP struct. The instrument is playable again afterwards; it
+        just forgets everything, which for a stuck drone is the point.
+    */
+    void panic() noexcept;
+
     // §4.2's guard, carried into the plugin. A synth that renders silence
     // never misses a deadline, never crashes, and passes every validator.
     // auval's own render tests only check that rendering does not crash.

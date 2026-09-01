@@ -401,6 +401,31 @@ void FaustEngine::setParam (FaustVoice& v, int byteOffset, float value) noexcept
     if (trap != nullptr) wasm_trap_delete (trap);
 }
 
+void FaustEngine::panic() noexcept
+{
+    if (! loaded_) return;
+
+    for (auto& v : impl_->voices)
+    {
+        v.note = -1;
+        v.gateOpen = false;
+
+        // init() rather than gate=0. A genome that ignores its gate ignores it
+        // during a panic too, and 16 of 33 measured elites do exactly that.
+        // Re-initialising zeroes the DSP struct, which no genome can decline.
+        wasmtime_val_raw_t args[2];
+        args[0].i32 = (std::int32_t) v.dspPtr;
+        args[1].i32 = (std::int32_t) impl_->sampleRate;
+
+        wasm_trap_t* trap = nullptr;
+        if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
+            wasmtime_error_delete (err);
+        if (trap != nullptr) wasm_trap_delete (trap);
+    }
+
+    peak_.store (0.0f, std::memory_order_relaxed);
+}
+
 void FaustEngine::setParameter (int byteOffset, float value) noexcept
 {
     if (! loaded_) return;
@@ -497,7 +522,7 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
 
             if (message.isNoteOn())        noteOn (message.getNoteNumber(), message.getVelocity());
             else if (message.isNoteOff())  noteOff (message.getNoteNumber());
-            else if (message.isAllNotesOff() || message.isAllSoundOff()) reset();
+            else if (message.isAllNotesOff() || message.isAllSoundOff()) panic();
 
             ++event;
         }

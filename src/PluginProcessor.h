@@ -128,6 +128,13 @@ public:
     */
     LoadOutcome loadInstrument (const juce::String& id);
 
+    /** Stops everything now. Bound to a shell control because a DAW's own
+        panic is not guaranteed to reach a plugin -- GarageBand has no visible
+        one -- and a genome that ignores its gate can otherwise only be
+        silenced by deleting the track.
+    */
+    void panic();
+
     /** What is loaded now. An empty id means the compiled-in default. */
     LoadOutcome currentInstrument() const { return current_; }
 
