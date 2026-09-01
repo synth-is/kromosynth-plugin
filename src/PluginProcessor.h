@@ -140,7 +140,8 @@ public:
         arrived" without attaching a debugger to a DAW.
     */
     struct EngineState { int notesOn = 0, notesOff = 0, activeVoices = 0, forcedStops = 0;
-                         float trimDb = 0.0f, rawPeak = 0.0f; bool faust = false; };
+                         float trimDb = 0.0f, rawPeak = 0.0f, rtf = 0.0f;
+                         int voiceCap = 0; bool faust = false; };
     EngineState engineState() const;
 
     /** What is loaded now. An empty id means the compiled-in default. */
@@ -205,6 +206,8 @@ private:
     void applyFaustTrim();
 
     float faustTrim_ = 1.0f, faustRawPeak_ = 0.0f;
+    double faustRtf_ = 0.0;
+    int faustVoices_ = 1;
    #endif
 
    #if KROMOSYNTH_HAS_SAMPLER || KROMOSYNTH_HAS_FAUST

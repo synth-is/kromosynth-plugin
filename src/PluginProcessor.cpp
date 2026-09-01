@@ -136,6 +136,8 @@ KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() co
         st.forcedStops = faust_->forcedStops();
         st.trimDb = 20.0f * std::log10 (juce::jmax (1.0e-9f, faustTrim_));
         st.rawPeak = faustRawPeak_;
+        st.rtf = (float) faustRtf_;
+        st.voiceCap = faustVoices_;
     }
    #endif
     return st;
@@ -199,8 +201,10 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         faustWasm_ = resolved.primary;
         faustJson_ = resolved.metadata;
 
+        // ONE voice to start. Measuring needs an instance, and the polyphony
+        // that measurement implies is not known until it has run.
         const auto r = faust_->load (faustWasm_, faustJson_, faustRate_,
-                                     faustBlock_, kFaustVoices);
+                                     faustBlock_, 1);
 
         if (r.ok)
             active_ = Active::faust;
@@ -396,7 +400,7 @@ void KromosynthAudioProcessor::reloadFaustIfNeeded (double sampleRate, int sampl
         return;
 
     const auto result = faust_->load (faustWasm_, faustJson_, sampleRate,
-                                      samplesPerBlock, kFaustVoices);
+                                      samplesPerBlock, 1);
 
     logEvent ("faust_load ok=" + juce::String (result.ok ? 1 : 0)
               + " dsp=\"" + result.dspName + "\""
@@ -428,8 +432,10 @@ void KromosynthAudioProcessor::applyFaustTrim()
     faust_->setOutputGain (1.0f);
 
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
-    const float peak = faust_->measurePeak();
+    const auto measured = faust_->measure();
     const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
+
+    const float peak = measured.peak;
 
     // A genome that measured silent gets no trim rather than an infinite one.
     const float trim = peak > 1.0e-6f ? kFaustTargetPeak / peak : 1.0f;
@@ -438,7 +444,18 @@ void KromosynthAudioProcessor::applyFaustTrim()
     faustTrim_ = trim;
     faustRawPeak_ = peak;
 
-    logEvent ("faust_trim raw_peak=" + juce::String (peak, 6)
+    // Polyphony sized to THIS genome rather than to a constant. The archive
+    // spans 36x to 2231x single-voice RTF, so a fixed 8 either wastes an
+    // instrument that could carry 32 voices or overcommits one that cannot.
+    // §2.7's per-genome cap, computed here because the artefact carries nothing
+    // yet; when it does, the stored value is preferred and this is skipped.
+    faustVoices_ = juce::jlimit (1, 32, measured.capAt4x);
+    faust_->setVoiceCount (faustVoices_);
+    faustRtf_ = measured.rtf;
+
+    logEvent ("faust_measure rtf=" + juce::String (measured.rtf, 1)
+              + " voices=" + juce::String (faustVoices_)
+              + " raw_peak=" + juce::String (peak, 6)
               + " target=" + juce::String (kFaustTargetPeak, 3)
               + " trim=" + juce::String (trim, 4)
               + " trim_db=" + juce::String (20.0f * std::log10 (juce::jmax (1.0e-9f, trim)), 1)

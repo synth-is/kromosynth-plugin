@@ -196,7 +196,29 @@ public:
 
         Leaves the engine reset. Costs one short render per pitch.
     */
-    float measurePeak();
+    struct Measured
+    {
+        float  peak = 0.0f;      ///< loudest across the probed pitches
+        double rtf = 0.0;        ///< single-voice real-time factor, free-running
+        int    capAt4x = 1;      ///< voices sustainable at the §3.3 headroom bar
+    };
+
+    /** Renders this genome offline at several pitches and reports peak and RTF.
+
+        Three pitches, not one. Measured over 120 archive genomes, peak spread
+        across c3/a4/a5 has a median of 3.8 dB and a maximum of 24.2 dB, and 44
+        of the 120 would have their trim wrong by more than 6 dB from a single
+        pitch. The direction is inconsistent -- some are loudest low, some high
+        -- so there is no safe pitch to pick.
+
+        RTF comes free: it is the wall clock of the render the peak needed.
+
+        Leaves the engine reset.
+    */
+    Measured measure();
+
+    /** Changes polyphony without recompiling the module. */
+    bool setVoiceCount (int numVoices);
 
     /** Applied to the summed output. 1.0 is off, and off is the default: the
         null test compares raw output against the platform reference and must
@@ -213,6 +235,7 @@ private:
     void noteOn (int note, int velocity) noexcept;
     void noteOff (int note) noexcept;
     void setParam (FaustVoice& v, int byteOffset, float value) noexcept;
+    bool instantiateVoices (int numVoices, juce::String& err);
 
     std::unique_ptr<FaustEngineImpl> impl_;
 

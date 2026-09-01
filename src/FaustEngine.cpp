@@ -239,6 +239,90 @@ FaustEngine::~FaustEngine()
     if (impl_->engine != nullptr) wasm_engine_delete (impl_->engine);
 }
 
+// Creates N instances from the ALREADY-COMPILED module. Separated from load()
+// so the voice count can change without paying Cranelift again -- which is what
+// makes measuring a genome at one voice and then sizing the polyphony to the
+// result affordable.
+bool FaustEngine::instantiateVoices (int numVoices, juce::String& errOut)
+{
+    for (auto& v : impl_->voices)
+        if (v.store != nullptr) wasmtime_store_delete (v.store);
+
+    impl_->voices.clear();
+    impl_->voices.resize ((size_t) numVoices);
+
+    for (auto& v : impl_->voices)
+    {
+        v.store = wasmtime_store_new (impl_->engine, nullptr, nullptr);
+        v.ctx = wasmtime_store_context (v.store);
+
+        wasm_trap_t* trap = nullptr;
+        if (auto* err = wasmtime_linker_instantiate (impl_->linker, v.ctx, impl_->module,
+                                                     &v.instance, &trap))
+        { wasmtime_error_delete (err); errOut = "instantiate failed"; return false; }
+        if (trap != nullptr) { wasm_trap_delete (trap); errOut = "instantiate trapped"; return false; }
+
+        const auto getFunc = [&] (const char* name, wasmtime_func_t& out) -> bool
+        {
+            wasmtime_extern_t item;
+            if (! wasmtime_instance_export_get (v.ctx, &v.instance, name, std::strlen (name), &item)
+                || item.kind != WASMTIME_EXTERN_FUNC)
+                return false;
+            out = item.of.func;
+            return true;
+        };
+
+        if (! getFunc ("init", v.fInit))               { errOut = "missing export: init"; return false; }
+        if (! getFunc ("compute", v.fCompute))         { errOut = "missing export: compute"; return false; }
+        if (! getFunc ("setParamValue", v.fSetParam))  { errOut = "missing export: setParamValue"; return false; }
+
+        wasmtime_extern_t memItem;
+        if (! wasmtime_instance_export_get (v.ctx, &v.instance, "memory", 6, &memItem)
+            || memItem.kind != WASMTIME_EXTERN_MEMORY)
+        { errOut = "module exports no memory"; return false; }
+
+        v.memory = wasmtime_memory_data (v.ctx, &memItem.of.memory);
+        v.memBytes = wasmtime_memory_data_size (v.ctx, &memItem.of.memory);
+
+        // Layout, identical to layoutMono() in host_wasmtime.c and to
+        // FaustMonoWebAudioDsp.initMemory. -single only: §4.1 established
+        // sampleSize 4 across the archive, and a -double module would silently
+        // mis-stride here, so the fit is checked rather than assumed.
+        const std::uint32_t ss = 4, ps = 4;
+        v.dspPtr    = 0;
+        v.inPtrArr  = (std::uint32_t) impl_->structBytes;
+        v.outPtrArr = v.inPtrArr + (std::uint32_t) impl_->inputs * ps;
+        v.inBufs    = v.outPtrArr + (std::uint32_t) impl_->outputs * ps;
+        v.outBufs   = v.inBufs + (std::uint32_t) impl_->inputs * (std::uint32_t) impl_->maxBlockSize * ss;
+
+        const std::uint32_t end =
+            v.outBufs + (std::uint32_t) impl_->outputs * (std::uint32_t) impl_->maxBlockSize * ss;
+
+        if ((std::size_t) end > v.memBytes)
+        {
+            errOut = "layout " + juce::String ((int) end) + " B exceeds module memory "
+                     + juce::String ((int) v.memBytes) + " B at block size "
+                     + juce::String (impl_->maxBlockSize);
+            return false;
+        }
+
+        auto* h32 = reinterpret_cast<std::uint32_t*> (v.memory);
+        for (int c = 0; c < impl_->inputs; ++c)
+            h32[(v.inPtrArr >> 2) + c] = v.inBufs + (std::uint32_t) impl_->maxBlockSize * ss * (std::uint32_t) c;
+        for (int c = 0; c < impl_->outputs; ++c)
+            h32[(v.outPtrArr >> 2) + c] = v.outBufs + (std::uint32_t) impl_->maxBlockSize * ss * (std::uint32_t) c;
+
+        wasmtime_val_raw_t args[2];
+        args[0].i32 = (std::int32_t) v.dspPtr;
+        args[1].i32 = (std::int32_t) impl_->sampleRate;
+        if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
+        { wasmtime_error_delete (err); errOut = "init failed"; return false; }
+        if (trap != nullptr) { wasm_trap_delete (trap); errOut = "init trapped"; return false; }
+    }
+
+    return true;
+}
+
 FaustEngine::LoadResult
 FaustEngine::load (const juce::File& wasmFile,
                    const juce::File& jsonFile,
@@ -361,76 +445,8 @@ FaustEngine::load (const juce::File& wasmFile,
         }
     }
 
-    impl_->voices.resize ((size_t) numVoices);
-
-    for (auto& v : impl_->voices)
-    {
-        v.store = wasmtime_store_new (impl_->engine, nullptr, nullptr);
-        v.ctx = wasmtime_store_context (v.store);
-
-        wasm_trap_t* trap = nullptr;
-        if (auto* err = wasmtime_linker_instantiate (impl_->linker, v.ctx, impl_->module,
-                                                     &v.instance, &trap))
-        { wasmtime_error_delete (err); r.detail = "instantiate failed"; return r; }
-        if (trap != nullptr) { wasm_trap_delete (trap); r.detail = "instantiate trapped"; return r; }
-
-        const auto getFunc = [&] (const char* name, wasmtime_func_t& out) -> bool
-        {
-            wasmtime_extern_t item;
-            if (! wasmtime_instance_export_get (v.ctx, &v.instance, name, std::strlen (name), &item)
-                || item.kind != WASMTIME_EXTERN_FUNC)
-                return false;
-            out = item.of.func;
-            return true;
-        };
-
-        if (! getFunc ("init", v.fInit))               { r.detail = "missing export: init"; return r; }
-        if (! getFunc ("compute", v.fCompute))         { r.detail = "missing export: compute"; return r; }
-        if (! getFunc ("setParamValue", v.fSetParam))  { r.detail = "missing export: setParamValue"; return r; }
-
-        wasmtime_extern_t memItem;
-        if (! wasmtime_instance_export_get (v.ctx, &v.instance, "memory", 6, &memItem)
-            || memItem.kind != WASMTIME_EXTERN_MEMORY)
-        { r.detail = "module exports no memory"; return r; }
-
-        v.memory = wasmtime_memory_data (v.ctx, &memItem.of.memory);
-        v.memBytes = wasmtime_memory_data_size (v.ctx, &memItem.of.memory);
-
-        // Layout, identical to layoutMono() in host_wasmtime.c and to
-        // FaustMonoWebAudioDsp.initMemory. -single only: §4.1 established
-        // sampleSize 4 across the archive, and a -double module would silently
-        // mis-stride here, so the fit is checked rather than assumed.
-        const std::uint32_t ss = 4, ps = 4;
-        v.dspPtr    = 0;
-        v.inPtrArr  = (std::uint32_t) impl_->structBytes;
-        v.outPtrArr = v.inPtrArr + (std::uint32_t) impl_->inputs * ps;
-        v.inBufs    = v.outPtrArr + (std::uint32_t) impl_->outputs * ps;
-        v.outBufs   = v.inBufs + (std::uint32_t) impl_->inputs * (std::uint32_t) maxBlockSize * ss;
-
-        const std::uint32_t end =
-            v.outBufs + (std::uint32_t) impl_->outputs * (std::uint32_t) maxBlockSize * ss;
-
-        if ((std::size_t) end > v.memBytes)
-        {
-            r.detail = "layout " + juce::String ((int) end) + " B exceeds module memory "
-                     + juce::String ((int) v.memBytes) + " B at block size "
-                     + juce::String (maxBlockSize);
-            return r;
-        }
-
-        auto* h32 = reinterpret_cast<std::uint32_t*> (v.memory);
-        for (int c = 0; c < impl_->inputs; ++c)
-            h32[(v.inPtrArr >> 2) + c] = v.inBufs + (std::uint32_t) maxBlockSize * ss * (std::uint32_t) c;
-        for (int c = 0; c < impl_->outputs; ++c)
-            h32[(v.outPtrArr >> 2) + c] = v.outBufs + (std::uint32_t) maxBlockSize * ss * (std::uint32_t) c;
-
-        wasmtime_val_raw_t args[2];
-        args[0].i32 = (std::int32_t) v.dspPtr;
-        args[1].i32 = (std::int32_t) sampleRate;
-        if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
-        { wasmtime_error_delete (err); r.detail = "init failed"; return r; }
-        if (trap != nullptr) { wasm_trap_delete (trap); r.detail = "init trapped"; return r; }
-    }
+    if (! instantiateVoices (numVoices, r.detail))
+        return r;
 
     loaded_ = true;
     peak_.store (0.0f, std::memory_order_relaxed);
@@ -481,9 +497,21 @@ float FaustEngine::outputGain() const noexcept
     return impl_ == nullptr ? 1.0f : impl_->outputGain;
 }
 
-float FaustEngine::measurePeak()
+bool FaustEngine::setVoiceCount (int numVoices)
 {
-    if (! loaded_) return 0.0f;
+    if (! loaded_ || numVoices < 1) return false;
+
+    juce::String err;
+    if (! instantiateVoices (numVoices, err)) { loaded_ = false; return false; }
+
+    impl_->sustainDown = false;
+    return true;
+}
+
+FaustEngine::Measured FaustEngine::measure()
+{
+    Measured m;
+    if (! loaded_) return m;
 
     int idxFreq = -1, idxGain = -1, idxGate = -1;
     for (const auto& prm : impl_->params)
@@ -505,6 +533,7 @@ float FaustEngine::measurePeak()
     impl_->outputGain = 1.0f;
 
     float peak = 0.0f;
+    const auto t0 = juce::Time::getHighResolutionTicks();
 
     for (const int p : pitches)
     {
@@ -522,10 +551,29 @@ float FaustEngine::measurePeak()
         }
     }
 
+    const double elapsed = juce::Time::highResolutionTicksToSeconds (
+                               juce::Time::getHighResolutionTicks() - t0);
+
     panic();
     impl_->outputGain = saved;
     peak_.store (0.0f, std::memory_order_relaxed);
-    return peak;
+
+    m.peak = peak;
+
+    // Free-running, and labelled so. d3321de measured that holding a real block
+    // cadence costs 2.3-2.9x more than rendering flat out, so this ranks
+    // genomes against each other; it is not a headroom claim about a busy DAW.
+    // Whether >=4x is the right bar is what rt-sweep.mjs still has to answer.
+    const double audioSeconds = 3 * 1.5;
+    m.rtf = elapsed > 0.0 ? audioSeconds / elapsed : 0.0;
+
+    // Gate 0 §5 validated single-voice RTF as an exact predictor of polyphony,
+    // 30/30, with a 1.05 per-voice penalty.
+    m.capAt4x = 1;
+    for (int v = 1; v <= 32; v *= 2)
+        if (m.rtf / (v * 1.05) >= 4.0) m.capAt4x = v;
+
+    return m;
 }
 
 int FaustEngine::forcedStops() const noexcept

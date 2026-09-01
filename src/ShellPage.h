@@ -276,6 +276,8 @@ setInterval(async () => {
       st.activeVoices + ' voices \u00b7 on ' + st.notesOn + ' / off ' + st.notesOff
       + (st.rawPeak > 0 ? ' \u00b7 trim ' + st.trimDb.toFixed(1) + ' dB (raw peak '
                           + st.rawPeak.toFixed(3) + ')' : '')
+      + (st.voiceCap > 0 ? ' \u00b7 ' + st.voiceCap + '-voice cap (RTF '
+                           + st.rtf.toFixed(0) + 'x)' : '')
       + (stuck > 0 ? ' \u00b7 ' + stuck + ' UNRELEASED' : '')
       + (st.forcedStops > 0 ? ' \u00b7 ' + st.forcedStops + ' force-stopped' : '');
   } catch (e) { /* editor closing */ }
