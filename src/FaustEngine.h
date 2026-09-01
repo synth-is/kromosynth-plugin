@@ -41,21 +41,23 @@
 //    measured the cost of this against ideal linear scaling at 1–4%, so the
 //    simple thing is also very nearly the fast thing.
 //
-// ── Runtime choice, and why it is behind this interface ──────────────────────
+// ── Runtime choice ──────────────────────────────────────────────────────────
 //
-// wasm3, an interpreter, not wasmtime — despite Gate 0 finding Cranelift
-// 2.3–2.9x faster and naming it the desktop engine. Two reasons:
+// wasmtime/Cranelift, pinned to v48.0.1 — the exact build EXPERIMENT_01
+// measured, verified by libwasmtime.a hashing identically to the copy that
+// measurement used. Over the 120-elite archive it beats the wasm3 interpreter
+// on single-voice RTF by min 2.02x, median 5.56x, max 24.49x, which at the
+// >=4x bar is a median of 16 voices against 4.
 //
-//   - wasmtime's C API ships as a prebuilt tarball and building it from source
-//     needs a Rust toolchain. VENDORING.md permits exactly one mechanism,
-//     pinned git submodules consumed by add_subdirectory, and it says why:
-//     the reference repo it was written against had an uninitialised submodule
-//     and a build that worked on one machine and nowhere else.
-//   - A skeleton needs to make a noise, not to be fast.
+// This does not follow VENDORING.md, which permits only pinned submodules
+// consumed by add_subdirectory; wasmtime ships as a prebuilt tarball and
+// building it from source needs Rust. cmake/Wasmtime.cmake overrides the rule
+// while keeping the reason behind it, by pinning a release and verifying its
+// SHA256 at configure time.
 //
-// wasm3 is twelve dependency-free .c files and fits the rule exactly. The
-// runtime sits behind this class so swapping it is contained; nothing above
-// FaustEngine knows which engine is underneath.
+// iOS forbids JIT and will need an interpreter, so a second backend is coming.
+// It is not abstracted for yet: this class is the seam, and the abstraction
+// gets built when there is a second real consumer rather than an imagined one.
 //
 // ── Not done yet, deliberately ──────────────────────────────────────────────
 //

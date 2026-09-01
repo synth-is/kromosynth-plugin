@@ -25,12 +25,7 @@
 
 #include "../../src/FaustEngine.h"
 
-#include <wasm3.h>
-
-// M3_HAS_TAIL_CALL and friends are set by wasm3's own compiler detection in
-// this internal header, not exported by wasm3.h. Included deliberately: the
-// whole point is to report the build as configured rather than as assumed.
-#include <m3_config_platforms.h>
+#include <wasmtime.h>
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
@@ -73,13 +68,7 @@ int main (int argc, char** argv)
     const int velocity = argc > 4 ? std::atoi (argv[4]) : 100;
     const int voices   = argc > 5 ? std::atoi (argv[5]) : 8;
 
-    // EXPERIMENT_01_3_DESKTOP_RESULT §5: wasm3's speed depends on guaranteed
-    // tail-call dispatch, and it degrades badly and SILENTLY without it. These
-    // come from wasm3's own compiler detection, so they are reported rather
-    // than asserted -- an assertion here would be checking our guess about the
-    // build rather than the build.
-    std::printf ("wasm3      arch=%s  tail_call=%d  guaranteed_tail_call=%d\n",
-                 M3_ARCH, (int) M3_HAS_TAIL_CALL, (int) M3_GUARANTEED_TAIL_CALL);
+    std::printf ("runtime    wasmtime/Cranelift, C API\n");
 
     FaustEngine engine;
 

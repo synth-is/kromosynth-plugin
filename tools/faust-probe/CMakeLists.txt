@@ -2,7 +2,7 @@
 #
 # KEEPABLE.
 #
-# Links FaustEngine directly, with juce_audio_basics and wasm3 but no plugin
+# Links FaustEngine directly, with juce_audio_basics and wasmtime but no plugin
 # wrapper, no webview and no audio device. Same reason engine-probe exists: the
 # failure this engine is most likely to have is silence, and silence passes
 # every validator. auval's render tests only check that rendering does not
@@ -24,7 +24,7 @@ target_compile_definitions(faust_probe PRIVATE
     JUCE_WEB_BROWSER=0)
 
 target_link_libraries(faust_probe PRIVATE
-    m3
+    wasmtime::wasmtime
     juce::juce_audio_basics
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags)

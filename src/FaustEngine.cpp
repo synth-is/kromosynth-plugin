@@ -6,9 +6,11 @@
 
 #include "FaustEngine.h"
 
-#include <wasm3.h>
+#include <wasm.h>
+#include <wasmtime.h>
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <functional>
 #include <vector>
@@ -23,19 +25,20 @@
 // EXPERIMENT_01_3_DESKTOP_RESULT §1.
 // ─────────────────────────────────────────────────────────────────────────────
 
-#define UNARY(NAME, EXPR)                                    \
-    static m3ApiRawFunction(NAME) {                          \
-        m3ApiReturnType(float);                              \
-        m3ApiGetArg(float, x);                               \
-        m3ApiReturn((float)(EXPR));                          \
-    }
-#define BINARY(NAME, EXPR)                                   \
-    static m3ApiRawFunction(NAME) {                          \
-        m3ApiReturnType(float);                              \
-        m3ApiGetArg(float, x);                               \
-        m3ApiGetArg(float, y);                               \
-        m3ApiReturn((float)(EXPR));                          \
-    }
+// wasmtime raw-slot callbacks rather than boxed wasmtime_val_t. host_wasmtime.c
+// records why: the boxed path would penalise wasmtime against V8, whose import
+// calls are cheap, and produce a slower-looking JIT for a reason that has
+// nothing to do with code quality. §2.5 measured that boundary crossing as the
+// dominant cost on math-heavy elites, so it is not a micro-optimisation.
+#define UNARY(NAME, EXPR)                                                     \
+    static wasm_trap_t* NAME (void*, wasmtime_caller_t*,                      \
+                              wasmtime_val_raw_t* a, size_t) {                \
+        const float x = a[0].f32; a[0].f32 = (float) (EXPR); return nullptr; }
+#define BINARY(NAME, EXPR)                                                    \
+    static wasm_trap_t* NAME (void*, wasmtime_caller_t*,                      \
+                              wasmtime_val_raw_t* a, size_t) {                \
+        const float x = a[0].f32, y = a[1].f32;                               \
+        a[0].f32 = (float) (EXPR); return nullptr; }
 
 UNARY (fe_abs,   std::fabs ((double) x))
 UNARY (fe_acos,  std::acos ((double) x))
@@ -76,28 +79,46 @@ BINARY (fe_copysign, std::copysign (x, y))
 
 namespace
 {
-struct Link { const char* name; const char* sig; M3RawCall fn; };
+struct Link { const char* name; int arity; wasmtime_func_unchecked_callback_t fn; };
 
 const Link kMathTable[] = {
-    { "_abs",        "f(f)",  fe_abs },
-    { "_acosf",      "f(f)",  fe_acos },   { "_asinf",  "f(f)", fe_asin },
-    { "_atanf",      "f(f)",  fe_atan },   { "_ceilf",  "f(f)", fe_ceil },
-    { "_cosf",       "f(f)",  fe_cos },    { "_expf",   "f(f)", fe_exp },
-    { "_floorf",     "f(f)",  fe_floor },  { "_logf",   "f(f)", fe_log },
-    { "_log10f",     "f(f)",  fe_log10 },  { "_roundf", "f(f)", fe_round },
-    { "_sinf",       "f(f)",  fe_sin },    { "_sqrtf",  "f(f)", fe_sqrt },
-    { "_tanf",       "f(f)",  fe_tan },    { "_acoshf", "f(f)", fe_acosh },
-    { "_asinhf",     "f(f)",  fe_asinh },  { "_atanhf", "f(f)", fe_atanh },
-    { "_coshf",      "f(f)",  fe_cosh },   { "_sinhf",  "f(f)", fe_sinh },
-    { "_tanhf",      "f(f)",  fe_tanh },
-    { "_isnanf",     "f(f)",  fe_isnan },  { "_isinff", "f(f)", fe_isinf },
-    { "_atan2f",     "f(ff)", fe_atan2 },  { "_fmodf",  "f(ff)", fe_fmod },
-    { "_powf",       "f(ff)", fe_pow },    { "_remainderf", "f(ff)", fe_remainder },
-    { "_max_f",      "f(ff)", fe_max },    { "_min_f",  "f(ff)", fe_min },
-    { "_copysignf",  "f(ff)", fe_copysign },
+    { "_abs", 1, fe_abs },
+    { "_acosf", 1, fe_acos },   { "_asinf", 1, fe_asin },
+    { "_atanf", 1, fe_atan },   { "_ceilf", 1, fe_ceil },
+    { "_cosf", 1, fe_cos },     { "_expf", 1, fe_exp },
+    { "_floorf", 1, fe_floor }, { "_logf", 1, fe_log },
+    { "_log10f", 1, fe_log10 }, { "_roundf", 1, fe_round },
+    { "_sinf", 1, fe_sin },     { "_sqrtf", 1, fe_sqrt },
+    { "_tanf", 1, fe_tan },     { "_acoshf", 1, fe_acosh },
+    { "_asinhf", 1, fe_asinh }, { "_atanhf", 1, fe_atanh },
+    { "_coshf", 1, fe_cosh },   { "_sinhf", 1, fe_sinh },
+    { "_tanhf", 1, fe_tanh },
+    { "_isnanf", 1, fe_isnan }, { "_isinff", 1, fe_isinf },
+    { "_atan2f", 2, fe_atan2 }, { "_fmodf", 2, fe_fmod },
+    { "_powf", 2, fe_pow },     { "_remainderf", 2, fe_remainder },
+    { "_max_f", 2, fe_max },    { "_min_f", 2, fe_min },
+    { "_copysignf", 2, fe_copysign },
 };
 
-constexpr int kVoiceStackBytes = 256 * 1024;   // as measured in host_wasm3.c
+wasm_functype_t* funcType (int arity)
+{
+    wasm_valtype_vec_t params, results;
+
+    if (arity == 1)
+    {
+        wasm_valtype_t* p[1] = { wasm_valtype_new_f32() };
+        wasm_valtype_vec_new (&params, 1, p);
+    }
+    else
+    {
+        wasm_valtype_t* p[2] = { wasm_valtype_new_f32(), wasm_valtype_new_f32() };
+        wasm_valtype_vec_new (&params, 2, p);
+    }
+
+    wasm_valtype_t* r[1] = { wasm_valtype_new_f32() };
+    wasm_valtype_vec_new (&results, 1, r);
+    return wasm_functype_new (&params, &results);
+}
 
 float mtof (int note) noexcept
 {
@@ -109,12 +130,13 @@ float mtof (int note) noexcept
 
 struct FaustVoice
 {
-    IM3Runtime  runtime = nullptr;
-    IM3Module   module  = nullptr;
-    IM3Function fInit = nullptr, fCompute = nullptr, fSetParam = nullptr;
+    wasmtime_store_t*   store = nullptr;
+    wasmtime_context_t* ctx   = nullptr;
+    wasmtime_instance_t instance {};
+    wasmtime_func_t     fInit {}, fCompute {}, fSetParam {};
 
     std::uint8_t* memory = nullptr;
-    std::size_t memBytes = 0;
+    std::size_t   memBytes = 0;
 
     std::uint32_t dspPtr = 0, inPtrArr = 0, outPtrArr = 0, inBufs = 0, outBufs = 0;
 
@@ -125,7 +147,14 @@ struct FaustVoice
 
 struct FaustEngineImpl
 {
-    IM3Environment env = nullptr;
+    // ONE module, compiled once by Cranelift, shared across every voice --
+    // unlike the wasm3 path, where each voice had to parse its own because
+    // m3_LoadModule consumes the module and it owns the instance's memory.
+    // Compilation happens in wasmtime_module_new and is the expensive step, so
+    // sharing it is what keeps per-voice load cost at instantiation only.
+    wasm_engine_t*      engine = nullptr;
+    wasmtime_module_t*  module = nullptr;
+    wasmtime_linker_t*  linker = nullptr;
     std::vector<std::uint8_t> wasm;
     std::vector<FaustVoice> voices;
 
@@ -148,15 +177,14 @@ FaustEngine::FaustEngine() : impl_ (std::make_unique<FaustEngineImpl>()) {}
 
 FaustEngine::~FaustEngine()
 {
-    if (impl_ != nullptr)
-    {
-        for (auto& v : impl_->voices)
-            if (v.runtime != nullptr)
-                m3_FreeRuntime (v.runtime);
+    if (impl_ == nullptr) return;
 
-        if (impl_->env != nullptr)
-            m3_FreeEnvironment (impl_->env);
-    }
+    for (auto& v : impl_->voices)
+        if (v.store != nullptr) wasmtime_store_delete (v.store);
+
+    if (impl_->linker != nullptr) wasmtime_linker_delete (impl_->linker);
+    if (impl_->module != nullptr) wasmtime_module_delete (impl_->module);
+    if (impl_->engine != nullptr) wasm_engine_delete (impl_->engine);
 }
 
 FaustEngine::LoadResult
@@ -224,51 +252,81 @@ FaustEngine::load (const juce::File& wasmFile,
     impl_->maxBlockSize = maxBlockSize;
     impl_->mix.assign ((size_t) maxBlockSize, 0.0f);
 
-    if (impl_->env == nullptr) impl_->env = m3_NewEnvironment();
-    if (impl_->env == nullptr) { r.detail = "m3_NewEnvironment failed"; return r; }
+    if (impl_->engine == nullptr) impl_->engine = wasm_engine_new();
+    if (impl_->engine == nullptr) { r.detail = "wasm_engine_new failed"; return r; }
 
     for (auto& v : impl_->voices)
-        if (v.runtime != nullptr) m3_FreeRuntime (v.runtime);
-
+        if (v.store != nullptr) wasmtime_store_delete (v.store);
     impl_->voices.clear();
+
+    if (impl_->linker != nullptr) { wasmtime_linker_delete (impl_->linker); impl_->linker = nullptr; }
+    if (impl_->module != nullptr) { wasmtime_module_delete (impl_->module); impl_->module = nullptr; }
+
+    if (auto* err = wasmtime_module_new (impl_->engine, impl_->wasm.data(),
+                                         impl_->wasm.size(), &impl_->module))
+    {
+        wasmtime_error_delete (err);
+        r.detail = "wasmtime_module_new failed (Cranelift could not compile the module)";
+        return r;
+    }
+
+    impl_->linker = wasmtime_linker_new (impl_->engine);
+
+    // The FULL table is linked, not the measured union -- see the header. With
+    // wasmtime, unlike wasm3, defining a name the module does not import is
+    // simply unused rather than an error, so there is nothing to tolerate here.
+    for (const auto& link : kMathTable)
+    {
+        wasm_functype_t* ty = funcType (link.arity);
+        auto* err = wasmtime_linker_define_func_unchecked (
+            impl_->linker, "env", 3, link.name, std::strlen (link.name),
+            ty, link.fn, nullptr, nullptr);
+        wasm_functype_delete (ty);
+
+        if (err != nullptr)
+        {
+            wasmtime_error_delete (err);
+            r.detail = juce::String ("could not define import env.") + link.name;
+            return r;
+        }
+    }
+
     impl_->voices.resize ((size_t) numVoices);
 
     for (auto& v : impl_->voices)
     {
-        v.runtime = m3_NewRuntime (impl_->env, kVoiceStackBytes, nullptr);
-        if (v.runtime == nullptr) { r.detail = "m3_NewRuntime failed"; return r; }
+        v.store = wasmtime_store_new (impl_->engine, nullptr, nullptr);
+        v.ctx = wasmtime_store_context (v.store);
 
-        // Each voice parses its own module: LoadModule consumes it and the
-        // module owns the memory the instance runs in, so they cannot be shared.
-        if (auto err = m3_ParseModule (impl_->env, &v.module, impl_->wasm.data(),
-                                       (std::uint32_t) impl_->wasm.size()))
-        { r.detail = juce::String ("m3_ParseModule: ") + err; return r; }
+        wasm_trap_t* trap = nullptr;
+        if (auto* err = wasmtime_linker_instantiate (impl_->linker, v.ctx, impl_->module,
+                                                     &v.instance, &trap))
+        { wasmtime_error_delete (err); r.detail = "instantiate failed"; return r; }
+        if (trap != nullptr) { wasm_trap_delete (trap); r.detail = "instantiate trapped"; return r; }
 
-        if (auto err = m3_LoadModule (v.runtime, v.module))
-        { r.detail = juce::String ("m3_LoadModule: ") + err; return r; }
-
-        for (const auto& link : kMathTable)
+        const auto getFunc = [&] (const char* name, wasmtime_func_t& out) -> bool
         {
-            const auto err = m3_LinkRawFunction (v.module, "env", link.name, link.sig, link.fn);
+            wasmtime_extern_t item;
+            if (! wasmtime_instance_export_get (v.ctx, &v.instance, name, std::strlen (name), &item)
+                || item.kind != WASMTIME_EXTERN_FUNC)
+                return false;
+            out = item.of.func;
+            return true;
+        };
 
-            // Not an error: the module simply does not import that name.
-            if (err != nullptr && err != m3Err_functionLookupFailed)
-            { r.detail = juce::String ("link ") + link.name + ": " + err; return r; }
-        }
+        if (! getFunc ("init", v.fInit))               { r.detail = "missing export: init"; return r; }
+        if (! getFunc ("compute", v.fCompute))         { r.detail = "missing export: compute"; return r; }
+        if (! getFunc ("setParamValue", v.fSetParam))  { r.detail = "missing export: setParamValue"; return r; }
 
-        if (auto err = m3_FindFunctionIn (&v.fInit, v.module, "init"))
-        { r.detail = juce::String ("find init: ") + err; return r; }
-        if (auto err = m3_FindFunctionIn (&v.fCompute, v.module, "compute"))
-        { r.detail = juce::String ("find compute: ") + err; return r; }
-        if (auto err = m3_FindFunctionIn (&v.fSetParam, v.module, "setParamValue"))
-        { r.detail = juce::String ("find setParamValue: ") + err; return r; }
+        wasmtime_extern_t memItem;
+        if (! wasmtime_instance_export_get (v.ctx, &v.instance, "memory", 6, &memItem)
+            || memItem.kind != WASMTIME_EXTERN_MEMORY)
+        { r.detail = "module exports no memory"; return r; }
 
-        std::size_t bytes = 0;
-        v.memory = m3_GetMemory (v.module, &bytes, 0);
-        v.memBytes = bytes;
-        if (v.memory == nullptr) { r.detail = "module exports no memory"; return r; }
+        v.memory = wasmtime_memory_data (v.ctx, &memItem.of.memory);
+        v.memBytes = wasmtime_memory_data_size (v.ctx, &memItem.of.memory);
 
-        // Layout, identical to layoutMono() in host_wasm3.c and to
+        // Layout, identical to layoutMono() in host_wasmtime.c and to
         // FaustMonoWebAudioDsp.initMemory. -single only: §4.1 established
         // sampleSize 4 across the archive, and a -double module would silently
         // mis-stride here, so the fit is checked rather than assumed.
@@ -296,10 +354,12 @@ FaustEngine::load (const juce::File& wasmFile,
         for (int c = 0; c < impl_->outputs; ++c)
             h32[(v.outPtrArr >> 2) + c] = v.outBufs + (std::uint32_t) maxBlockSize * ss * (std::uint32_t) c;
 
-        std::uint32_t a0 = v.dspPtr, a1 = (std::uint32_t) (int) sampleRate;
-        const void* args[2] = { &a0, &a1 };
-        if (auto err = m3_Call (v.fInit, 2, args))
-        { r.detail = juce::String ("init: ") + err; return r; }
+        wasmtime_val_raw_t args[2];
+        args[0].i32 = (std::int32_t) v.dspPtr;
+        args[1].i32 = (std::int32_t) sampleRate;
+        if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
+        { wasmtime_error_delete (err); r.detail = "init failed"; return r; }
+        if (trap != nullptr) { wasm_trap_delete (trap); r.detail = "init trapped"; return r; }
     }
 
     loaded_ = true;
@@ -330,9 +390,15 @@ void FaustEngine::reset() noexcept
 
 void FaustEngine::setParam (FaustVoice& v, int byteOffset, float value) noexcept
 {
-    std::uint32_t a0 = v.dspPtr, a1 = (std::uint32_t) byteOffset;
-    const void* args[3] = { &a0, &a1, &value };
-    m3_Call (v.fSetParam, 3, args);
+    wasmtime_val_raw_t args[3];
+    args[0].i32 = (std::int32_t) v.dspPtr;
+    args[1].i32 = (std::int32_t) byteOffset;
+    args[2].f32 = value;
+
+    wasm_trap_t* trap = nullptr;
+    if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fSetParam, args, 3, &trap))
+        wasmtime_error_delete (err);
+    if (trap != nullptr) wasm_trap_delete (trap);
 }
 
 void FaustEngine::noteOn (int note, int velocity) noexcept
@@ -435,11 +501,17 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
 
         for (auto& v : impl_->voices)
         {
-            std::uint32_t a0 = v.dspPtr, a1 = (std::uint32_t) chunk,
-                          a2 = v.inPtrArr, a3 = v.outPtrArr;
-            const void* args[4] = { &a0, &a1, &a2, &a3 };
+            wasmtime_val_raw_t args[4];
+            args[0].i32 = (std::int32_t) v.dspPtr;
+            args[1].i32 = chunk;
+            args[2].i32 = (std::int32_t) v.inPtrArr;
+            args[3].i32 = (std::int32_t) v.outPtrArr;
 
-            if (m3_Call (v.fCompute, 4, args) != nullptr) continue;
+            wasm_trap_t* trap = nullptr;
+            auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fCompute, args, 4, &trap);
+
+            if (err != nullptr) { wasmtime_error_delete (err); continue; }
+            if (trap != nullptr) { wasm_trap_delete (trap); continue; }
 
             const auto outBase = reinterpret_cast<std::uint32_t*> (v.memory)[v.outPtrArr >> 2];
             const auto* src = reinterpret_cast<const float*> (v.memory + outBase);
