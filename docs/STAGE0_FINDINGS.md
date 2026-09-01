@@ -3730,3 +3730,69 @@ JS bundle.
   is still not descriptive.
 - **Quota cost appears only after the click**, and grabbing from a feed is far
   higher frequency than deliberate takeout.
+
+## O9. Signing verified on a clean host — the load-blocking question, closed
+
+**Date:** 2026-09-01. **Host:** Björn's Mac Studio, macOS 26.3.1, arm64, reached
+over Tailscale (`ssh bthj@bjrns-mac-studio.tailb1f45a.ts.net`).
+
+§A recorded that signing is load-blocking on Apple hosts rather than a Stage 1
+formality, and that the dev machine could not answer whether a shipped build
+loads because GarageBand there holds a permanent security exception for this
+plugin. The Mac Studio has GarageBand, four working third-party AUs, Gatekeeper
+enabled, and had never seen a Synth.is component. It is the clean host that
+question needed.
+
+**The artefact tested** is the 2026-08-28 `sampler-release` build — Developer ID
+Application (Nemur net ehf., ATA8MQ4L7K), hardened runtime (`flags=0x10000`),
+notarised and stapled. Note it **predates the Stage 1 acquisition work**: this
+verifies the signing pipeline, not the current tree.
+
+| check | result |
+|---|---|
+| stapled ticket survives `ditto` + scp | validated |
+| `codesign --verify --deep --strict` | valid, satisfies its Designated Requirement |
+| `spctl -a -t install`, not quarantined | accepted, `source=Notarized Developer ID` |
+| `spctl -a -t install`, **quarantined** | accepted, same source |
+| `auval -v aumu Krm0 Sthi`, GUI session | **AU VALIDATION SUCCEEDED** |
+
+The quarantine row is the one that counts. `scp` does not set
+`com.apple.quarantine`; a user's download does. Without applying it by hand the
+test would not have shared the failure mode with production — §O3's pattern
+again, and the same shape as the `.DS_Store` case.
+
+### A false failure worth recording
+
+Over SSH, `auval -a` did not list the component, which read as a load failure.
+It was not. **Zero non-Apple components register in an SSH session on that
+machine** — Kontakt, Vital, DecentSampler and sforzando are all installed, all
+working, and all invisible. The AU registrar lives in the GUI login session and
+`launchctl asuser` does not substitute for one on a headless box. The check had
+no power to distinguish a broken plugin from a working one, and the control that
+revealed it was asking whether known-good plugins failed the same way.
+
+### What the PASS does and does not say
+
+auval exercised open (cold 892 ms, warm 0.36 ms), the Cocoa view, factory
+presets, class info, host callbacks, parameter persistence across reset, MIDI,
+and render at 11.025 / 22.05 / 44.1 / 48 / 96 / 192 kHz across 64–4096 frames.
+
+It does **not** say the plugin makes sound. No instrument was loaded, so the
+render tests confirm well-behaved silence — no NaNs, no denormals, correct bus
+behaviour. That is necessary and not sufficient, and it is F11's culled-region
+symptom in another costume: a thing that passes every check while producing
+nothing. Proving the chain end to end still needs an acquire-and-play on a
+machine that is not the dev machine.
+
+### One real warning from the run
+
+```
+WARNING: Source AU supports multi-channel output but does not provide a
+         channel layout
+```
+
+The AU declares `[0, -1]` channel capabilities — any output count — and
+publishes no layout. Hosts that ask for one get nothing. For a stereo
+instrument the honest declaration is an explicit layout; some hosts will
+otherwise guess, and guess differently from each other.
+
