@@ -272,6 +272,162 @@ int runSequence (FaustEngine& engine, int voices)
     return tail > 1.0e-5f ? 1 : 0;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The three numbers an artefact should carry and currently carries none of.
+//
+//   rtf          single-voice real-time factor -> a per-platform voice cap
+//   trim         gain to bring this genome to a usable level
+//   articulation whether releasing the gate stops the sound
+//
+// All three are one render to compute at export and none is recoverable
+// afterwards. EXPERIMENT_01_3_DESKTOP_RESULT §2.7 proposes the first;
+// ELITE_PLAYABILITY_2026-08-29 documents a 64 dB level spread that demands the
+// second; ELITE_ARTICULATION_2026-09-01 measures 16 of 33 genomes needing the
+// third.
+//
+// ── Two disciplines carried in from earlier sessions ────────────────────────
+//
+// 1. THE GATE IS DRIVEN BY PARAMETER, NOT BY noteOn. FaustEngine's forced
+//    release only engages on note-driven voices, so measuring through MIDI
+//    would measure the plugin's own intervention rather than the genome. This
+//    path is the same one the 33/33 null test uses.
+//
+// 2. PEAK IS PROBED AT SEVERAL PITCHES. A single-pitch peak measurement
+//    produced a 38 dB error on one genome in the composing-app work. Level is
+//    not pitch-independent and must not be assumed to be.
+//
+// Gain is probed at 1.0 rather than the genome's init, because the plugin maps
+// velocity to gain and full velocity is what a user will actually send.
+// ─────────────────────────────────────────────────────────────────────────────
+
+int runMeasure (const juce::File& wasmFile, const juce::File& jsonFile,
+                const juce::String& name)
+{
+    constexpr double kRate = 48000.0;
+    constexpr int    kBlock = 128;
+    constexpr float  kTargetPeak = 0.25f;      // as kromosynth-composing's trimForLevel
+    const int pitches[] = { 48, 69, 81 };      // c3, a4, a5
+
+    FaustEngine engine;
+    const auto load = engine.load (wasmFile, jsonFile, kRate, kBlock, 1);
+    if (! load.ok)
+    {
+        std::printf ("{\"name\":\"%s\",\"ok\":false,\"detail\":\"%s\"}\n",
+                     name.toRawUTF8(), load.detail.toRawUTF8());
+        return 1;
+    }
+
+    int idxFreq = -1, idxGain = -1, idxGate = -1;
+    for (const auto& prm : engine.parameters())
+    {
+        if (prm.label == "freq") idxFreq = prm.byteOffset;
+        if (prm.label == "gain") idxGain = prm.byteOffset;
+        if (prm.label == "gate") idxGate = prm.byteOffset;
+    }
+
+    juce::AudioBuffer<float> buffer { 1, kBlock };
+    const juce::MidiBuffer noMidi;
+
+    const int holdBlocks  = (int) (2.0 * kRate) / kBlock;
+    const int afterBlocks = (int) (3.0 * kRate) / kBlock;
+
+    float peakOverall = 0.0f, peakByPitch[3] = { 0, 0, 0 };
+    float tailRel = 0.0f;          // level 2-3 s after gate-off, vs this render's peak
+    double decayToSilenceS = -1.0; // -1 means it never got there
+
+    for (int pi = 0; pi < 3; ++pi)
+    {
+        engine.panic();
+        if (idxFreq >= 0) engine.setParameter (idxFreq, 440.0f * std::pow (2.0f, (pitches[pi] - 69) / 12.0f));
+        if (idxGain >= 0) engine.setParameter (idxGain, 1.0f);
+        if (idxGate >= 0) engine.setParameter (idxGate, 1.0f);
+
+        float peakHere = 0.0f;
+        for (int b = 0; b < holdBlocks; ++b)
+        {
+            engine.process (buffer, noMidi);
+            peakHere = juce::jmax (peakHere, buffer.getMagnitude (0, kBlock));
+        }
+
+        if (idxGate >= 0) engine.setParameter (idxGate, 0.0f);
+
+        float lastSecond = 0.0f;
+        int quietAt = -1;
+        for (int b = 0; b < afterBlocks; ++b)
+        {
+            engine.process (buffer, noMidi);
+            const float m = buffer.getMagnitude (0, kBlock);
+            peakHere = juce::jmax (peakHere, m);
+
+            if (quietAt < 0 && peakHere > 0.0f && m < peakHere * 0.001f)   // -60 dB
+                quietAt = b;
+
+            if (b >= afterBlocks - (int) (1.0 * kRate) / kBlock)
+                lastSecond = juce::jmax (lastSecond, m);
+        }
+
+        peakByPitch[pi] = peakHere;
+        peakOverall = juce::jmax (peakOverall, peakHere);
+
+        // Reported for the loudest pitch, which is the one that decides the trim.
+        if (peakHere >= peakOverall)
+        {
+            tailRel = peakHere > 0.0f ? lastSecond / peakHere : 0.0f;
+            decayToSilenceS = quietAt < 0 ? -1.0 : (double) quietAt * kBlock / kRate;
+        }
+    }
+
+    // ── RTF, free-running, one voice ────────────────────────────────────────
+    // Labelled free-running deliberately. d3321de measured that holding a real
+    // block cadence costs 2.3-2.9x more than rendering flat out, so this is a
+    // relative figure for ranking genomes, NOT a claim about headroom in a DAW.
+    engine.panic();
+    if (idxFreq >= 0) engine.setParameter (idxFreq, 440.0f);
+    if (idxGain >= 0) engine.setParameter (idxGain, 1.0f);
+    if (idxGate >= 0) engine.setParameter (idxGate, 1.0f);
+
+    const int rtfBlocks = (int) (5.0 * kRate) / kBlock;
+    const auto t0 = juce::Time::getHighResolutionTicks();
+    for (int b = 0; b < rtfBlocks; ++b) engine.process (buffer, noMidi);
+    const double elapsed = juce::Time::highResolutionTicksToSeconds (
+                               juce::Time::getHighResolutionTicks() - t0);
+    const double rtf = elapsed > 0.0 ? 5.0 / elapsed : 0.0;
+
+    // Gate 0 §5 validated single-voice RTF as an exact predictor of polyphony,
+    // 30/30, using a 1.05 per-voice penalty.
+    const auto capAt = [rtf] (double headroom)
+    {
+        int cap = 0;
+        for (int v = 1; v <= 32; v *= 2)
+            if (rtf / (v * 1.05) >= headroom) cap = v;
+        return cap;
+    };
+
+    const float trim = peakOverall > 0.0f ? kTargetPeak / peakOverall : 1.0f;
+    const char* articulation = tailRel < 0.001f ? "silent"
+                             : tailRel < 0.032f ? "quiet" : "drone";
+
+    std::printf (
+        "{\"name\":\"%s\",\"ok\":true,\"dsp\":\"%s\",\"structBytes\":%d,"
+        "\"rtf\":%.2f,\"rtfMode\":\"free-running\","
+        "\"capAt4x\":%d,\"capAt2x\":%d,"
+        "\"peak\":%.6f,\"peakC3\":%.6f,\"peakA4\":%.6f,\"peakA5\":%.6f,"
+        "\"pitchSpreadDb\":%.1f,"
+        "\"targetPeak\":%.3f,\"trim\":%.6f,\"trimDb\":%.1f,"
+        "\"articulation\":\"%s\",\"tailDb\":%.1f,\"decayToSilenceS\":%.3f,"
+        "\"hasGate\":%s}\n",
+        name.toRawUTF8(), load.dspName.toRawUTF8(), load.structBytes,
+        rtf, capAt (4.0), capAt (2.0),
+        peakOverall, peakByPitch[0], peakByPitch[1], peakByPitch[2],
+        20.0 * std::log10 (juce::jmax (1.0e-9f, peakOverall)
+                           / juce::jmax (1.0e-9f, juce::jmin (juce::jmin (peakByPitch[0], peakByPitch[1]), peakByPitch[2]))),
+        kTargetPeak, trim, 20.0 * std::log10 (juce::jmax (1.0e-9f, trim)),
+        articulation, 20.0 * std::log10 (juce::jmax (1.0e-9f, tailRel)),
+        decayToSilenceS, load.hasGate ? "true" : "false");
+
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc < 3)
@@ -299,6 +455,10 @@ int main (int argc, char** argv)
         if (juce::String (argv[i]) == "--plan") planArg = i + 1;
         if (juce::String (argv[i]) == "--ref")  refArg  = i + 1;
     }
+
+    for (int i = 3; i < argc; ++i)
+        if (juce::String (argv[i]) == "--measure")
+            return runMeasure (wasmFile, jsonFile, wasmFile.getFileNameWithoutExtension());
 
     if (planArg > 0 && refArg > 0)
         return runNullTest (wasmFile, jsonFile,
