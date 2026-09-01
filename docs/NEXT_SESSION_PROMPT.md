@@ -1,132 +1,139 @@
 # Next session — kromosynth-plugin
 
-Previous prompt preserved as `NEXT_SESSION_PROMPT.2026-08-31.md`.
+Previous prompt preserved as `NEXT_SESSION_PROMPT.2026-08-31b.md`.
 
 ## Where things stand
 
-**Stage 1 acquisition is complete and verified end to end on a live host.** The
-site hands the plugin an artefact; the plugin fetches, unpacks, installs and
-names it. Every layer was proven against the real system rather than a
-stand-in — HMAC minting through the real quota exemptions, ticket verification
-at `/vi/plugin-file`, `synthis://` reaching `pageAboutToLoad` in a live
-WKWebView, ZIP shape normalisation, atomic install, and three acquisition paths
-(existing entry, re-render, fresh render from a feed).
+**Stage 1 acquisition is complete and verified end to end on a live host** —
+unchanged from the previous prompt, see `NEXT_SESSION_PROMPT.2026-08-31b.md`
+for the detail.
 
-Read `STAGE0_FINDINGS.md` §O before touching any of it. §O3 in particular: four
-bugs this session were checks that passed while the thing they guarded was
-broken, and the pattern is worth carrying rather than rediscovering.
+**Gate 0's desktop half is now measured and Stage 2 is unblocked.** The full
+result is `kromosynth-projects/Evolutionary Sound Discovery Platform/daw-plugin/EXPERIMENT_01_3_DESKTOP_RESULT.md`.
+Read it before touching any of this — it contains two corrections to itself
+(§2.5, §2.7), and reading only §0 will leave you with the version that was
+wrong.
 
-**Stage 0** is closed (§A–§N). **Stage 2 — the Faust engine — has not started.**
+Deliberately **not** named `EXPERIMENT_01_RESULT.md`. That filename is still
+reserved for the document that fires a §5 branch, and no branch fires — see
+"What §5 needs" below.
 
-## A correction to carry forward
+### What was built
 
-Earlier notes narrowed "Gate 0" to "an iOS hardware measurement". That is wrong
-and it made the Faust path look more blocked than it is.
+`kromosynth-projects/.../faust-genome-substrate/probe/gate0/` — four files of
+host, driven by `probe/13-gate0-prepare.mjs`:
 
-WP_SYNTHIS_PLUGIN §Gate 0 runs in `kromosynth-render`, needs no JUCE, and asks
-which runtime at what polyphony on which platforms. Its stated failure mode is
-*"the Faust engine ships desktop-only in v1 and iOS carries the sampler engine
-alone"* — desktop is the fallback, not the thing at risk.
+- `host_wasm3.c` — wasm3 interpreter, `--math float|double`, `--block N`,
+  `--loadonly N`
+- `host_wamr.c` — WAMR fast-interp, same CLI and JSON shape
+- `host_wasmtime.c` — wasmtime v48 / Cranelift JIT, plus `--blockstats`
+- `sweep.mjs`, `compare.mjs`, `build.sh`, `CMakeLists.txt`
 
-What genuinely needs a device is the narrower iOS question, and only because
-Apple forbids runtime code generation: no JIT, so iOS must interpret or AOT, and
-interpreter throughput on real iOS silicon inside an AUv3 memory budget cannot
-be inferred from a Mac.
+Runtimes clone/download into `probe/out/wasm-runtime/` (gitignored). wasm3 and
+WAMR build from source; wasmtime is a prebuilt C API tarball. `build.sh` does
+wasm3; the other two have their own lines in the result doc's header.
 
-**So live Faust in the macOS plugin is not blocked on iOS hardware.** It is
-blocked on the desktop half of Gate 0 — protocol already written in
-`EXPERIMENT_01_DSP_EXECUTION.md` — plus the JUCE-side engine work.
+Results in `probe/out/gate0/` — `survey.json`, `selection.json`, `all.json`,
+`sweep-{wasm3,wamr,wasmtime}.json`, `sweep-{wasm3,wasmtime}-archive.json`.
+
+### What was found
+
+1. **Every elite plays on every platform. None is unplayable anywhere.** Only
+   the voice count varies. Desktop under Cranelift: 8–32+ voices, median 16,
+   100% of the archive. iOS under wasm3: 1–32 voices, median 4, 100% of the
+   archive.
+2. **The math imports must compute in DOUBLE.** faustwasm binds `_powf` to
+   `Math.pow`, which is double and narrows on return. A C host calling `powf()`
+   diverges to **−50 dB** on a math-heavy elite — audible. In double, all four
+   engines are bit-identical to the platform reference across 33 elites.
+   **This is the single most load-bearing implementation detail for Stage 2.**
+3. **A native host is up to 2.2× faster than the browser** on the same module,
+   because every math import crosses wasm→JS in a browser and that crossing is
+   expensive. The web app is a floor this work clears, not a ceiling.
+4. **Block size is a lever in JavaScript and not one in C** — flat 128→1024.
+   Negative result, recorded so it is not measured again.
+5. The ≥4× headroom bar decomposes into ~1.3× measured genome variance and
+   ~3× unmeasured session budget.
 
 ## Task — pick one
 
-**1. Gate 0, desktop half.** Run the pre-registered protocol in
-`kromosynth-render`. Answers which runtime and what polyphony on Apple silicon,
-and whether the LLVM and WASM backends agree numerically (§2 says that is cheap
-to test and must not be assumed in either direction). Unblocks Stage 2 and needs
-no hardware you do not have. **This is the one that unblocks the most.**
+### 1. Real-time probe with a time-constrained thread (recommended)
 
-**2. Quota visibility.** Cost currently appears only after the click. Grabbing
-from a feed is far higher frequency than deliberate takeout, so the remaining
-allowance should be visible before, not after. Touches
-`kromosynth-desktop/packages/web` and possibly a new read-only endpoint. A
-design decision as much as a code one — propose before building.
+The only part of the headroom bar still resting on judgement is the session
+term — how much CPU one instrument may claim before a busy DAW glitches. It
+decides whether the voice caps above are the ≥4× column or the ≥2× one, which
+on iOS is the difference between a median cap of 4 voices and 8.
 
-**3. Better names.** `Virtual Instrument #8NMZJ` beats a UUID and is still not
-descriptive. `sounds[0].class` sometimes carries a readable fragment
-(`238_buzz_drone-2_0_1`) and sometimes does not (`2_2_2_PQ-4_0_1`) depending on
-whether the run used CLAP prompt classes. Making that dependable is QD template
-work; the plugin inherits any improvement for free, because the name is composed
-on the site and carried in the sentinel.
+Add a real-time mode to `host_wasmtime.c` and `host_wasm3.c`: render one block,
+sleep to the next deadline, count misses. Report missed deadlines and worst
+overrun.
 
-**4. Close `/vi/file/`.** Still unauthenticated, `Access-Control-Allow-Origin: *`,
-no expiry check. Needs the web app's anchor-click download rebuilt as
-fetch-plus-blob first, which risks a regression on the main product path —
-large ZIPs, and the `Content-Length` line in `vi.js` exists because Cloudflare
-otherwise buffers them. Weigh that before starting.
+**It must raise itself to a time-constrained thread policy** (macOS
+`thread_policy_set`, `THREAD_TIME_CONSTRAINT_POLICY`) — the same thing
+CoreAudio does. §2.6 already showed a normal-priority process invents overruns
+that are not there: `blocksOverBudget` bounced 1, 4, 0, 0, 0 across five
+identical runs while p99/mean sat still at ~1.2. Measuring the session term at
+normal priority would repeat that error at larger scale and produce a bar that
+is too conservative.
 
-**5. Housekeeping**, none of it urgent, all of it recorded in §O8:
-`~/.gitignore_global` line 10 is a bare `render` that swallows source
-directories in every repo on this machine; `tests/` is gitignored in
-kromosynth-recommend so no test there is version-controlled; and
-`pm2/ecosystem.config.js:101` points at an `env-config/` directory that does not
-exist.
+Then Björn runs one command with a typical session open and pastes the output.
+Ask him; do not guess the number.
 
-## Build and test
+### 2. iOS memory, which may bind before RTF
 
-```
-./scripts/build.sh                 # compile only, installs nothing
-./scripts/build.sh install         # sign with Developer ID and install
-./scripts/build.sh install --backup   # copy the current bundle aside first
-```
+`EXPERIMENT_01_4.1_RESULT` §1.4 says check memory before throughput on iOS, and
+given §2.7's caps it is plausible memory is what actually binds. Measured peak
+RSS at 8 voices: wasm3 5.1–22.1 MB, WAMR 13.7–22.7 MB, wasmtime 17.6–45.1 MB.
 
-`verify` mode exists because a plugin build otherwise overwrites
-`~/Library/Audio/Plug-Ins` and, with an empty signing identity, replaces a
-notarised bundle with an ad-hoc one as a side effect of checking whether the
-code compiles. The script reads the identity from the keychain and checks
-afterwards that the mode did what it claimed, in both directions.
+The hosts use **one instance per voice** — own module, own interpreter
+bytecode, own linear memory. faustwasm's poly path shares code and duplicates
+only the DSP struct, which would report lower. §5 measured the compute cost of
+that choice at 1–4%; its **memory** cost is unmeasured and is the number that
+matters for an AUv3 extension budget.
 
-Acquisition can be exercised with no plugin, host or DAW:
+### 3. Stage 2 proper — the webview↔engine bridge
 
-```
-./build/acquire-probe/tools/acquire-probe/acquire_probe_artefacts/Release/acquire_probe selftest /tmp/x
-```
+Gate 0 no longer blocks it. Note the audition-routing problem from Stage 0 §O
+is still open and is the most consequential unresolved design decision.
 
-51 checks. Restart the host after `install` — AU caches component scans.
+### 4. Developer ID certificate and notarisation
 
-## Standing rules, unchanged and re-earned this session
+Unchanged from the previous prompt.
 
-- **Read the actual tree before designing.** Two of WP §13's three stated
-  premises were wrong, and reading settled all three before any code existed.
-- **Verify a test can go red.** Every fix this session was checked by breaking
-  the thing it guarded first. Twice that revealed the test had never covered the
-  path at all.
-- **A green check is not evidence until you know which path it ran.** §O3.
-- **Compile or run to confirm an API exists.** Three JUCE APIs guessed wrong this
-  session, all caught that way, none by reading.
-- **Query the live system for facts about it.** The status-string handling was
-  fixed before shipping because live entries were queried rather than reasoned
-  about — `artifacts_pruned` was unanticipated, and re-render starting from a
-  terminal status would have reported false failures.
-- **Check cache headers before believing a single `curl`.** A stale `index.html`
-  led to telling Björn to redeploy something he had already deployed.
-- **Selective staging.** `git_add` then `git_commit` via MCP commits exactly the
-  staged paths and leaves other WIP alone — confirmed. The exception is a repo
-  with *pre-staged* unrelated files, where a terminal pathspec commit
-  (`git commit -F msg -- path`) is the only safe form.
-- **Propose before writing** on anything with a design decision in it.
+## What §5 needs, and why no branch fired
 
-## Deploy notes
+§5's rules all ask "does B clear 8 voices at ≥4× on the slowest decile". The
+measurement says the useful question is "how many voices does each genome get
+on each platform" — a continuous answer where the rule wants a pass/fail.
 
-nginx serves synth.is directly from
-`<SYNTH_ROOT>/kromosynth-desktop/packages/web/dist`, so deploying the web app is
-`git pull && npm run build` on the hub. No upload, no restart.
+§7 of the result doc proposed an amendment (per-genome cost gate + voice cap).
+**§2.7 supersedes it** — the gate half solves a problem that does not exist,
+since nothing is unplayable. What survives is the cap half: carry measured
+single-voice RTF alongside the artefact, derive the per-platform cap
+arithmetically. One render to compute at export; the predictor was validated
+30/30.
 
-`EXTRACTION_TICKET_SECRET` must be identical in `kromosynth-recommend/.env` and
-`kromosynth-vi/.env` on the hub. A mismatch is externally indistinguishable from
-a bad ticket — every download 401s and it looks like a user problem.
+Amending §5 is Björn's call and has not been made. Do not apply it unilaterally
+and do not write `EXPERIMENT_01_RESULT.md` until a branch actually fires.
 
-Confirm a deploy landed with:
+## Standing rules
 
-```
-curl -s https://synth.is/ -H 'Cache-Control: no-cache' | grep -o '/assets/index-[A-Za-z0-9_-]*\.js'
-```
+- Read `STAGE0_FINDINGS.md` §O before touching plugin code.
+- `git:git_commit` via MCP behaves like `git commit -a`. `kromosynth-projects`
+  usually has unrelated pre-staged work — use `git add -- <paths>` then
+  `git commit -F msg -- <paths>` from the terminal.
+- **`git commit -F msg -- <paths>` silently does nothing for UNTRACKED files.**
+  It exits non-zero and prints nothing. `git add` first, then verify with
+  `git log`. This cost a silent no-op commit this session.
+- `~/.gitignore_global` line 10 is a bare unanchored `render`. Never name a
+  directory that.
+- `filesystem:write_file` writes to the real disk; `create_file` writes to a
+  sandbox. Never use `create_file` for project work.
+- `filesystem:edit_file` `oldText` must be byte-perfect. Dry-run first — a
+  dry-run this session caught an edit that would have collapsed two lines into
+  one and swallowed a section heading.
+- Nested functions and statement expressions are GCC extensions clang rejects.
+- Do not run builds or clones while a timing sweep is running.
+- The local MCP servers went unresponsive for a stretch this session — both
+  `local-terminal` and `filesystem`, with a bare `echo alive` timing out. If
+  that recurs, ask Björn to restart them rather than retrying.
