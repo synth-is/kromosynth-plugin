@@ -353,10 +353,35 @@ int main (int argc, char* argv[])
         line ("acquire-probe install  <zip> <id> <libraryRoot>");
         line ("acquire-probe fetch    <base> <id> <file> <ticket> <libraryRoot>");
         line ("acquire-probe selftest <scratchDir>");
+        line ("acquire-probe scan");
         return 2;
     }
 
     const auto command = args[0];
+
+    // The library exactly as the plugin sees it, with no DAW and no webview.
+    //
+    // This exists because listing and loading were allowed to disagree: scan()
+    // tested for instrument.sfz while resolve() accepted a Faust folder too, so
+    // a Faust instrument loaded perfectly and never appeared in the list. There
+    // was no way to see that without opening a DAW, which is exactly the kind
+    // of thing this tool tree exists to make visible.
+    if (command == "scan")
+    {
+        const InstrumentLibrary library;
+        const auto entries = library.scan();
+
+        line ("root: " + InstrumentLibrary::root().getFullPathName());
+        line (juce::String (entries.size()) + " instrument(s)");
+
+        for (const auto& e : entries)
+            line ("  " + juce::String (e.kind == InstrumentLibrary::Kind::faust
+                                           ? "faust  " : "sampler")
+                  + "  " + e.id.paddedRight (' ', 40)
+                  + "  \"" + e.name + "\"");
+
+        return 0;
+    }
 
     if (command == "selftest")
         return args.size() >= 2 ? selftest (juce::File (args[1]))

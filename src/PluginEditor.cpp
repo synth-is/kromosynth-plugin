@@ -169,6 +169,12 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                 auto* o = new juce::DynamicObject();
                 o->setProperty ("id", e.id);
                 o->setProperty ("name", e.name);
+                // So the shell can say what will play it. A live Faust
+                // instrument and a sample set behave differently enough --
+                // polyphony, tail, CPU -- that hiding the difference would be
+                // a disservice.
+                o->setProperty ("kind", e.kind == InstrumentLibrary::Kind::faust
+                                            ? "faust" : "sampler");
                 // Region count would mean loading every SFZ on every list, so
                 // it is reported as 0 here and filled in on load. Stated
                 // rather than silently omitted: the UI shows nothing instead

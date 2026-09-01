@@ -34,11 +34,14 @@
 class InstrumentLibrary
 {
 public:
+    enum class Kind { none, sampler, faust };
+
     struct Entry
     {
         juce::String id;       // directory name; the artifact id for downloads
         juce::String name;     // display name, from the SFZ header if present
-        juce::File sfz;
+        juce::File primary;    // instrument.sfz, or instrument.wasm
+        Kind kind = Kind::sampler;
     };
 
     /** The root the scan walks. Created on demand, not at construction:
@@ -70,8 +73,6 @@ public:
         here and will have to be agreed with kromosynth-vi before anything
         depends on them.
     */
-    enum class Kind { none, sampler, faust };
-
     struct Resolved
     {
         Kind kind = Kind::none;

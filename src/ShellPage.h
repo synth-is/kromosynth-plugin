@@ -193,7 +193,12 @@ function render () {
 
     const meta = document.createElement('span');
     meta.className = 'meta';
-    meta.textContent = e.regions > 0 ? e.regions + ' regions' : '';
+    // A Faust instrument has no regions to count -- it is synthesised, not
+    // sampled -- so the column says which engine will play it instead of
+    // sitting empty and looking like a failed load.
+    meta.textContent = e.kind === 'faust'
+      ? 'live \u00b7 Faust'
+      : (e.regions > 0 ? e.regions + ' regions' : '');
 
     row.appendChild(dot);
     row.appendChild(name);

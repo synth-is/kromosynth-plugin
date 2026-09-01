@@ -76,28 +76,40 @@ std::vector<InstrumentLibrary::Entry> InstrumentLibrary::scan() const
                                                           juce::File::findDirectories))
     {
         const auto folder = dir.getFile();
-        const auto sfz = folder.getChildFile ("instrument.sfz");
 
-        // Silently skipping a directory without an instrument.sfz is right --
+        // resolve() rather than a second instrument.sfz test. The listing and
+        // the loading MUST agree about what counts as an instrument: when they
+        // did not, a Faust folder loaded perfectly and never appeared in the
+        // list, so there was no way to ask for it.
+        const auto resolved = resolve (folder.getFileName());
+
+        // Silently skipping a directory that resolves to nothing is right --
         // a samples folder or a partial download is not an error -- but note
         // this is the one place the library can be quietly wrong. A download
         // that lands samples and dies before writing the SFZ leaves a
         // directory that simply does not appear. The acquisition path should
-        // write the SFZ last for exactly this reason.
-        if (! sfz.existsAsFile())
+        // write the SFZ last for exactly this reason, and a Faust artefact
+        // should write instrument.json last for the same one.
+        if (resolved.kind == Kind::none)
             continue;
 
         Entry entry;
         entry.id = folder.getFileName();
-        entry.sfz = sfz;
+        entry.primary = resolved.primary;
+        entry.kind = resolved.kind;
         // The sidecar wins when present. It holds the label the site showed on
         // the card the user clicked, which is the only name they have ever seen
         // for this instrument. The SFZ header's "Sounds:" ULID is a fallback for
         // instruments that predate acquisition or were placed here by hand.
         entry.name = readSidecarName (folder);
 
+        // readDisplayName parses an SFZ header, so it has nothing to say about
+        // a Faust module. Falling back to the folder name there rather than
+        // handing it a .wasm to misparse.
         if (entry.name.isEmpty())
-            entry.name = readDisplayName (sfz, entry.id);
+            entry.name = resolved.kind == Kind::sampler
+                       ? readDisplayName (resolved.primary, entry.id)
+                       : entry.id;
 
         entries.push_back (std::move (entry));
     }
