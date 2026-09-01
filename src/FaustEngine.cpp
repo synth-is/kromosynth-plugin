@@ -140,9 +140,44 @@ struct FaustVoice
 
     std::uint32_t dspPtr = 0, inPtrArr = 0, outPtrArr = 0, inBufs = 0, outBufs = 0;
 
-    int  note = -1;          // -1 means free
+    int  note = -1;          // -1 means retriggerable
     bool gateOpen = false;
     std::uint64_t startedAt = 0;   // for voice stealing: oldest first
+
+    // ── forced release ──────────────────────────────────────────────────
+    // 16 of 33 archive genomes ignore their own gate (ELITE_ARTICULATION
+    // 2026-09-01). Closing the gate is a request they decline, so the plugin
+    // has to be able to stop a voice itself. What it must NOT do is truncate a
+    // genome whose tail is legitimately long -- an eight-second pad and a flat
+    // drone both "still sound" a second after note-off, and the difference is
+    // that one of them is getting quieter.
+    bool  releasing = false;
+    int   framesSinceRelease = 0;
+    float peakAtRelease = 0.0f;    // level in the block the note-off landed in
+    float peakRecent = 0.0f;       // level in the most recent block
+    bool  forcing = false;         // fading out because it would not stop
+    float forceGain = 1.0f;
+
+    // An idle voice is not computed at all.
+    //
+    // Necessary, not merely an optimisation. Re-running init() zeroes the DSP
+    // struct, which stops a genome that needs its gate -- but some genomes
+    // SELF-OSCILLATE from a zeroed state and simply start again.
+    // elite_16_deep_perc_c7-31 does: it was force-stopped, re-initialised, and
+    // came straight back at 0.538. Nothing done to the struct can stop a
+    // genome that needs no input to make sound; the only thing that works is
+    // not calling compute().
+    bool idle = true;
+    int  quietBlocks = 0;
+
+    // Whether this voice is being driven by MIDI or by raw setParameter calls.
+    //
+    // The auto-idle below keys off "gate closed and silent", and gate is only
+    // ever opened by noteOn -- so a parameter-driven voice looks permanently
+    // gate-closed and idles itself the moment it has a quiet block. Genomes
+    // with a slow attack begin with several. That silently broke 28 of the 33
+    // null tests, which is how it was found.
+    bool noteDriven = false;
 };
 
 struct FaustEngineImpl
@@ -172,6 +207,9 @@ struct FaustEngineImpl
 
     // Scratch for the mono module's output before it reaches the buffer.
     std::vector<float> mix;
+
+    int graceFrames = 0, fadeFrames = 0;
+    std::atomic<int> forcedStops { 0 };
 };
 
 FaustEngine::FaustEngine() : impl_ (std::make_unique<FaustEngineImpl>()) {}
@@ -263,6 +301,13 @@ FaustEngine::load (const juce::File& wasmFile,
     impl_->sampleRate = sampleRate;
     impl_->maxBlockSize = maxBlockSize;
     impl_->mix.assign ((size_t) maxBlockSize, 0.0f);
+
+    // A voice gets this long after note-off to show it is decaying before the
+    // plugin stops it for them. 1.5 s is chosen so an exponential tail heading
+    // for -60 dB at 8 s -- roughly the longest the sampler's SFZ artefacts
+    // declare -- has already lost ~11 dB and is safely under the threshold.
+    impl_->graceFrames = (int) (1.5 * sampleRate);
+    impl_->fadeFrames  = (int) (0.2 * sampleRate);
 
     if (impl_->engine == nullptr) impl_->engine = wasm_engine_new();
     if (impl_->engine == nullptr) { r.detail = "wasm_engine_new failed"; return r; }
@@ -413,6 +458,11 @@ void FaustEngine::setParam (FaustVoice& v, int byteOffset, float value) noexcept
     if (trap != nullptr) wasm_trap_delete (trap);
 }
 
+int FaustEngine::forcedStops() const noexcept
+{
+    return impl_ == nullptr ? 0 : impl_->forcedStops.load (std::memory_order_relaxed);
+}
+
 void FaustEngine::panic() noexcept
 {
     if (! loaded_) return;
@@ -421,6 +471,11 @@ void FaustEngine::panic() noexcept
     {
         v.note = -1;
         v.gateOpen = false;
+        v.releasing = false;
+        v.forcing = false;
+        v.forceGain = 1.0f;
+        v.idle = true;
+        v.quietBlocks = 0;
 
         // init() rather than gate=0. A genome that ignores its gate ignores it
         // during a panic too, and 16 of 33 measured elites do exactly that.
@@ -448,7 +503,18 @@ void FaustEngine::setParameter (int byteOffset, float value) noexcept
     if (! loaded_) return;
 
     for (auto& v : impl_->voices)
+    {
         setParam (v, byteOffset, value);
+
+        // Setting a parameter is an instruction to sound, so it wakes the
+        // voice. Without this the null test went silent the moment idle voices
+        // stopped being computed: it drives parameters directly and never
+        // issues a note-on, so nothing would ever have left idle. Caught by
+        // running it, not by reading.
+        v.idle = false;
+        v.quietBlocks = 0;
+        v.noteDriven = false;
+    }
 }
 
 void FaustEngine::noteOn (int note, int velocity) noexcept
@@ -473,6 +539,13 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
     chosen->note = note;
     chosen->gateOpen = true;
     chosen->startedAt = ++impl_->counter;
+    chosen->releasing = false;
+    chosen->forcing = false;
+    chosen->forceGain = 1.0f;
+    chosen->framesSinceRelease = 0;
+    chosen->idle = false;
+    chosen->quietBlocks = 0;
+    chosen->noteDriven = true;
 
     if (impl_->idxFreq >= 0) setParam (*chosen, impl_->idxFreq, mtof (note));
     if (impl_->idxGain >= 0) setParam (*chosen, impl_->idxGain, (float) velocity / 127.0f);
@@ -494,12 +567,16 @@ void FaustEngine::noteOff (int note) noexcept
         v.gateOpen = false;
         if (impl_->idxGate >= 0) setParam (v, impl_->idxGate, 0.0f);
 
-        // The voice is NOT freed here. The module's release tail is still
-        // running and nothing in the wasm ABI reports when it has finished, so
-        // freeing on note-off would cut every release short. It stays claimed
-        // until stolen. That is a known limitation of this skeleton and the
-        // first thing polyphony work should fix.
+        // Nothing in the wasm ABI reports when a Faust envelope has finished,
+        // so the voice is watched rather than trusted. note goes to -1 so the
+        // same key can retrigger immediately; `releasing` keeps the decay
+        // measurement running underneath that.
         v.note = -1;
+        v.releasing = true;
+        v.framesSinceRelease = 0;
+        v.peakAtRelease = v.peakRecent;
+        v.forcing = false;
+        v.forceGain = 1.0f;
     }
 }
 
@@ -551,6 +628,8 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
 
         for (auto& v : impl_->voices)
         {
+            if (v.idle) continue;
+
             wasmtime_val_raw_t args[4];
             args[0].i32 = (std::int32_t) v.dspPtr;
             args[1].i32 = chunk;
@@ -566,8 +645,93 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
             const auto outBase = reinterpret_cast<std::uint32_t*> (v.memory)[v.outPtrArr >> 2];
             const auto* src = reinterpret_cast<const float*> (v.memory + outBase);
 
+            float blockPeak = 0.0f;
             for (int i = 0; i < chunk; ++i)
-                impl_->mix[(size_t) i] += src[i];
+                blockPeak = juce::jmax (blockPeak, std::abs (src[i]));
+            v.peakRecent = blockPeak;
+
+            if (v.releasing)
+            {
+                v.framesSinceRelease += chunk;
+
+                // The decision, once, at the end of the grace period: has this
+                // voice lost at least 6 dB since the note came off? A decaying
+                // tail has; a drone has not. Anything that has not is never
+                // going to stop, so the plugin stops it.
+                if (! v.forcing && v.framesSinceRelease >= impl_->graceFrames)
+                {
+                    const bool decaying = v.peakAtRelease <= 0.0f
+                                       || blockPeak < 0.5f * v.peakAtRelease;
+
+                    if (decaying)
+                    {
+                        // RE-ARMED rather than disarmed. Deciding once would
+                        // let a genome that loses 6 dB and then plateaus run
+                        // forever, having passed the only test it was given. A
+                        // genuine tail keeps clearing the bar every window; a
+                        // plateau fails the next one.
+                        v.framesSinceRelease = 0;
+                        v.peakAtRelease = blockPeak;
+                    }
+                    else
+                    {
+                        v.forcing = true;
+                        impl_->forcedStops.fetch_add (1, std::memory_order_relaxed);
+                    }
+                }
+            }
+
+            if (v.forcing)
+            {
+                const float step = 1.0f / (float) juce::jmax (1, impl_->fadeFrames);
+
+                for (int i = 0; i < chunk; ++i)
+                {
+                    impl_->mix[(size_t) i] += src[i] * v.forceGain;
+                    v.forceGain = juce::jmax (0.0f, v.forceGain - step);
+                }
+
+                if (v.forceGain <= 0.0f)
+                {
+                    // Faded to nothing, so re-initialising cannot click. This
+                    // is the only thing a genome cannot decline: init() zeroes
+                    // the DSP struct.
+                    v.forcing = false;
+                    v.releasing = false;
+                    v.peakRecent = 0.0f;
+                    v.idle = true;
+
+                    wasmtime_val_raw_t ia[2];
+                    ia[0].i32 = (std::int32_t) v.dspPtr;
+                    ia[1].i32 = (std::int32_t) impl_->sampleRate;
+                    wasm_trap_t* itrap = nullptr;
+                    if (auto* ierr = wasmtime_func_call_unchecked (v.ctx, &v.fInit, ia, 2, &itrap))
+                        wasmtime_error_delete (ierr);
+                    if (itrap != nullptr) wasm_trap_delete (itrap);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < chunk; ++i)
+                    impl_->mix[(size_t) i] += src[i];
+            }
+
+            // A released voice that has actually fallen silent stops being
+            // computed. Eight voices rendering inaudible tails forever is real
+            // CPU, and it is the cost every RTF figure in EXPERIMENT_01 was
+            // measured without.
+            if (v.noteDriven && ! v.gateOpen && ! v.forcing && blockPeak < 1.0e-6f)
+            {
+                if (++v.quietBlocks > 8)
+                {
+                    v.idle = true;
+                    v.releasing = false;
+                }
+            }
+            else
+            {
+                v.quietBlocks = 0;
+            }
         }
 
         // outputs == 1 for this substrate, so the mono result is copied across

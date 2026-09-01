@@ -311,14 +311,27 @@ int main (int argc, char** argv)
     std::printf ("\nnote %d  velocity %d  %d Hz  blocks of %d\n\n",
                  note, velocity, (int) kSampleRate, kBlockSize);
 
+    // The third phase has to outlast the forced-release grace period (1.5 s)
+    // plus its fade (0.2 s), or a drone would still be sounding at the end for
+    // the entirely uninteresting reason that nothing had decided yet.
     const float held     = renderPhase (engine, buffer, on,  40);   // ~0.43 s
-    const float released = renderPhase (engine, buffer, off, 40);
-    const float settled  = renderPhase (engine, buffer, {},  40);
+    const float released = renderPhase (engine, buffer, off, 40);   // ~0.43 s
+    const float settled  = renderPhase (engine, buffer, {},  250);  // ~2.7 s
+
+    // settled is the MAX over its phase, so it still contains audio from
+    // before any forced fade began. The level right at the end is the only
+    // thing that answers "is it quiet now".
+    const float ending   = renderPhase (engine, buffer, {},  8);    // ~85 ms
 
     std::puts ("phase              peak   verdict");
     std::printf ("held           %8.6f   %s\n", held,     held     > 1.0e-5f ? "audible" : "SILENT");
     std::printf ("released       %8.6f   %s\n", released, released > 1.0e-5f ? "ringing" : "silent");
     std::printf ("settled        %8.6f   %s\n", settled,  settled  > 1.0e-5f ? "still ringing" : "silent");
+    std::printf ("ending         %8.6f   %s\n", ending,
+                 ending > 1.0e-5f ? "STILL SOUNDING" : "silent");
+    std::printf ("forced stops   %8d   %s\n", engine.forcedStops(),
+                 engine.forcedStops() > 0 ? "genome would not stop; plugin stopped it"
+                                          : "genome decayed on its own");
 
     std::printf ("\nblocks rendered: %llu   peak since load: %f\n",
                  (unsigned long long) engine.blocksRendered(), engine.peakSinceReset());

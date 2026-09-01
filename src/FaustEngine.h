@@ -168,6 +168,13 @@ public:
     float peakSinceReset() const noexcept { return peak_.load (std::memory_order_relaxed); }
     std::uint64_t blocksRendered() const noexcept { return blocks_.load (std::memory_order_relaxed); }
 
+    /** How many voices the plugin had to stop itself because the genome would
+        not. Zero on a genome that articulates; non-zero is not an error, it is
+        the drone-handling working -- but it is a behaviour change from the
+        platform's own render and should never be invisible.
+    */
+    int forcedStops() const noexcept;
+
 private:
     void noteOn (int note, int velocity) noexcept;
     void noteOff (int note) noexcept;
