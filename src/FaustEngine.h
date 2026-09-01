@@ -114,6 +114,17 @@ public:
 
     bool isLoaded() const noexcept { return loaded_; }
 
+    // Sets a genome parameter on every voice. `byteOffset` is the `index` field
+    // from the DSP JSON's ui tree, which is an offset into the DSP struct
+    // rather than an ordinal -- Faust names it "index" and it is not one.
+    //
+    // Public because the genome's own controls (bodyDec, drive, rvmix and
+    // whatever else a given genome evolved) are what the plugin will expose as
+    // automatable parameters. The null test uses it to replay a Gate 0 .plan
+    // through the exact parameter path the plugin will use, rather than through
+    // a separate one that could be right while the shipping path is wrong.
+    void setParameter (int byteOffset, float value) noexcept;
+
     // §4.2's guard, carried into the plugin. A synth that renders silence
     // never misses a deadline, never crashes, and passes every validator.
     // auval's own render tests only check that rendering does not crash.

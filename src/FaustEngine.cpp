@@ -401,6 +401,14 @@ void FaustEngine::setParam (FaustVoice& v, int byteOffset, float value) noexcept
     if (trap != nullptr) wasm_trap_delete (trap);
 }
 
+void FaustEngine::setParameter (int byteOffset, float value) noexcept
+{
+    if (! loaded_) return;
+
+    for (auto& v : impl_->voices)
+        setParam (v, byteOffset, value);
+}
+
 void FaustEngine::noteOn (int note, int velocity) noexcept
 {
     FaustVoice* chosen = nullptr;

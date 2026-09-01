@@ -29,11 +29,175 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The null test.
+//
+// Cross-runtime agreement -- the interpreter and the JIT matching to six
+// decimals -- proves the two engines agree with EACH OTHER. It says nothing
+// about whether either agrees with the platform, because both are running the
+// same port of the same layout. A shared misreading of a parameter offset
+// would be invisible to it.
+//
+// So this replays a Gate 0 .plan through FaustEngine and compares against that
+// experiment's reference render, which came from the platform's own path
+// (faustwasm glue over V8; see EXPERIMENT_01_3_DESKTOP_RESULT §6's second
+// stated deviation). Gate 0 found wasm3, WAMR and wasmtime all BIT-IDENTICAL
+// to it, so anything short of zero difference here is this engine's fault and
+// not a tolerance to be argued about.
+//
+// The -50.5 dB libm divergence §1 records is exactly the class of bug this
+// catches and nothing else does: inaudible in isolation, obvious the moment a
+// user A/Bs an instrument against the preview it was chosen from.
+// ─────────────────────────────────────────────────────────────────────────────
 
 namespace
 {
+struct PlanEvent { int atSample = 0, byteOffset = 0; float value = 0.0f; bool isFreq = false; };
+
+struct Plan
+{
+    int sampleRate = 0, blockSize = 0, structBytes = 0, inputs = 0, outputs = 0;
+    double seconds = 0.0;
+    std::vector<PlanEvent> events;
+};
+
+bool readPlan (const juce::File& file, Plan& plan)
+{
+    juce::StringArray tokens;
+    tokens.addTokens (file.loadFileAsString(), " \t\r\n", "");
+    tokens.removeEmptyStrings();
+
+    for (int i = 0; i < tokens.size();)
+    {
+        const auto key = tokens[i++];
+        const auto next = [&]() -> juce::String { return i < tokens.size() ? tokens[i++] : juce::String{}; };
+
+        if      (key == "sampleRate")  plan.sampleRate  = next().getIntValue();
+        else if (key == "blockSize")   plan.blockSize   = next().getIntValue();
+        else if (key == "structBytes") plan.structBytes = next().getIntValue();
+        else if (key == "inputs")      plan.inputs      = next().getIntValue();
+        else if (key == "outputs")     plan.outputs     = next().getIntValue();
+        else if (key == "seconds")     plan.seconds     = next().getDoubleValue();
+        else if (key == "event")
+        {
+            PlanEvent e;
+            e.atSample   = next().getIntValue();
+            e.byteOffset = next().getIntValue();
+            e.value      = (float) next().getDoubleValue();
+            e.isFreq     = (next() == "freq");
+            plan.events.push_back (e);
+        }
+        else { std::printf ("unknown plan key '%s'\n", key.toRawUTF8()); return false; }
+    }
+
+    return plan.sampleRate > 0 && plan.blockSize > 0 && plan.outputs > 0;
+}
+
+int runNullTest (const juce::File& wasmFile, const juce::File& jsonFile,
+                 const juce::File& planFile, const juce::File& refFile)
+{
+    Plan plan;
+    if (! readPlan (planFile, plan)) { std::puts ("could not read the plan"); return 2; }
+
+    std::printf ("plan       %d Hz, %d-frame blocks, %.1f s, %d event(s)\n",
+                 plan.sampleRate, plan.blockSize, plan.seconds, (int) plan.events.size());
+
+    FaustEngine engine;
+
+    // ONE voice. host_wasm3.c detunes voice i by 2^(i/12), so voice 0 alone is
+    // the only configuration comparable to a reference rendered at the plan's
+    // stated frequency.
+    const auto load = engine.load (wasmFile, jsonFile, (double) plan.sampleRate,
+                                   plan.blockSize, 1);
+    if (! load.ok) { std::printf ("load failed: %s\n", load.detail.toRawUTF8()); return 1; }
+
+    const int total = (int) (plan.seconds * plan.sampleRate + 0.5);
+    std::vector<float> rendered ((size_t) total, 0.0f);
+
+    juce::AudioBuffer<float> buffer { 1, plan.blockSize };
+    const juce::MidiBuffer noMidi;
+
+    size_t nextEvent = 0;
+    int written = 0;
+
+    while (written < total)
+    {
+        // Events land on block boundaries, exactly as the probe host applied
+        // them. Applying them mid-block would be more correct and would NOT
+        // match the reference, which is the point: this reproduces the render,
+        // it does not improve on it.
+        while (nextEvent < plan.events.size()
+               && plan.events[nextEvent].atSample <= written)
+        {
+            engine.setParameter (plan.events[nextEvent].byteOffset,
+                                 plan.events[nextEvent].value);
+            ++nextEvent;
+        }
+
+        const int take = juce::jmin (plan.blockSize, total - written);
+        buffer.setSize (1, plan.blockSize, false, false, true);
+        engine.process (buffer, noMidi);
+        std::copy_n (buffer.getReadPointer (0), take, rendered.begin() + written);
+        written += take;
+    }
+
+    // ── compare ─────────────────────────────────────────────────────────────
+    juce::MemoryBlock refBytes;
+    if (! refFile.loadFileAsData (refBytes)) { std::puts ("could not read the reference"); return 2; }
+
+    const auto* ref = static_cast<const float*> (refBytes.getData());
+    const int refCount = (int) (refBytes.getSize() / sizeof (float));
+    const int n = juce::jmin (refCount, total);
+
+    double maxAbs = 0.0, sumSq = 0.0, refSq = 0.0;
+    double peakOurs = 0.0, peakRef = 0.0;
+    int firstDiff = -1;
+
+    for (int i = 0; i < n; ++i)
+    {
+        const double d = (double) rendered[(size_t) i] - (double) ref[i];
+        if (std::abs (d) > maxAbs) maxAbs = std::abs (d);
+        if (d != 0.0 && firstDiff < 0) firstDiff = i;
+        sumSq += d * d;
+        refSq += (double) ref[i] * ref[i];
+        peakOurs = juce::jmax (peakOurs, (double) std::abs (rendered[(size_t) i]));
+        peakRef  = juce::jmax (peakRef,  (double) std::abs (ref[i]));
+    }
+
+    const double diffRms = std::sqrt (sumSq / juce::jmax (1, n));
+    const double refRms  = std::sqrt (refSq / juce::jmax (1, n));
+    const double dbBelow = diffRms == 0.0 ? -1000.0 : 20.0 * std::log10 (diffRms / refRms);
+
+    std::printf ("samples    ours %d, reference %d, compared %d\n", total, refCount, n);
+    std::printf ("peak       ours %.6f   reference %.6f\n", peakOurs, peakRef);
+
+    // §4.2 again: a silent render nulls perfectly against nothing.
+    if (peakRef == 0.0) { std::puts ("\nreference is silent -- the test proves nothing"); return 1; }
+    if (peakOurs == 0.0) { std::puts ("\nFAIL: our render is silent"); return 1; }
+
+    std::printf ("maxAbsDiff %.6e\n", maxAbs);
+    if (firstDiff >= 0) std::printf ("firstDiff  sample %d (%.4f s)\n", firstDiff,
+                                     (double) firstDiff / plan.sampleRate);
+    std::printf ("diff       %.2f dB below reference RMS\n", dbBelow);
+
+    if (maxAbs == 0.0)
+    {
+        std::puts ("\nPASS: bit-identical to the platform reference.");
+        return 0;
+    }
+
+    // Gate 0 got zero from three runtimes. Anything else is this engine.
+    std::printf ("\nFAIL: not bit-identical. Gate 0 measured wasm3, WAMR and wasmtime\n"
+                 "all at exactly zero against this reference, so a non-zero difference\n"
+                 "here is a defect in FaustEngine, not a tolerance.\n");
+    return 1;
+}
+
 constexpr double kSampleRate = 48000.0;
 constexpr int kBlockSize = 512;
 
@@ -59,6 +223,7 @@ int main (int argc, char** argv)
     if (argc < 3)
     {
         std::puts ("usage: faust-probe <module.wasm> <module.json> [note] [velocity] [voices]");
+        std::puts ("       faust-probe <module.wasm> <module.json> --plan <x.plan> --ref <x.ref.f32>");
         return 2;
     }
 
@@ -67,6 +232,18 @@ int main (int argc, char** argv)
     const int note     = argc > 3 ? std::atoi (argv[3]) : 60;
     const int velocity = argc > 4 ? std::atoi (argv[4]) : 100;
     const int voices   = argc > 5 ? std::atoi (argv[5]) : 8;
+
+    int planArg = -1, refArg = -1;
+    for (int i = 3; i + 1 < argc; ++i)
+    {
+        if (juce::String (argv[i]) == "--plan") planArg = i + 1;
+        if (juce::String (argv[i]) == "--ref")  refArg  = i + 1;
+    }
+
+    if (planArg > 0 && refArg > 0)
+        return runNullTest (wasmFile, jsonFile,
+                            juce::File (juce::String (argv[planArg])),
+                            juce::File (juce::String (argv[refArg])));
 
     std::printf ("runtime    wasmtime/Cranelift, C API\n");
 
