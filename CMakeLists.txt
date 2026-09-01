@@ -17,6 +17,7 @@ project(KromosynthPlugin VERSION 0.0.1 LANGUAGES C CXX)
 
 # ── Options ──────────────────────────────────────────────────────────────────
 option(KROMOSYNTH_BUILD_SAMPLER  "Build the sfizz sampler engine (Task 2)" OFF)
+option(KROMOSYNTH_BUILD_FAUST    "Build the wasm3 Faust engine (Stage 2)" OFF)
 option(KROMOSYNTH_WEBVIEW_PROBE  "Inject the Stage 0 environment probe JS"  ON)
 
 # How long after page load the probe fires. Default 3000 ms is enough for React
@@ -154,6 +155,27 @@ add_subdirectory(src)
 if(KROMOSYNTH_BUILD_SAMPLER)
     add_subdirectory(tools/sfz-probe)
     add_subdirectory(tools/engine-probe)
+endif()
+
+# ── wasm3, the Faust engine's runtime (Stage 2, off by default) ──────────────
+#
+# add_subdirectory per VENDORING.md's one mechanism. source/CMakeLists.txt
+# builds the `m3` static library and pulls in no WASI unless BUILD_WASI is set,
+# which nothing here sets.
+#
+# NOT wasmtime, despite Gate 0 measuring Cranelift 2.3-2.9x faster and naming it
+# the desktop engine: its C API ships as a prebuilt tarball and building it from
+# source needs a Rust toolchain, neither of which VENDORING.md permits. The
+# runtime sits behind FaustEngine so the swap is contained if that changes.
+#
+# EXPERIMENT_01_3_DESKTOP_RESULT §5 warns that wasm3 degrades "badly and
+# silently" without guaranteed tail-call dispatch. The macros are set by
+# wasm3's own compiler detection rather than by us, so faust-probe prints them
+# rather than this file asserting them -- an assertion here would be checking
+# our own guess, not the build.
+if(KROMOSYNTH_BUILD_FAUST)
+    add_subdirectory(third_party/wasm3/source)
+    add_subdirectory(tools/faust-probe)
 endif()
 
 # acquire-probe links juce_core only -- no sfizz, no webview, no audio device --
