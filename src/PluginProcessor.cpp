@@ -108,6 +108,22 @@ double KromosynthAudioProcessor::getTailLengthSeconds() const
    #endif
 }
 
+KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() const
+{
+    EngineState st;
+   #if KROMOSYNTH_HAS_FAUST
+    if (faust_ != nullptr && faust_->isLoaded())
+    {
+        st.faust = true;
+        st.notesOn = faust_->notesOn();
+        st.notesOff = faust_->notesOff();
+        st.activeVoices = faust_->activeVoices();
+        st.forcedStops = faust_->forcedStops();
+    }
+   #endif
+    return st;
+}
+
 void KromosynthAudioProcessor::panic()
 {
     JUCE_ASSERT_MESSAGE_THREAD

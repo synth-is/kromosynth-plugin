@@ -175,6 +175,20 @@ public:
     */
     int forcedStops() const noexcept;
 
+    /** MIDI CC64. Without this a host whose sustain is engaged produces notes
+        that never stop, and it looks identical to a broken note-off.
+    */
+    void setSustain (bool down) noexcept;
+
+    /** Counted at both ends, because a stuck note has two possible causes --
+        the engine mishandled a note-off, or none arrived -- and they need
+        completely different fixes. notesOn far exceeding notesOff means the
+        host is not sending them.
+    */
+    int notesOn() const noexcept;
+    int notesOff() const noexcept;
+    int activeVoices() const noexcept;
+
 private:
     void noteOn (int note, int velocity) noexcept;
     void noteOff (int note) noexcept;

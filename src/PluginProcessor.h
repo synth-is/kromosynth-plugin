@@ -135,6 +135,13 @@ public:
     */
     void panic();
 
+    /** Live engine state for the shell: notes in, notes out, voices sounding.
+        Exists so "the note is stuck" can be told apart from "no note-off
+        arrived" without attaching a debugger to a DAW.
+    */
+    struct EngineState { int notesOn = 0, notesOff = 0, activeVoices = 0, forcedStops = 0; bool faust = false; };
+    EngineState engineState() const;
+
     /** What is loaded now. An empty id means the compiled-in default. */
     LoadOutcome currentInstrument() const { return current_; }
 

@@ -107,6 +107,7 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
 </header>
 <main id="list"></main>
 <footer id="status">Loading&hellip;</footer>
+<footer id="voices"></footer>
 
 <script>
 // The bridge. JUCE injects window.__JUCE__.backend when native integration is
@@ -261,6 +262,22 @@ document.getElementById('panic').addEventListener('click', async () => {
   await call('panic');
   setStatus('Panicked \u2014 all voices reinitialised.');
 });
+
+// Polled only while a Faust instrument is loaded. notesOn far ahead of
+// notesOff means the host is not delivering note-offs, which is a completely
+// different problem from the engine holding a voice open, and the two are
+// indistinguishable by ear.
+setInterval(async () => {
+  try {
+    const st = await call('engineState');
+    if (!st || !st.faust) return;
+    const stuck = st.notesOn - st.notesOff;
+    document.getElementById('voices').textContent =
+      st.activeVoices + ' voices \u00b7 on ' + st.notesOn + ' / off ' + st.notesOff
+      + (stuck > 0 ? ' \u00b7 ' + stuck + ' UNRELEASED' : '')
+      + (st.forcedStops > 0 ? ' \u00b7 ' + st.forcedStops + ' force-stopped' : '');
+  } catch (e) { /* editor closing */ }
+}, 500);
 
 // The only way into the site surface. The site cannot put the user back here --
 // it has no bridge -- so the return trip is the plugin's own strip, drawn in

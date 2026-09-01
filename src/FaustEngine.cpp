@@ -178,6 +178,11 @@ struct FaustVoice
     // with a slow attack begin with several. That silently broke 28 of the 33
     // null tests, which is how it was found.
     bool noteDriven = false;
+
+    // Held by the sustain pedal after its key came up. The note number is
+    // cleared so the same key can retrigger, but the voice keeps sounding
+    // until the pedal lifts.
+    bool sustained = false;
 };
 
 struct FaustEngineImpl
@@ -207,6 +212,13 @@ struct FaustEngineImpl
 
     // Scratch for the mono module's output before it reaches the buffer.
     std::vector<float> mix;
+
+    bool sustainDown = false;
+
+    // Diagnostics. A stuck note has two possible causes -- the engine mishandled
+    // a note-off, or no note-off arrived -- and they need completely different
+    // fixes. Counting both ends answers which without a debugger.
+    std::atomic<int> notesOn { 0 }, notesOff { 0 }, sustainEvents { 0 };
 
     int graceFrames = 0, fadeFrames = 0;
     std::atomic<int> forcedStops { 0 };
@@ -476,6 +488,7 @@ void FaustEngine::panic() noexcept
         v.forceGain = 1.0f;
         v.idle = true;
         v.quietBlocks = 0;
+        v.sustained = false;
 
         // init() rather than gate=0. A genome that ignores its gate ignores it
         // during a panic too, and 16 of 33 measured elites do exactly that.
@@ -546,6 +559,8 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
     chosen->idle = false;
     chosen->quietBlocks = 0;
     chosen->noteDriven = true;
+    chosen->sustained = false;
+    impl_->notesOn.fetch_add (1, std::memory_order_relaxed);
 
     if (impl_->idxFreq >= 0) setParam (*chosen, impl_->idxFreq, mtof (note));
     if (impl_->idxGain >= 0) setParam (*chosen, impl_->idxGain, (float) velocity / 127.0f);
@@ -560,9 +575,20 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
 
 void FaustEngine::noteOff (int note) noexcept
 {
+    impl_->notesOff.fetch_add (1, std::memory_order_relaxed);
+
     for (auto& v : impl_->voices)
     {
         if (v.note != note || ! v.gateOpen) continue;
+
+        // Pedal down: the key is up but the note is not. Cleared so the same
+        // key retriggers on a fresh voice, which is what a player expects.
+        if (impl_->sustainDown)
+        {
+            v.sustained = true;
+            v.note = -1;
+            continue;
+        }
 
         v.gateOpen = false;
         if (impl_->idxGate >= 0) setParam (v, impl_->idxGate, 0.0f);
@@ -578,6 +604,42 @@ void FaustEngine::noteOff (int note) noexcept
         v.forcing = false;
         v.forceGain = 1.0f;
     }
+}
+
+void FaustEngine::setSustain (bool down) noexcept
+{
+    if (! loaded_ || impl_->sustainDown == down) return;
+
+    impl_->sustainDown = down;
+    impl_->sustainEvents.fetch_add (1, std::memory_order_relaxed);
+
+    if (down) return;
+
+    for (auto& v : impl_->voices)
+    {
+        if (! v.sustained) continue;
+
+        v.sustained = false;
+        v.gateOpen = false;
+        if (impl_->idxGate >= 0) setParam (v, impl_->idxGate, 0.0f);
+
+        v.releasing = true;
+        v.framesSinceRelease = 0;
+        v.peakAtRelease = v.peakRecent;
+        v.forcing = false;
+        v.forceGain = 1.0f;
+    }
+}
+
+int FaustEngine::notesOn() const noexcept   { return impl_->notesOn.load (std::memory_order_relaxed); }
+int FaustEngine::notesOff() const noexcept  { return impl_->notesOff.load (std::memory_order_relaxed); }
+
+int FaustEngine::activeVoices() const noexcept
+{
+    if (! loaded_) return 0;
+    int n = 0;
+    for (const auto& v : impl_->voices) if (! v.idle) ++n;
+    return n;
 }
 
 void FaustEngine::process (juce::AudioBuffer<float>& buffer,
@@ -616,6 +678,8 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
 
             if (message.isNoteOn())        noteOn (message.getNoteNumber(), message.getVelocity());
             else if (message.isNoteOff())  noteOff (message.getNoteNumber());
+            else if (message.isSustainPedalOn())  setSustain (true);
+            else if (message.isSustainPedalOff()) setSustain (false);
             else if (message.isAllNotesOff() || message.isAllSoundOff()) panic();
 
             ++event;

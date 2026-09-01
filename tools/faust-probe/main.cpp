@@ -198,8 +198,11 @@ int runNullTest (const juce::File& wasmFile, const juce::File& jsonFile,
     return 1;
 }
 
-constexpr double kSampleRate = 48000.0;
-constexpr int kBlockSize = 512;
+// Overridable, because the host is not the probe: GarageBand reported
+// sampleRate=44100 blockSize=1024 while every measurement so far was taken at
+// 48000/512.
+double kSampleRate = 48000.0;
+int    kBlockSize = 512;
 
 float renderPhase (FaustEngine& engine, juce::AudioBuffer<float>& buffer,
                    const juce::MidiBuffer& midi, int blocks)
@@ -218,6 +221,57 @@ float renderPhase (FaustEngine& engine, juce::AudioBuffer<float>& buffer,
 }
 } // namespace
 
+// A realistic played passage rather than one note: several keys pressed and
+// released with overlap, the way Musical Typing produces them. The engine
+// handling ONE note correctly says nothing about eight voices being allocated,
+// released, stolen and retriggered against each other.
+int runSequence (FaustEngine& engine, int voices)
+{
+    juce::AudioBuffer<float> buffer { 2, kBlockSize };
+    const int blocksPerStep = juce::jmax (1, (int) (0.15 * kSampleRate) / kBlockSize);
+    const int notes[] = { 60, 64, 67, 72, 55, 62, 69, 59, 65, 57 };
+
+    float loudest = 0.0f;
+
+    for (int n = 0; n < (int) (sizeof (notes) / sizeof (notes[0])); ++n)
+    {
+        juce::MidiBuffer on;
+        on.addEvent (juce::MidiMessage::noteOn (1, notes[n], (juce::uint8) 100), 0);
+        for (int b = 0; b < blocksPerStep; ++b)
+        {
+            engine.process (buffer, b == 0 ? on : juce::MidiBuffer{});
+            loudest = juce::jmax (loudest, buffer.getMagnitude (0, buffer.getNumSamples()));
+        }
+
+        // Note-off deliberately NOT on a block boundary.
+        juce::MidiBuffer off;
+        off.addEvent (juce::MidiMessage::noteOff (1, notes[n]), kBlockSize / 3);
+        for (int b = 0; b < blocksPerStep; ++b)
+        {
+            engine.process (buffer, b == 0 ? off : juce::MidiBuffer{});
+            loudest = juce::jmax (loudest, buffer.getMagnitude (0, buffer.getNumSamples()));
+        }
+    }
+
+    // Long enough to cover grace (1.5 s) plus fade (0.2 s) with room to spare.
+    float tail = 0.0f;
+    const int settleBlocks = (int) (4.0 * kSampleRate) / kBlockSize;
+    for (int b = 0; b < settleBlocks; ++b)
+    {
+        engine.process (buffer, juce::MidiBuffer{});
+        tail = buffer.getMagnitude (0, buffer.getNumSamples());
+    }
+
+    std::printf ("\nsequence   10 notes, %d voices, %g Hz, %d-frame blocks\n",
+                 voices, kSampleRate, kBlockSize);
+    std::printf ("loudest    %8.6f\n", loudest);
+    std::printf ("after 4 s  %8.6f   %s\n", tail,
+                 tail > 1.0e-5f ? "STUCK — something is still sounding" : "silent");
+    std::printf ("forced     %8d\n", engine.forcedStops());
+
+    return tail > 1.0e-5f ? 1 : 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc < 3)
@@ -232,6 +286,12 @@ int main (int argc, char** argv)
     const int note     = argc > 3 ? std::atoi (argv[3]) : 60;
     const int velocity = argc > 4 ? std::atoi (argv[4]) : 100;
     const int voices   = argc > 5 ? std::atoi (argv[5]) : 8;
+
+    for (int i = 3; i + 1 < argc; ++i)
+    {
+        if (juce::String (argv[i]) == "--rate")  kSampleRate = std::atof (argv[i + 1]);
+        if (juce::String (argv[i]) == "--block") kBlockSize  = std::atoi (argv[i + 1]);
+    }
 
     int planArg = -1, refArg = -1;
     for (int i = 3; i + 1 < argc; ++i)
@@ -299,6 +359,10 @@ int main (int argc, char** argv)
     // silent. Worth saying out loud rather than letting it read as a zero peak.
     if (! load.hasGate)
         std::puts ("           NOTE: no `gate` parameter -- this module cannot be triggered");
+
+    for (int i = 3; i < argc; ++i)
+        if (juce::String (argv[i]) == "--seq")
+            return runSequence (engine, voices);
 
     juce::AudioBuffer<float> buffer { 2, kBlockSize };
 
