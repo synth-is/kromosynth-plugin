@@ -300,10 +300,16 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         if (r.ok)
             active_ = Active::faust;
 
-        suspendProcessing (false);
-
+        // INSIDE the suspend window. applyFaustTrim renders through
+        // FaustEngine::process, which is the same call the audio thread makes,
+        // on the same voices and the same shared mix buffer. Measuring after
+        // releasing the barrier raced the audio thread and produced a raw peak
+        // of 23182060 -- an audible bang, and a -159 dB trim that silenced
+        // every instrument loaded afterwards.
         if (r.ok)
             applyFaustTrim();
+
+        suspendProcessing (false);
 
         outcome.ok = r.ok;
         outcome.detail = r.detail;
@@ -533,7 +539,18 @@ void KromosynthAudioProcessor::applyFaustTrim()
     const float peak = measured.peak;
 
     // A genome that measured silent gets no trim rather than an infinite one.
-    const float trim = peak > 1.0e-6f ? kFaustTargetPeak / peak : 1.0f;
+    float trim = peak > 1.0e-6f ? kFaustTargetPeak / peak : 1.0f;
+
+    // A measurement can be wrong, and a wrong one used verbatim is worse than
+    // none: a raw peak of 23182060 yields -159 dB and silences the instrument
+    // with no indication why. Nothing in the archive exceeds 2.4 -- measured
+    // across all 120 -- so a peak past 8 is a broken measurement rather than a
+    // loud genome. Clamped and logged rather than trusted.
+    const bool implausible = peak > 8.0f;
+    if (implausible)
+        trim = kFaustTargetPeak / 8.0f;
+
+    trim = juce::jlimit (0.001f, 100.0f, trim);
 
     faust_->setOutputGain (trim);
     faustTrim_ = trim;
@@ -547,6 +564,11 @@ void KromosynthAudioProcessor::applyFaustTrim()
     faustVoices_ = juce::jlimit (1, 32, measured.capAt4x);
     faust_->setVoiceCount (faustVoices_);
     faustRtf_ = measured.rtf;
+
+    if (implausible)
+        logEvent ("faust_trim_implausible raw_peak=" + juce::String (peak, 3)
+                  + " clamped=" + juce::String (trim, 6)
+                  + " -- nothing in the archive exceeds 2.4; suspect the measurement");
 
     logEvent ("faust_measure rtf=" + juce::String (measured.rtf, 1)
               + " voices=" + juce::String (faustVoices_)

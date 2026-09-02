@@ -303,8 +303,11 @@ int runSequence (FaustEngine& engine, int voices)
 int runMeasure (const juce::File& wasmFile, const juce::File& jsonFile,
                 const juce::String& name)
 {
-    constexpr double kRate = 48000.0;
-    constexpr int    kBlock = 128;
+    // Honours --rate/--block so the host's exact conditions can be reproduced.
+    // GarageBand reported 44100/1024 while every measurement had been taken at
+    // 48000/128, and that difference had to be ruled out by measuring it.
+    const double kRate = kSampleRate;
+    const int    kBlock = kBlockSize;
     constexpr float  kTargetPeak = 0.25f;      // as kromosynth-composing's trimForLevel
     const int pitches[] = { 48, 69, 81 };      // c3, a4, a5
 
