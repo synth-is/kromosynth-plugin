@@ -1,0 +1,40 @@
+// Paste over the template's ContentView.swift.
+//
+// Deliberately trivial. The measurement is in C; this is a button and a
+// scrollable monospaced text view, and nothing else should creep in — anything
+// running alongside the benchmark competes with it for the CPU it is measuring.
+
+import SwiftUI
+
+struct ContentView: View {
+    @State private var report = "Ready.\n\nBuild RELEASE and run on a device.\nA simulator result does not count."
+    @State private var running = false
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ScrollView {
+                Text(report)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding()
+            }
+
+            Button(running ? "Running…" : "Run Gate 0 benchmark") {
+                running = true
+                report = "Running — this takes about a minute.\nKeep the screen on and the app in front."
+                // Off the main thread so the UI can draw, at userInitiated so
+                // the scheduler does not park it on an efficiency core, which
+                // would measure the wrong CPU.
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var buf = [CChar](repeating: 0, count: 1 << 16)
+                    gate0_run(&buf, UInt(buf.count))
+                    let text = String(cString: buf)
+                    DispatchQueue.main.async { report = text; running = false }
+                }
+            }
+            .disabled(running)
+            .padding(.bottom)
+        }
+    }
+}
