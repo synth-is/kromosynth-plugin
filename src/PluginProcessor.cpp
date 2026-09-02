@@ -317,7 +317,13 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         logEvent ("instrument_load id=" + id + " kind=faust"
                   + " ok=" + juce::String (r.ok ? 1 : 0)
                   + " dsp=\"" + r.dspName + "\""
-                  + " voices=" + juce::String (r.voices)
+                  // faustVoices_, not r.voices. The load deliberately
+                  // instantiates ONE voice so the genome can be measured, and
+                  // applyFaustTrim resizes to the measured cap afterwards.
+                  // Reporting r.voices printed "voices=1" in the same
+                  // millisecond as faust_measure printing "voices=32", which
+                  // leaves a reader of the log unable to tell which is true.
+                  + " voices=" + juce::String (faustVoices_)
                   + " gate=" + juce::String (r.hasGate ? 1 : 0)
                   + (r.detail.isEmpty() ? juce::String()
                                         : " detail=\"" + r.detail + "\""));
