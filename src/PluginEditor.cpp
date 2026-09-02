@@ -204,6 +204,110 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                 // rather than silently omitted: the UI shows nothing instead
                 // of a wrong number.
                 o->setProperty ("regions", 0);
+
+                // ── sidecar metadata, for sorting and filtering ────────────
+                //
+                // Shaped exactly like synthis.json (ARTEFACT_CONTRACT §3) so
+                // the shell has one vocabulary rather than a second flattened
+                // one to learn. `measured` nests for a further reason: it holds
+                // trimDb and rtf, and engineState() reports LIVE values under
+                // those same names. Flattened, `entry.trimDb` and
+                // `state.trimDb` would look interchangeable and are not -- one
+                // is what the artefact declares, the other what this machine
+                // measured on load.
+                //
+                // ABSENT FIELDS ARE OMITTED, never sent as "" or 0. The shell
+                // needs to sort unset entries last rather than treating a
+                // missing discovery date as the epoch, and it can only do that
+                // if undefined reaches it as undefined.
+                //
+                // Ptr rather than a raw pointer with a manual delete on the
+                // empty branch: a block that turns out to hold nothing is the
+                // common case here, and "free it yourself unless you wrapped
+                // it" is a rule that only has to be forgotten once.
+                const auto& m = e.meta;
+
+                auto setIfSet = [] (const juce::DynamicObject::Ptr& target, const char* key,
+                                    const juce::String& value)
+                {
+                    if (value.isNotEmpty())
+                        target->setProperty (key, value);
+                };
+
+                {
+                    juce::DynamicObject::Ptr source (new juce::DynamicObject());
+
+                    setIfSet (source, "soundId", m.soundId);
+                    setIfSet (source, "substrate", m.substrate);
+                    setIfSet (source, "evolutionRunId", m.evolutionRunId);
+                    setIfSet (source, "class", m.soundClass);
+                    setIfSet (source, "creator", m.creator);
+                    setIfSet (source, "discoveredAt", m.discoveredAt);
+                    setIfSet (source, "adoptedAt", m.adoptedAt);
+                    setIfSet (source, "renderedAt", m.renderedAt);
+                    setIfSet (source, "acquiredAt", m.acquiredAt);
+
+                    if (m.generation >= 0)
+                        source->setProperty ("generation", m.generation);
+
+                    if (source->getProperties().size() > 0)
+                        o->setProperty ("source", juce::var (source.get()));
+                }
+
+                {
+                    juce::DynamicObject::Ptr character (new juce::DynamicObject());
+                    juce::DynamicObject::Ptr labels (new juce::DynamicObject());
+
+                    setIfSet (character, "soundType", m.soundType);
+
+                    for (int i = 0; i < InstrumentLibrary::kNumDescriptors; ++i)
+                        setIfSet (labels, InstrumentLibrary::descriptorName (i), m.labels[i]);
+
+                    if (labels->getProperties().size() > 0)
+                    {
+                        character->setProperty ("labels", juce::var (labels.get()));
+                        // Sent with the labels, never separately: it is what
+                        // says whether "bright" is a claim about this sound or
+                        // about the corpus it was labelled against (§3.3).
+                        character->setProperty ("labelsAreCorpusRelative",
+                                                m.labelsAreCorpusRelative);
+                    }
+
+                    // The raw vector is what the shell should ORDER on. Ranking
+                    // it against the rest of this list is a question about the
+                    // user's own library, needs no corpus, and cannot go stale
+                    // when the archive relabels.
+                    if (m.hasDescriptors)
+                    {
+                        juce::Array<juce::var> values;
+
+                        for (int i = 0; i < InstrumentLibrary::kNumDescriptors; ++i)
+                            values.add (m.descriptors[i]);
+
+                        character->setProperty ("descriptors", juce::var (values));
+                    }
+
+                    if (character->getProperties().size() > 0)
+                        o->setProperty ("character", juce::var (character.get()));
+                }
+
+                if (m.hasMeasured)
+                {
+                    juce::DynamicObject::Ptr measured (new juce::DynamicObject());
+
+                    measured->setProperty ("trimDb", m.trimDb);
+                    measured->setProperty ("rtf", m.rtf);
+                    measured->setProperty ("capAt4x", m.capAt4x);
+                    measured->setProperty ("hasGate", m.hasGate);
+                    setIfSet (measured, "rtfPlatform", m.rtfPlatform);
+                    // A drone is a fine pad and a poor MIDI instrument, and 48
+                    // of 120 archive genomes are drones. Worth showing before
+                    // the user finds out by playing one.
+                    setIfSet (measured, "articulation", m.articulation);
+
+                    o->setProperty ("measured", juce::var (measured.get()));
+                }
+
                 out.add (juce::var (o));
             }
 

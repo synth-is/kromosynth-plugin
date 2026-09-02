@@ -12,7 +12,7 @@
 // was closed on.
 //
 //   acquire-probe parse    <url>
-//   acquire-probe install  <zip> <id> <libraryRoot>
+//   acquire-probe install  <zip> <id> <libraryRoot> [displayName]
 //   acquire-probe fetch    <base> <id> <file> <ticket> <libraryRoot>
 //   acquire-probe selftest <scratchDir>
 
@@ -20,6 +20,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cmath>
 #include <iostream>
 #include <vector>
 
@@ -49,9 +50,16 @@ void check (bool condition, const juce::String& what)
     std::cout << (condition ? "  ok   " : "  FAIL ") << what << std::endl;
 }
 
-/** Writes a ZIP with the given entry paths, each holding trivial content. */
+/** Writes a ZIP with the given entry paths, each holding trivial content.
+
+    `overrides` supplies real content for entries whose content is actually
+    read -- synthis.json, which the merge case below depends on being parseable.
+    Everything else can stay a placeholder: installFromArchive moves bytes and
+    does not interpret a .wasm or a .sfz.
+*/
 bool makeZip (const juce::File& out, const juce::StringArray& entryPaths,
-              juce::OwnedArray<juce::MemoryBlock>& blocks)
+              juce::OwnedArray<juce::MemoryBlock>& blocks,
+              const juce::StringPairArray& overrides = {})
 {
     out.deleteFile();
 
@@ -60,9 +68,11 @@ bool makeZip (const juce::File& out, const juce::StringArray& entryPaths,
     for (const auto& path : entryPaths)
     {
         auto* block = blocks.add (new juce::MemoryBlock());
-        const juce::String content = path.endsWithIgnoreCase (".sfz")
-            ? "// Kromosynth Virtual Instrument\n// Sounds: PROBEFIXTURE\n<region> sample=samples/a.wav\n"
-            : "fixture";
+        const juce::String content = overrides.containsKey (path)
+            ? overrides[path]
+            : (path.endsWithIgnoreCase (".sfz")
+                ? "// Kromosynth Virtual Instrument\n// Sounds: PROBEFIXTURE\n<region> sample=samples/a.wav\n"
+                : "fixture");
         block->append (content.toRawUTF8(), content.getNumBytesAsUTF8());
         builder.addEntry (new juce::MemoryInputStream (*block, false), 9, path,
                           juce::Time::getCurrentTime());
@@ -150,20 +160,70 @@ int selftest (const juce::File& scratch)
     line ("");
     line ("archive shapes");
     {
+        // `present` and `absent` are per-shape rather than a fixed SFZ block,
+        // because the two kinds land different files. ARTEFACT_CONTRACT §1.
         struct Shape
         {
             const char* label;
             juce::StringArray entries;
             bool shouldInstall;
+            juce::StringArray present;
+            juce::StringArray absent;
         };
 
         const std::vector<Shape> shapes {
             { "single-format sfz at root",
-              { "instrument.sfz", "samples/a.wav", "metadata.json", "README.txt" }, true },
+              { "instrument.sfz", "samples/a.wav", "metadata.json", "README.txt" }, true,
+              { "instrument.sfz", "samples" }, { "sfz", "decentsampler" } },
+
             { "multi-format, sfz nested",
-              { "sfz/instrument.sfz", "sfz/samples/a.wav", "decentsampler/p.dspreset", "metadata.json" }, true },
+              { "sfz/instrument.sfz", "sfz/samples/a.wav", "decentsampler/p.dspreset", "metadata.json" }, true,
+              { "instrument.sfz", "samples" }, { "sfz", "decentsampler" } },
+
             { "non-sfz primary, no sfz anywhere",
-              { "p.dspreset", "Samples/a.wav", "metadata.json" }, false },
+              { "p.dspreset", "Samples/a.wav", "metadata.json" }, false, {}, {} },
+
+            // The Faust half of the contract. Nothing produces one of these
+            // yet, which is exactly why the plugin's acceptance of them needs
+            // a test that does not depend on the server existing.
+            { "faust pair at root",
+              { "instrument.wasm", "instrument.json", "README.txt" }, true,
+              { "instrument.wasm", "instrument.json" }, {} },
+
+            { "faust pair nested",
+              { "faust/instrument.wasm", "faust/instrument.json", "metadata.json" }, true,
+              { "instrument.wasm", "instrument.json" }, { "faust" } },
+
+            // A module without its metadata is unplayable, not degraded: the
+            // struct size and parameter byte offsets are only in the JSON.
+            { "faust wasm with no json",
+              { "instrument.wasm", "metadata.json" }, false, {}, {} },
+
+            { "faust json with no wasm",
+              { "instrument.json", "metadata.json" }, false, {}, {} },
+
+            // A .json one level away from its .wasm is not "beside" it. Without
+            // the prefix test this installed a folder the engine cannot load.
+            { "faust wasm whose json is in another directory",
+              { "instrument.wasm", "meta/instrument.json" }, false, {}, {} },
+
+            // Suffix matching accepted this and picked a prefix from a file no
+            // engine will ever open.
+            { "a decoy leaf name is not an instrument",
+              { "my-instrument.sfz", "samples/a.wav" }, false, {}, {} },
+
+            // Shallowest wins ACROSS kinds, so a root-level Faust pair beats a
+            // nested SFZ.
+            { "faust at root outranks a nested sfz",
+              { "instrument.wasm", "instrument.json", "sfz/instrument.sfz", "sfz/samples/a.wav" }, true,
+              { "instrument.wasm", "instrument.json" }, { "sfz" } },
+
+            // ...and at equal depth the sampler wins, matching the order
+            // InstrumentLibrary::resolve tests in. If these disagreed, an
+            // archive would install as one kind and load as the other.
+            { "a nested faust pair loses to a root sfz",
+              { "instrument.sfz", "samples/a.wav", "faust/instrument.wasm", "faust/instrument.json" }, true,
+              { "instrument.sfz", "samples" }, { "faust" } },
         };
 
         int index = 0;
@@ -191,14 +251,25 @@ int selftest (const juce::File& scratch)
             if (shape.shouldInstall && result.ok)
             {
                 const auto dir = libraryRoot.getChildFile (id);
-                check (dir.getChildFile ("instrument.sfz").existsAsFile(),
-                       juce::String (shape.label) + ": instrument.sfz landed at the top level");
-                check (dir.getChildFile ("samples").isDirectory(),
-                       juce::String (shape.label) + ": samples/ came with it");
-                check (! dir.getChildFile ("sfz").exists(),
-                       juce::String (shape.label) + ": the nesting was flattened away");
-                check (! dir.getChildFile ("decentsampler").exists(),
-                       juce::String (shape.label) + ": other formats were not extracted");
+
+                // These filenames ARE the agreement with the loader:
+                // InstrumentLibrary::resolve decides the kind by testing for
+                // exactly instrument.sfz, or instrument.wasm plus
+                // instrument.json. Asserting they landed at the top level is
+                // therefore the listing/loading agreement check (§O3), not
+                // merely a file-existence one.
+                //
+                // resolve() itself cannot be called here: it resolves against
+                // InstrumentLibrary::root(), not this scratch directory, so it
+                // would answer `none` for every fixture and any check built on
+                // it would pass without testing anything.
+                for (const auto& expected : shape.present)
+                    check (dir.getChildFile (expected).exists(),
+                           juce::String (shape.label) + ": " + expected + " landed at the top level");
+
+                for (const auto& unwanted : shape.absent)
+                    check (! dir.getChildFile (unwanted).exists(),
+                           juce::String (shape.label) + ": " + unwanted + " was not extracted");
             }
         }
     }
@@ -330,6 +401,95 @@ int selftest (const juce::File& scratch)
             check (InstrumentLibrary::readSidecarName (nameLib.getChildFile ("named-1")).isEmpty(),
                    "a malformed sidecar reads as empty rather than throwing");
         }
+
+        // The sidecar MERGE. ARTEFACT_CONTRACT §2 makes the server the first
+        // writer of synthis.json -- provenance, dates, characteristics and the
+        // measured block all arrive in it -- and the plugin then stamps the
+        // display name into the same file. The previous implementation
+        // overwrote it with three keys, which would have silently discarded
+        // everything the artefact came with and left a library that can sort
+        // only by name. Nothing would have failed; the fields would just never
+        // have been there.
+        {
+            const auto mergeLib = scratch.getChildFile ("library6");
+            mergeLib.createDirectory();
+
+            const juce::String serverSidecar =
+                R"({"schema":1,"kind":"faust",)"
+                R"("name":"Named By The Server",)"
+                R"("source":{"soundIds":["01KPXZJ94GPQEEAZFA6F91YR1W"],"generation":0,)"
+                R"("substrate":"faust","discoveredAt":"2026-08-14T09:03:11.000Z",)"
+                R"("adoptedAt":"2026-08-19T21:40:02.000Z"},)"
+                R"("character":{"soundType":"textural","labelsAreCorpusRelative":true,)"
+                R"("labels":{"brightness":"bright","noisiness":"tonal","rolloff":"airy",)"
+                R"("energy":"moderate","percussive":"percussive","richness":"rich",)"
+                R"("width":"narrow"},)"
+                R"("descriptors":[0.61,0.12,0.77,0.34,0.81,0.66,0.29]},)"
+                R"("measured":{"trim":0.593,"trimDb":-4.4,"rtf":112.2,)"
+                R"("rtfPlatform":"v8-faustwasm","capAt4x":16,)"
+                R"("articulation":"drone","hasGate":true}})";
+
+            juce::StringPairArray overrides;
+            overrides.set ("synthis.json", serverSidecar);
+
+            const auto zip = zips.getChildFile ("merge.zip");
+            makeZip (zip, { "instrument.wasm", "instrument.json", "synthis.json" },
+                     blocks, overrides);
+
+            const juce::String siteLabel = "Virtual Instrument #K3X35";
+
+            check (installFromArchive (zip, "merged-1", mergeLib, siteLabel).ok,
+                   "installs a faust artefact that already carries a sidecar");
+
+            const auto meta = InstrumentLibrary::readSidecar (mergeLib.getChildFile ("merged-1"));
+
+            check (meta.name == siteLabel, "the site's name wins over the server's");
+            check (meta.acquiredAt.isNotEmpty(), "acquisition time was stamped in");
+            check (meta.substrate == "faust", "substrate survived the stamp");
+            check (meta.discoveredAt.isNotEmpty() && meta.adoptedAt.isNotEmpty(),
+                   "both dates survived the stamp");
+            check (meta.generation == 0,
+                   "generation 0 reads as 0 rather than as absent");
+            check (meta.soundType == "textural", "soundType survived the stamp");
+            check (meta.labels[0] == "bright" && meta.labels[6] == "narrow",
+                   "the first and last labels survived and are not shifted");
+            check (meta.labelsAreCorpusRelative,
+                   "the corpus-relative flag survived, so a reader knows what the labels claim");
+            check (meta.hasDescriptors, "the descriptor vector survived");
+            check (std::abs (meta.descriptors[6] - 0.29f) < 1.0e-5f,
+                   "the seventh descriptor is the seventh");
+            check (meta.hasMeasured && std::abs (meta.trimDb + 4.4f) < 0.05f,
+                   "the measured block survived, so load need not re-measure");
+            check (meta.articulation == "drone" && meta.hasGate,
+                   "articulation and hasGate survived");
+            check (meta.rtfPlatform == "v8-faustwasm",
+                   "rtf carries the platform it was measured on");
+
+            // No name from the site, but a sidecar in the archive: the id and
+            // the acquisition time still have somewhere to go, and the server's
+            // name must not be blanked by an empty one.
+            check (installFromArchive (zip, "merged-2", mergeLib).ok,
+                   "installs the same artefact with no display name");
+
+            const auto unnamed = InstrumentLibrary::readSidecar (mergeLib.getChildFile ("merged-2"));
+
+            check (unnamed.name == "Named By The Server",
+                   "an absent site name leaves the server's name alone");
+            check (unnamed.acquiredAt.isNotEmpty(),
+                   "and the stamp still happens");
+
+            // Six values where seven are required. The dimensions are
+            // positional, so a short vector would shift `width` into
+            // `richness` and every ordering built on it would be wrong while
+            // looking fine. Refused whole rather than read as far as it goes.
+            const auto shortVector = mergeLib.getChildFile ("short-vector");
+            shortVector.createDirectory();
+            shortVector.getChildFile ("synthis.json").replaceWithText (
+                R"({"character":{"descriptors":[0.1,0.2,0.3,0.4,0.5,0.6]}})");
+
+            check (! InstrumentLibrary::readSidecar (shortVector).hasDescriptors,
+                   "a six-element descriptor vector is refused rather than partly read");
+        }
     }
 
     line ("");
@@ -350,7 +510,7 @@ int main (int argc, char* argv[])
     if (args.isEmpty())
     {
         line ("acquire-probe parse    <url>");
-        line ("acquire-probe install  <zip> <id> <libraryRoot>");
+        line ("acquire-probe install  <zip> <id> <libraryRoot> [displayName]");
         line ("acquire-probe fetch    <base> <id> <file> <ticket> <libraryRoot>");
         line ("acquire-probe selftest <scratchDir>");
         line ("acquire-probe scan");
@@ -407,9 +567,18 @@ int main (int argc, char* argv[])
     if (command == "install")
     {
         if (args.size() < 4)
-            return fail ("install needs <zip> <id> <libraryRoot>");
+            return fail ("install needs <zip> <id> <libraryRoot> [displayName]");
 
-        const auto r = installFromArchive (juce::File (args[1]), args[2], juce::File (args[3]));
+        // The display name is optional here and always present in practice:
+        // the site puts it in the sentinel, so fetchAndInstall never omits it.
+        // This command did omit it, which meant the sidecar MERGE -- the
+        // server's provenance and measurements surviving the plugin's name
+        // stamp -- could only be exercised by the selftest against a synthetic
+        // fixture, never against an archive a real server produced. An
+        // end-to-end run reported the name check failing when the truth was
+        // that this command had silently ignored the argument.
+        const auto r = installFromArchive (juce::File (args[1]), args[2], juce::File (args[3]),
+                                           args.size() >= 5 ? args[4] : juce::String());
         line (juce::String (r.ok ? "OK    " : "FAIL  ") + r.message);
         return r.ok ? 0 : 1;
     }

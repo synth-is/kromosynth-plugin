@@ -7,22 +7,140 @@ juce::File InstrumentLibrary::root()
                .getChildFile ("Instruments");
 }
 
-juce::String InstrumentLibrary::readSidecarName (const juce::File& folder)
+namespace
 {
+
+/** The seven dimensions, in DESCRIPTOR_DIMENSIONS index order. */
+const char* const kDescriptorNames[] = {
+    "brightness", "noisiness", "rolloff", "energy", "percussive", "richness", "width"
+};
+
+/** Reads a nested object, or a void var when the key is absent.
+
+    Chaining through these rather than testing at each level, because the whole
+    sidecar is optional and so is every block in it: a file with no
+    "character" is the normal case for an unadopted candidate, not an error to
+    branch on.
+*/
+juce::var child (const juce::var& v, const char* key)
+{
+    if (auto* obj = v.getDynamicObject())
+        return obj->getProperty (key);
+
+    return {};
+}
+
+bool present (const juce::var& v, const char* key)
+{
+    auto* obj = v.getDynamicObject();
+    return obj != nullptr && obj->hasProperty (key);
+}
+
+juce::String text (const juce::var& v, const char* key)
+{
+    return child (v, key).toString().trim();
+}
+
+} // namespace
+
+const char* InstrumentLibrary::descriptorName (int index)
+{
+    return juce::isPositiveAndBelow (index, kNumDescriptors) ? kDescriptorNames[index] : "";
+}
+
+InstrumentLibrary::Metadata InstrumentLibrary::readSidecar (const juce::File& folder)
+{
+    Metadata m;
+
     const auto sidecar = folder.getChildFile ("synthis.json");
 
     if (! sidecar.existsAsFile())
-        return {};
+        return m;
 
     // Fails quietly to empty. A malformed sidecar should cost the instrument
-    // its nice label, not its place in the list -- the SFZ is the thing that
-    // makes it playable, and this file is decoration on top of it.
-    const auto parsed = juce::JSON::parse (sidecar.loadFileAsString());
+    // its nice label, not its place in the list -- the SFZ or the .wasm is the
+    // thing that makes it playable, and this file is decoration on top of it.
+    const auto root = juce::JSON::parse (sidecar.loadFileAsString());
 
-    if (auto* obj = parsed.getDynamicObject())
-        return obj->getProperty ("name").toString().trim();
+    if (root.getDynamicObject() == nullptr)
+        return m;
 
-    return {};
+    m.name       = text (root, "name");
+    m.acquiredAt = text (root, "acquiredAt");
+
+    const auto source = child (root, "source");
+
+    m.substrate      = text (source, "substrate");
+    m.evolutionRunId = text (source, "evolutionRunId");
+    m.soundClass     = text (source, "class");
+    m.creator        = text (source, "creator");
+    m.discoveredAt   = text (source, "discoveredAt");
+    m.adoptedAt      = text (source, "adoptedAt");
+    m.renderedAt     = text (source, "renderedAt");
+
+    // Only when actually present, so "generation 0" and "no generation
+    // recorded" stay distinguishable -- generation 0 is a real seed.
+    if (present (source, "generation"))
+        m.generation = (int) child (source, "generation");
+
+    // A list, because a multi-sound instrument has several. The first is the
+    // primary one (RENDERS_SOUND carries is_primary), and that is the one worth
+    // showing beside a single-line list entry.
+    if (auto* ids = child (source, "soundIds").getArray())
+        if (! ids->isEmpty())
+            m.soundId = ids->getFirst().toString().trim();
+
+    const auto character = child (root, "character");
+
+    m.soundType              = text (character, "soundType");
+    m.labelledAt             = text (character, "labelledAt");
+    m.labelsAreCorpusRelative = (bool) child (character, "labelsAreCorpusRelative");
+
+    const auto labels = child (character, "labels");
+
+    for (int i = 0; i < kNumDescriptors; ++i)
+        m.labels[i] = text (labels, kDescriptorNames[i]);
+
+    // ALL SEVEN OR NONE. A vector of the wrong length is refused rather than
+    // read as far as it goes: the dimensions are positional, so a six-element
+    // array would silently shift `width` into `richness` and every ordering
+    // built on it would be wrong while looking fine.
+    if (auto* raw = child (character, "descriptors").getArray())
+    {
+        if (raw->size() == kNumDescriptors)
+        {
+            for (int i = 0; i < kNumDescriptors; ++i)
+                m.descriptors[i] = (float) (double) raw->getUnchecked (i);
+
+            m.hasDescriptors = true;
+        }
+    }
+
+    const auto measured = child (root, "measured");
+
+    // `trim` is the flag rather than the block being non-void, because a block
+    // that arrived without it cannot be used for the one thing the plugin would
+    // skip work for, and half-trusting it would mean loading an instrument at
+    // an unmeasured level.
+    if (present (measured, "trim"))
+    {
+        m.hasMeasured   = true;
+        m.trim          = (float) (double) child (measured, "trim");
+        m.trimDb        = (float) (double) child (measured, "trimDb");
+        m.peak          = (float) (double) child (measured, "peak");
+        m.rtf           = (double) child (measured, "rtf");
+        m.rtfPlatform   = text (measured, "rtfPlatform");
+        m.capAt4x       = (int) child (measured, "capAt4x");
+        m.articulation  = text (measured, "articulation");
+        m.hasGate       = (bool) child (measured, "hasGate");
+    }
+
+    return m;
+}
+
+juce::String InstrumentLibrary::readSidecarName (const juce::File& folder)
+{
+    return readSidecar (folder).name;
 }
 
 juce::String InstrumentLibrary::readDisplayName (const juce::File& sfz,
@@ -101,7 +219,12 @@ std::vector<InstrumentLibrary::Entry> InstrumentLibrary::scan() const
         // the card the user clicked, which is the only name they have ever seen
         // for this instrument. The SFZ header's "Sounds:" ULID is a fallback for
         // instruments that predate acquisition or were placed here by hand.
-        entry.name = readSidecarName (folder);
+        //
+        // Read whole rather than name-only: the shell sorts and filters on the
+        // rest of it (ARTEFACT_CONTRACT §4), and one read per instrument per
+        // scan is the same cost the name alone used to be.
+        entry.meta = readSidecar (folder);
+        entry.name = entry.meta.name;
 
         // readDisplayName parses an SFZ header, so it has nothing to say about
         // a Faust module. Falling back to the folder name there rather than

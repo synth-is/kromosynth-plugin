@@ -2,6 +2,8 @@
 
 #include <juce_core/juce_core.h>
 
+#include <vector>
+
 namespace kromosynth::acquisition
 {
 
@@ -60,48 +62,199 @@ bool isSafeComponent (const juce::String& s)
     return true;
 }
 
-/** Finds the directory prefix inside the archive that contains instrument.sfz.
-
-    Shallowest wins. A multi-format archive has exactly one sfz/ subtree, but
-    if a future archive ever nested more deeply the shallowest is the one the
-    generator considers primary.
-
-    Returns nullopt when the archive has no instrument.sfz anywhere -- the
-    non-sfz-primary case, which this plugin cannot use.
-*/
-std::optional<juce::String> findInstrumentPrefix (juce::ZipFile& zip)
+/** An archive entry name with '/' separators, whatever the writer used. */
+juce::String normalisedName (juce::ZipFile& zip, int index)
 {
-    std::optional<juce::String> best;
-    int bestDepth = std::numeric_limits<int>::max();
+    return zip.getEntry (index)->filename.replaceCharacter ('\\', '/');
+}
+
+/** The last path component. */
+juce::String leafOf (const juce::String& name)
+{
+    const int slash = name.lastIndexOfChar ('/');
+    return slash < 0 ? name : name.substring (slash + 1);
+}
+
+/** The directory part, with a trailing slash, and how deep it is.
+
+    NOT upToLastOccurrenceOf: it returns the WHOLE string when the separator is
+    absent (juce_String.cpp:1629), so a root-level "instrument.sfz" yielded the
+    prefix "instrument.sfz" rather than "", and the root-level archive shape --
+    the common one -- failed to install while the nested one worked. Found by
+    the probe selftest.
+*/
+juce::String prefixOf (const juce::String& name, int& depth)
+{
+    const int slash = name.lastIndexOfChar ('/');
+
+    depth = slash < 0
+          ? 0
+          : juce::StringArray::fromTokens (name.substring (0, slash), "/", "").size();
+
+    // "instrument.sfz" -> ""; "sfz/instrument.sfz" -> "sfz/"
+    return slash < 0 ? juce::String() : name.substring (0, slash + 1);
+}
+
+/** True when `name` lies under any of the given directory prefixes.
+
+    An empty prefix is ignored rather than matching everything. It means "the
+    archive root", and treating it as a directory to exclude would exclude the
+    whole archive.
+*/
+bool isInsideAny (const juce::String& name, const juce::StringArray& prefixes)
+{
+    for (const auto& prefix : prefixes)
+        if (prefix.isNotEmpty() && name.startsWith (prefix))
+            return true;
+
+    return false;
+}
+
+struct ArchiveRoot
+{
+    juce::String prefix;
+    InstrumentLibrary::Kind kind = InstrumentLibrary::Kind::none;
+    int depth = std::numeric_limits<int>::max();
+
+    /** Prefixes of the instrument roots that were NOT chosen.
+
+        Needed because an empty winning prefix means "the instrument is at the
+        archive root", and the extraction filter then passes every entry. A
+        sibling directory holding the other kind would come along with it --
+        silently, and only as wasted disk, but it makes "only the chosen
+        subtree" untrue. Carried out of the scan rather than recomputed,
+        because the scan is the only place that knows what a root looks like.
+    */
+    juce::StringArray losers;
+};
+
+/** Finds the directory inside the archive that holds an instrument, and which
+    kind of instrument it is.
+
+    Two kinds, per ARTEFACT_CONTRACT §1: an `instrument.sfz` for the sampler, or
+    an `instrument.wasm` WITH an `instrument.json` beside it for Faust. The pair
+    is required, not preferred -- a .wasm alone is not a degraded instrument but
+    an unplayable one, because the struct size and parameter byte offsets live
+    in the JSON and cannot be recovered from the module. Same rule as
+    InstrumentLibrary::resolve, deliberately.
+
+    Shallowest wins, so the archive files may sit at the root or one level down
+    under a format directory without a second convention. A tie goes to the
+    sampler, matching the order resolve() tests in: if the two disagreed, an
+    archive carrying both kinds would install one and load the other, which is
+    the §O3 listing/loading split from the other side.
+
+    Returns nullopt when the archive holds neither -- the non-sfz-primary case,
+    which this plugin cannot use.
+*/
+std::optional<ArchiveRoot> findInstrumentRoot (juce::ZipFile& zip)
+{
+    // Collected first, because the .json may appear after the .wasm in entry
+    // order and a single pass would judge the pair on incomplete information.
+    juce::StringArray faustMetadataPrefixes;
 
     for (int i = 0; i < zip.getNumEntries(); ++i)
     {
-        const auto name = zip.getEntry (i)->filename.replaceCharacter ('\\', '/');
+        const auto name = normalisedName (zip, i);
 
-        if (! name.endsWithIgnoreCase ("instrument.sfz"))
-            continue;
-
-        // NOT upToLastOccurrenceOf: it returns the WHOLE string when the
-        // separator is absent (juce_String.cpp:1629), so a root-level
-        // "instrument.sfz" yielded the prefix "instrument.sfz" rather than "",
-        // and the root-level archive shape -- the common one -- failed to
-        // install while the nested one worked. Found by the probe selftest.
-        const int slash = name.lastIndexOfChar ('/');
-
-        // "instrument.sfz" -> prefix ""; "sfz/instrument.sfz" -> prefix "sfz/"
-        const juce::String prefix = slash < 0 ? juce::String() : name.substring (0, slash + 1);
-        const int depth = slash < 0
-                        ? 0
-                        : juce::StringArray::fromTokens (name.substring (0, slash), "/", "").size();
-
-        if (depth < bestDepth)
+        if (leafOf (name).equalsIgnoreCase ("instrument.json"))
         {
-            bestDepth = depth;
-            best = prefix;
+            int depth = 0;
+            faustMetadataPrefixes.add (prefixOf (name, depth));
         }
     }
 
+    std::vector<ArchiveRoot> candidates;
+
+    for (int i = 0; i < zip.getNumEntries(); ++i)
+    {
+        const auto name = normalisedName (zip, i);
+
+        // The whole leaf, not a suffix. endsWithIgnoreCase ("instrument.sfz")
+        // also matches "my-instrument.sfz", which would pick a prefix from a
+        // file the engine will never open.
+        const auto leaf = leafOf (name);
+
+        int depth = 0;
+        const auto prefix = prefixOf (name, depth);
+
+        auto kind = InstrumentLibrary::Kind::none;
+
+        if (leaf.equalsIgnoreCase ("instrument.sfz"))
+            kind = InstrumentLibrary::Kind::sampler;
+        else if (leaf.equalsIgnoreCase ("instrument.wasm")
+                 && faustMetadataPrefixes.contains (prefix))
+            kind = InstrumentLibrary::Kind::faust;
+
+        if (kind != InstrumentLibrary::Kind::none)
+            candidates.push_back ({ prefix, kind, depth, {} });
+    }
+
+    ArchiveRoot best;
+
+    for (const auto& candidate : candidates)
+        if (candidate.depth < best.depth
+            || (candidate.depth == best.depth
+                && candidate.kind == InstrumentLibrary::Kind::sampler))
+            best = candidate;
+
+    if (best.kind == InstrumentLibrary::Kind::none)
+        return std::nullopt;
+
+    // A prefix equal to the winner's is the same directory, not a rival: one
+    // folder can legitimately hold both an SFZ and a Faust pair, and pruning
+    // it would delete the instrument that was just chosen.
+    for (const auto& candidate : candidates)
+        if (candidate.prefix.isNotEmpty() && candidate.prefix != best.prefix)
+            best.losers.addIfNotAlreadyThere (candidate.prefix);
+
     return best;
+}
+
+/** Writes the display name into the sidecar WITHOUT discarding what is already
+    there.
+
+    This used to be a plain overwrite of a three-key object, which was correct
+    while the plugin was the only writer. ARTEFACT_CONTRACT §2 makes the server
+    the first writer -- provenance, dates, characteristics and the measured
+    block all arrive in this file -- so an overwrite here would throw away
+    everything the artefact came with and leave a library that can only sort by
+    name.
+
+    A malformed existing sidecar is replaced rather than merged into. There is
+    nothing to merge with, and the name is worth more than an unparseable file.
+*/
+void stampSidecar (const juce::File& folder,
+                   const juce::String& artifactId,
+                   const juce::String& displayName)
+{
+    const auto sidecar = folder.getChildFile (kSidecarName);
+    const bool hadOne = sidecar.existsAsFile();
+
+    // Nothing to say and nothing to say it into. Writing an empty sidecar
+    // would give every hand-placed instrument one.
+    if (displayName.isEmpty() && ! hadOne)
+        return;
+
+    juce::var doc;
+
+    if (hadOne)
+        doc = juce::JSON::parse (sidecar.loadFileAsString());
+
+    if (doc.getDynamicObject() == nullptr)
+        doc = juce::var (new juce::DynamicObject());
+
+    auto* obj = doc.getDynamicObject();
+
+    // Only when there is one. An empty name must not overwrite a name the
+    // server already put in the artefact.
+    if (displayName.isNotEmpty())
+        obj->setProperty ("name", displayName);
+
+    obj->setProperty ("artifactId", artifactId);
+    obj->setProperty ("acquiredAt", juce::Time::getCurrentTime().toISO8601 (true));
+
+    sidecar.replaceWithText (juce::JSON::toString (doc));
 }
 
 /** Cleans a label for display.
@@ -279,16 +432,19 @@ Result installFromArchive (const juce::File& archive,
     if (zip.getNumEntries() == 0)
         return { false, {}, "Archive is empty or not a ZIP" };
 
-    const auto prefix = findInstrumentPrefix (zip);
+    const auto root = findInstrumentRoot (zip);
 
-    if (! prefix.has_value())
+    if (! root.has_value())
     {
-        // The non-sfz-primary case. Said plainly, because "installed but
-        // invisible" is the outcome if this is allowed through: scan() skips a
-        // directory with no instrument.sfz and the user sees nothing.
+        // The non-sfz-primary case, and now also the incomplete-Faust case.
+        // Said plainly, because "installed but invisible" is the outcome if
+        // this is allowed through: scan() skips a directory that resolves to
+        // nothing and the user sees the download succeed and no instrument
+        // appear.
         return { false, {},
-                 "This artefact contains no instrument.sfz. The plugin's sampler "
-                 "needs an SFZ; re-render the instrument in SFZ format." };
+                 "This artefact holds nothing the plugin can play. It needs an "
+                 "instrument.sfz for the sampler, or an instrument.wasm with its "
+                 "instrument.json for a Faust instrument." };
     }
 
     const auto staging = libraryRoot.getChildFile (kStagingDirName);
@@ -309,9 +465,20 @@ Result installFromArchive (const juce::File& archive,
     // checks here would mean two places to get them right.
     for (int i = 0; i < zip.getNumEntries(); ++i)
     {
-        const auto name = zip.getEntry (i)->filename.replaceCharacter ('\\', '/');
+        const auto name = normalisedName (zip, i);
 
-        if (prefix->isNotEmpty() && ! name.startsWith (*prefix))
+        if (root->prefix.isNotEmpty() && ! name.startsWith (root->prefix))
+            continue;
+
+        // The filter above is not enough when the winner is at the archive
+        // root: an empty prefix passes every entry, so a sibling directory
+        // holding the other kind would be extracted too. Found by the probe
+        // selftest, on a shape the VI service does not currently emit -- it
+        // always nests when it packs more than one format -- but the contract
+        // allows a root primary beside a nested one, and this is the difference
+        // between installing an instrument and installing an instrument plus a
+        // whole unused sample set.
+        if (isInsideAny (name, root->losers))
             continue;
 
         const auto result = zip.uncompressEntry (i, work);
@@ -323,14 +490,24 @@ Result installFromArchive (const juce::File& archive,
         }
     }
 
-    const auto unpacked = prefix->isEmpty() ? work : work.getChildFile (*prefix);
+    const auto unpacked = root->prefix.isEmpty() ? work : work.getChildFile (root->prefix);
 
-    if (! unpacked.getChildFile ("instrument.sfz").existsAsFile())
+    // The archive listing said these were there. If they are not on disk now,
+    // the extraction quietly did not do what it reported.
+    //
+    // Both files for Faust, for the same reason findInstrumentRoot requires
+    // both: a .wasm whose .json failed to extract installs an instrument that
+    // appears in the list and cannot be loaded.
+    const bool landed = root->kind == InstrumentLibrary::Kind::sampler
+                      ? unpacked.getChildFile ("instrument.sfz").existsAsFile()
+                      : unpacked.getChildFile ("instrument.wasm").existsAsFile()
+                            && unpacked.getChildFile ("instrument.json").existsAsFile();
+
+    if (! landed)
     {
-        // The prefix scan said there was one. If it is not on disk now, the
-        // extraction quietly did not do what it reported.
         discard (work);
-        return { false, {}, "Unpacked archive has no instrument.sfz where one was expected" };
+        return { false, {},
+                 "Unpacked archive is missing the instrument files its listing promised" };
     }
 
     const auto destination = libraryRoot.getChildFile (artifactId);
@@ -339,16 +516,7 @@ Result installFromArchive (const juce::File& archive,
     // Written into the staging copy, so it arrives with the atomic move rather
     // than as a second step afterwards. A directory that appeared without its
     // sidecar would show the old ULID until the next download rewrote it.
-    if (displayName.isNotEmpty())
-    {
-        auto* meta = new juce::DynamicObject();
-        meta->setProperty ("name", displayName);
-        meta->setProperty ("artifactId", artifactId);
-        meta->setProperty ("acquiredAt", juce::Time::getCurrentTime().toISO8601 (true));
-
-        unpacked.getChildFile (kSidecarName)
-                .replaceWithText (juce::JSON::toString (juce::var (meta)));
-    }
+    stampSidecar (unpacked, artifactId, displayName);
 
     discard (replaced);
 

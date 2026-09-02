@@ -341,7 +341,22 @@ int runMeasure (const juce::File& wasmFile, const juce::File& jsonFile,
     for (int pi = 0; pi < 3; ++pi)
     {
         engine.panic();
-        if (idxFreq >= 0) engine.setParameter (idxFreq, 440.0f * std::pow (2.0f, (pitches[pi] - 69) / 12.0f));
+        // DOUBLE, narrowed once at the parameter. This was float throughout --
+        // std::pow (2.0f, -1.75f) -- and that made the frequency itself differ
+        // from the same calculation done in double by ~1e-5 relative.
+        //
+        // Invisible while this was the only measurer. It surfaced the moment
+        // render-socket's port was compared against it: peakC3 disagreed by
+        // 9.8e-6 while peakA4 and peakA5 agreed exactly, because a4 and a5 have
+        // exponents of 0 and 1 where pow is exact and c3 has -1.75 where it is
+        // not. A disagreement in the fifth decimal that is really a
+        // disagreement about what note was played.
+        //
+        // The DSP parameter is float32 either way, so this narrows once at the
+        // end rather than accumulating in float. peakC3 figures published in
+        // ARTEFACT_NUMBERS_2026-09-01 predate this and differ in the 5th decimal.
+        if (idxFreq >= 0) engine.setParameter (idxFreq,
+            (float) (440.0 * std::pow (2.0, (pitches[pi] - 69) / 12.0)));
         if (idxGain >= 0) engine.setParameter (idxGain, 1.0f);
         if (idxGate >= 0) engine.setParameter (idxGate, 1.0f);
 
