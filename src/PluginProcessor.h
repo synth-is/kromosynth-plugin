@@ -89,8 +89,14 @@ public:
     const juce::String getProgramName (int) override { return {}; }
     void changeProgramName (int, const juce::String&) override {}
 
-    void getStateInformation (juce::MemoryBlock&) override {}
-    void setStateInformation (const void*, int) override {}
+    // Which instrument is loaded, so a saved project reopens playing it.
+    //
+    // Deliberately a ValueTree rather than a bare string. There are no plugin
+    // parameters yet; when there are, an AudioProcessorValueTreeState's own
+    // state becomes a CHILD of this tree and old sessions keep loading. A raw
+    // string now would have to be migrated later.
+    void getStateInformation (juce::MemoryBlock&) override;
+    void setStateInformation (const void*, int) override;
 
     // Stage 0 instrumentation. The editor appends host-observable lifecycle
     // events here; see PluginEditor.cpp for where the log lands on disk.
@@ -220,6 +226,19 @@ private:
 
     // Message-thread only.
     LoadOutcome current_;
+
+    // setStateInformation and prepareToPlay arrive in either order, and which
+    // one a host picks is not something to rely on. Whichever runs second does
+    // the load; this is how they find each other.
+    juce::CriticalSection pendingLock_;
+    juce::String pendingInstrumentId_;
+
+    void loadPendingInstrument();
+
+    // A host can close a plugin between setStateInformation posting the load
+    // and the message thread running it. AudioProcessor has no weak reference,
+    // so the lambda holds a weak_ptr to this and does nothing if it expired.
+    std::shared_ptr<int> lifetime_ { std::make_shared<int> (0) };
    #endif
 
     AcquisitionRunner acquisitions_;

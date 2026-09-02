@@ -143,6 +143,97 @@ KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() co
     return st;
 }
 
+// ── session state ───────────────────────────────────────────────────────────
+//
+// The tag and version are written so that a later reader can tell "this is not
+// ours" from "this is an older ours". Without a version, the first schema
+// change either breaks old sessions or has to guess.
+static const juce::Identifier kStateTag ("SynthIsPluginState");
+static const juce::Identifier kStateVersion ("version");
+static const juce::Identifier kStateInstrument ("instrumentId");
+
+void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
+{
+    juce::ValueTree tree (kStateTag);
+    tree.setProperty (kStateVersion, 1, nullptr);
+
+    // current_.id is set on a successful load only, so a failed load does not
+    // get saved and then fail again on every reopen.
+    tree.setProperty (kStateInstrument, current_.ok ? current_.id : juce::String(), nullptr);
+
+    juce::MemoryOutputStream out (dest, false);
+    tree.writeToStream (out);
+
+    logEvent ("state_saved instrument=\"" + current_.id + "\"");
+}
+
+void KromosynthAudioProcessor::setStateInformation (const void* data, int size)
+{
+    if (data == nullptr || size <= 0) return;
+
+    const auto tree = juce::ValueTree::readFromData (data, (size_t) size);
+
+    // Not ours, or corrupt. Silently ignoring is right -- a host handing us
+    // another plugin's block is a host bug, not a reason to lose the session.
+    if (! tree.isValid() || ! tree.hasType (kStateTag))
+    {
+        logEvent ("state_ignored reason=unrecognised size=" + juce::String (size));
+        return;
+    }
+
+    const auto id = tree.getProperty (kStateInstrument).toString();
+
+    {
+        const juce::ScopedLock sl (pendingLock_);
+        pendingInstrumentId_ = id;
+    }
+
+    logEvent ("state_restored instrument=\"" + id + "\" version="
+              + tree.getProperty (kStateVersion).toString());
+
+    if (id.isEmpty()) return;
+
+    // A host may call this before OR after prepareToPlay. If the engines are
+    // already up, load now -- but on the message thread, because loadInstrument
+    // suspends processing and calls updateHostDisplay, and setStateInformation
+    // carries no thread guarantee.
+    bool ready = false;
+   #if KROMOSYNTH_HAS_FAUST
+    ready = ready || faust_ != nullptr;
+   #endif
+   #if KROMOSYNTH_HAS_SAMPLER
+    ready = ready || engine_ != nullptr;
+   #endif
+
+    if (! ready) return;   // prepareToPlay will pick it up
+
+    juce::MessageManager::callAsync ([weak = std::weak_ptr<int> (lifetime_), this]
+    {
+        if (weak.expired()) return;   // the plugin went away before we ran
+        loadPendingInstrument();
+    });
+}
+
+void KromosynthAudioProcessor::loadPendingInstrument()
+{
+    juce::String id;
+    {
+        const juce::ScopedLock sl (pendingLock_);
+        id = pendingInstrumentId_;
+        pendingInstrumentId_.clear();
+    }
+
+    if (id.isEmpty()) return;
+
+    const auto outcome = loadInstrument (id);
+
+    // A saved instrument can be gone -- deleted, or the project opened on
+    // another machine. Logged rather than silently dropped, because "my
+    // instrument did not come back" needs an answer.
+    if (! outcome.ok)
+        logEvent ("state_load_failed instrument=\"" + id + "\" detail=\"" + outcome.detail + "\"");
+}
+
 void KromosynthAudioProcessor::panic()
 {
     JUCE_ASSERT_MESSAGE_THREAD
@@ -379,6 +470,10 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
 
     suspendProcessing (false);
    #endif
+
+    // If setStateInformation ran first, this is where the instrument it named
+    // actually gets loaded -- the engines only exist now.
+    loadPendingInstrument();
 }
 
 #if KROMOSYNTH_HAS_FAUST
