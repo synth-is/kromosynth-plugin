@@ -9,6 +9,8 @@
 #include <wasm.h>
 #include <wasmtime.h>
 
+#include <juce_dsp/juce_dsp.h>
+
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -123,6 +125,101 @@ wasm_functype_t* funcType (int arity)
 float mtof (int note) noexcept
 {
     return 440.0f * std::pow (2.0f, (float) (note - 69) / 12.0f);
+}
+
+/** Short-time Fourier magnitudes of a capture, on a log frequency scale.
+
+    Returns kSpectrogramFrames rows of kSpectrogramBins bytes, or empty when
+    there is nothing to show.
+
+    LOG frequency, not linear. A linear map spends three quarters of its height
+    above 5 kHz, where an evolved genome usually has little, and crushes the
+    octaves that carry its character into the bottom few pixels. The point of
+    this picture is to tell two instruments apart at a glance.
+
+    Normalised to the loudest bin in the capture rather than to an absolute
+    level, because the raw peaks span 40 dB across the archive and an absolute
+    scale would render most instruments as an empty rectangle.
+*/
+std::vector<std::uint8_t> buildSpectrogram (const std::vector<float>& capture, double sampleRate)
+{
+    constexpr int kBins = FaustEngine::kSpectrogramBins;
+    constexpr int kFrames = FaustEngine::kSpectrogramFrames;
+    constexpr int kFftOrder = 10;                 // 1024 samples, ~21 ms at 48 k
+    constexpr int kFftSize = 1 << kFftOrder;
+
+    if (capture.size() < (size_t) kFftSize || sampleRate <= 0.0)
+        return {};
+
+    juce::dsp::FFT fft (kFftOrder);
+
+    // Hann, computed once. Without a window every frame carries the spectral
+    // leakage of a rectangular edge and a tonal genome smears across the map.
+    std::vector<float> window ((size_t) kFftSize);
+    for (int i = 0; i < kFftSize; ++i)
+        window[(size_t) i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi
+                                                     * (float) i / (float) (kFftSize - 1));
+
+    const int usable = (int) capture.size() - kFftSize;
+    const double hop = (double) usable / (double) (kFrames - 1);
+
+    // Output bin -> source range, log-spaced from 40 Hz to Nyquist. 40 rather
+    // than 0 because the bottom bins are dominated by DC and offset.
+    const double fMin = 40.0;
+    const double fMax = sampleRate * 0.5;
+    const double hzPerBin = sampleRate / (double) kFftSize;
+
+    std::vector<float> fftBuffer ((size_t) kFftSize * 2);
+    std::vector<float> magnitudes ((size_t) kFrames * kBins, 0.0f);
+    float loudest = 0.0f;
+
+    for (int f = 0; f < kFrames; ++f)
+    {
+        const int start = (int) std::llround ((double) f * hop);
+
+        std::fill (fftBuffer.begin(), fftBuffer.end(), 0.0f);
+        for (int i = 0; i < kFftSize; ++i)
+            fftBuffer[(size_t) i] = capture[(size_t) (start + i)] * window[(size_t) i];
+
+        fft.performFrequencyOnlyForwardTransform (fftBuffer.data());
+
+        for (int b = 0; b < kBins; ++b)
+        {
+            // Geometric spacing: each output bin covers a constant RATIO of
+            // frequency, so an octave occupies the same height wherever it sits.
+            const double lo = fMin * std::pow (fMax / fMin, (double) b / (double) kBins);
+            const double hi = fMin * std::pow (fMax / fMin, (double) (b + 1) / (double) kBins);
+
+            int srcLo = (int) std::floor (lo / hzPerBin);
+            int srcHi = (int) std::ceil (hi / hzPerBin);
+
+            srcLo = juce::jlimit (0, kFftSize / 2 - 1, srcLo);
+            // At least one source bin: the lowest output bins are narrower than
+            // the FFT's resolution, and an empty range would draw a black stripe
+            // across the bottom of every instrument.
+            srcHi = juce::jlimit (srcLo + 1, kFftSize / 2, srcHi);
+
+            float peakHere = 0.0f;
+            for (int s = srcLo; s < srcHi; ++s)
+                peakHere = juce::jmax (peakHere, fftBuffer[(size_t) s]);
+
+            magnitudes[(size_t) f * kBins + (size_t) b] = peakHere;
+            loudest = juce::jmax (loudest, peakHere);
+        }
+    }
+
+    if (loudest <= 0.0f) return {};
+
+    std::vector<std::uint8_t> out ((size_t) kFrames * kBins, 0);
+
+    for (size_t i = 0; i < magnitudes.size(); ++i)
+    {
+        const float db = 20.0f * std::log10 (juce::jmax (1.0e-6f, magnitudes[i] / loudest));
+        const float norm = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
+        out[i] = (std::uint8_t) juce::jlimit (0, 255, (int) std::lround (norm * 255.0f));
+    }
+
+    return out;
 }
 } // namespace
 
@@ -508,6 +605,35 @@ bool FaustEngine::setVoiceCount (int numVoices)
     return true;
 }
 
+juce::String FaustEngine::runtimeId()
+{
+    // Composed from the linked runtime's own version macro, so an upgrade
+    // changes the id without anyone remembering to edit it. The OS and arch
+    // are part of it because the same wasmtime on a different target is a
+    // different measurement.
+   #if JUCE_IOS
+    const char* os = "ios";
+   #elif JUCE_MAC
+    const char* os = "macos";
+   #elif JUCE_WINDOWS
+    const char* os = "windows";
+   #elif JUCE_LINUX
+    const char* os = "linux";
+   #else
+    const char* os = "unknown";
+   #endif
+
+   #if defined (__aarch64__) || defined (_M_ARM64)
+    const char* arch = "arm64";
+   #elif defined (__x86_64__) || defined (_M_X64)
+    const char* arch = "x86_64";
+   #else
+    const char* arch = "unknown";
+   #endif
+
+    return juce::String ("wasmtime-") + WASMTIME_VERSION + "-" + os + "-" + arch;
+}
+
 FaustEngine::Measured FaustEngine::measure()
 {
     Measured m;
@@ -522,7 +648,28 @@ FaustEngine::Measured FaustEngine::measure()
     }
 
     const int pitches[] = { 48, 69, 81 };                     // c3, a4, a5
-    const int blocks = (int) (1.5 * impl_->sampleRate) / impl_->maxBlockSize;
+
+    // THE SAME WINDOW faust-probe's runMeasure uses, and the same one
+    // render-socket's port uses: 2 s holding the gate, then 3 s after closing
+    // it, with the peak taken across both.
+    //
+    // This was 1.5 s of hold and no release phase at all, which made it a third
+    // implementation of one measurement that disagreed with the other two. On
+    // 01M1JFPEPBR4NFC83AEMA7TA1Y, same module and same 44100/1024, the probe
+    // read 4.4948 and this read 3.8008 -- 1.46 dB low, because the genome had
+    // not reached its peak inside 1.5 s.
+    //
+    // Low is the DANGEROUS direction: the trim comes out too high and the
+    // instrument plays LOUDER than intended, on a genome whose raw peak is
+    // already 3.8. Caught by the artefact cross-check on its first outing --
+    // which is what that check is for.
+    //
+    // The cost is real: 15 s of audio per load instead of 4.5. On the slowest
+    // genome measured (rtf 21) that moves the load-time measurement from ~210
+    // ms to ~700 ms. Paid, because a wrong level is audible and a slower load
+    // is not.
+    const int holdBlocks  = (int) (2.0 * impl_->sampleRate) / impl_->maxBlockSize;
+    const int afterBlocks = (int) (3.0 * impl_->sampleRate) / impl_->maxBlockSize;
 
     juce::AudioBuffer<float> scratch { 1, impl_->maxBlockSize };
     const juce::MidiBuffer noMidi;
@@ -535,8 +682,19 @@ FaustEngine::Measured FaustEngine::measure()
     float peak = 0.0f;
     const auto t0 = juce::Time::getHighResolutionTicks();
 
-    for (const int p : pitches)
+    // Samples from the a4 probe, kept for the spectrogram. a4 rather than all
+    // three: three pitches concatenated would read as three unrelated events,
+    // and a4 is the pitch that decided the peak for most genomes measured.
+    // Reserved once so the capture never reallocates mid-render and perturbs
+    // the rtf timing that shares this loop.
+    std::vector<float> capture;
+    capture.reserve ((size_t) ((2.0 + 3.0) * impl_->sampleRate) + (size_t) impl_->maxBlockSize);
+
+    for (int pi = 0; pi < (int) (sizeof (pitches) / sizeof (pitches[0])); ++pi)
     {
+        const int p = pitches[pi];
+        const bool capturing = (p == 69);
+
         panic();
         // Parameter-driven, so forced release never engages: this must measure
         // the genome, not the plugin's handling of it.
@@ -544,10 +702,27 @@ FaustEngine::Measured FaustEngine::measure()
         if (idxGain >= 0) setParameter (idxGain, 1.0f);   // full velocity, the worst case
         if (idxGate >= 0) setParameter (idxGate, 1.0f);
 
-        for (int b = 0; b < blocks; ++b)
+        for (int b = 0; b < holdBlocks; ++b)
         {
             process (scratch, noMidi);
             peak = juce::jmax (peak, scratch.getMagnitude (0, impl_->maxBlockSize));
+            if (capturing)
+                capture.insert (capture.end(), scratch.getReadPointer (0),
+                                scratch.getReadPointer (0) + impl_->maxBlockSize);
+        }
+
+        // Closed by PARAMETER, not by noteOff: a note-driven release would
+        // engage the forced-stop logic and measure the plugin rather than the
+        // genome. Voices stay non-note-driven, so nothing idles underneath.
+        if (idxGate >= 0) setParameter (idxGate, 0.0f);
+
+        for (int b = 0; b < afterBlocks; ++b)
+        {
+            process (scratch, noMidi);
+            peak = juce::jmax (peak, scratch.getMagnitude (0, impl_->maxBlockSize));
+            if (capturing)
+                capture.insert (capture.end(), scratch.getReadPointer (0),
+                                scratch.getReadPointer (0) + impl_->maxBlockSize);
         }
     }
 
@@ -564,7 +739,7 @@ FaustEngine::Measured FaustEngine::measure()
     // cadence costs 2.3-2.9x more than rendering flat out, so this ranks
     // genomes against each other; it is not a headroom claim about a busy DAW.
     // Whether >=4x is the right bar is what rt-sweep.mjs still has to answer.
-    const double audioSeconds = 3 * 1.5;
+    const double audioSeconds = 3 * (2.0 + 3.0);
     m.rtf = elapsed > 0.0 ? audioSeconds / elapsed : 0.0;
 
     // Gate 0 §5 validated single-voice RTF as an exact predictor of polyphony,
@@ -572,6 +747,10 @@ FaustEngine::Measured FaustEngine::measure()
     m.capAt4x = 1;
     for (int v = 1; v <= 32; v *= 2)
         if (m.rtf / (v * 1.05) >= 4.0) m.capAt4x = v;
+
+    // Computed AFTER the timing is taken, so the FFT never lands inside the
+    // measured interval and inflates the genome's apparent cost.
+    m.spectrogram = buildSpectrogram (capture, impl_->sampleRate);
 
     return m;
 }

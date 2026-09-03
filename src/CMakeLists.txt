@@ -94,6 +94,12 @@ target_link_libraries(KromosynthPlugin
         juce::juce_audio_utils
         juce::juce_audio_plugin_client
         juce::juce_gui_extra
+        # For juce::dsp::FFT, used to turn the measurement render into a
+        # spectrogram. On Apple platforms it wraps vDSP, so this is both the
+        # correct choice and the fast one -- and hand-rolling numerics when the
+        # already-vendored library has a vetted implementation would be a poor
+        # trade for one call site.
+        juce::juce_dsp
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags

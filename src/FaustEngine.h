@@ -201,7 +201,28 @@ public:
         float  peak = 0.0f;      ///< loudest across the probed pitches
         double rtf = 0.0;        ///< single-voice real-time factor, free-running
         int    capAt4x = 1;      ///< voices sustainable at the §3.3 headroom bar
+
+        /** Coarse log-frequency spectrogram of the a4 probe, or empty.
+
+            kSpectrogramFrames rows of kSpectrogramBins bytes, row-major, each
+            byte a magnitude in dB mapped from -60..0 onto 0..255.
+
+            FREE, which is the only reason it is here. measure() already renders
+            five seconds at this pitch and throws all of it away except the
+            peak; an FFT over samples that were produced anyway costs no extra
+            rendering. Fetching a picture from the platform instead would put a
+            network request on the one surface whose whole justification is
+            working without a network.
+
+            It is also the RIGHT picture: this is the instrument as this machine
+            plays it, at the host's sample rate, rather than a render of the
+            same genome made elsewhere under other conditions.
+        */
+        std::vector<std::uint8_t> spectrogram;
     };
+
+    static constexpr int kSpectrogramBins = 128;
+    static constexpr int kSpectrogramFrames = 192;
 
     /** Renders this genome offline at several pitches and reports peak and RTF.
 
@@ -216,6 +237,25 @@ public:
         Leaves the engine reset.
     */
     Measured measure();
+
+    /** Identifies the wasm runtime this build measures on.
+
+        ARTEFACT_CONTRACT §3.2: an artefact carries `rtf` with the platform it
+        was measured on, and a consumer may only reuse that figure when the
+        platform matches its own. Measured V8/wasmtime ratios run 0.48-0.99
+        across six genomes, tracking genome cost, so there is no factor that
+        converts one runtime's figure into another's.
+
+        Derived from WASMTIME_VERSION rather than written out, so bumping the
+        runtime invalidates stored figures automatically. A hardcoded string
+        would keep matching after an upgrade and the plugin would go on
+        trusting numbers measured by a different engine.
+
+        An iOS build that ships an interpreter instead of wasmtime must report
+        a different id here, or it will accept desktop figures that are 2-24x
+        optimistic for it.
+    */
+    static juce::String runtimeId();
 
     /** Changes polyphony without recompiling the module. */
     bool setVoiceCount (int numVoices);

@@ -49,6 +49,21 @@ bool AcquisitionRunner::start (const kromosynth::acquisition::Request& request,
             s.message = result.message;
             s.progress = result.ok ? 1.0 : s.progress;
         });
+
+        // Copied under the lock and invoked outside it: the handler loads an
+        // instrument, which suspends processing, and holding this lock across
+        // that would put a download thread's lock in the path of the audio
+        // thread's barrier.
+        std::function<void (juce::String, bool)> handler;
+        {
+            const juce::ScopedLock sl (lock_);
+            handler = onFinished_;
+        }
+
+        if (handler != nullptr)
+            juce::MessageManager::callAsync ([handler,
+                                              id = request.artifactId,
+                                              ok = result.ok] { handler (id, ok); });
     });
 
     return true;
@@ -67,6 +82,12 @@ void AcquisitionRunner::clearFinished()
     statuses_.erase (std::remove_if (statuses_.begin(), statuses_.end(),
                                      [] (const Status& s) { return s.finished; }),
                      statuses_.end());
+}
+
+void AcquisitionRunner::setCompletionHandler (std::function<void (juce::String, bool)> handler)
+{
+    const juce::ScopedLock sl (lock_);
+    onFinished_ = std::move (handler);
 }
 
 void AcquisitionRunner::update (const juce::String& artifactId,

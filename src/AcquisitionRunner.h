@@ -33,6 +33,9 @@
 #include "ArtifactAcquisition.h"
 
 #include <juce_core/juce_core.h>
+// For MessageManager: the completion handler is dispatched from the pool
+// thread to the message thread, and juce_core alone does not have it.
+#include <juce_events/juce_events.h>
 
 #include <vector>
 
@@ -67,9 +70,27 @@ public:
     */
     void clearFinished();
 
+    /** Called on the MESSAGE THREAD when a job finishes, with its id and whether
+        it succeeded.
+
+        Exists so the processor can make a freshly acquired instrument the
+        active one. The shell cannot do that job: a download starts while the
+        user is on the site, so the shell is hidden, and WKWebView throttles
+        timers in a hidden view -- its poll typically wakes up to find the work
+        long finished. Anything that must happen AT completion has to happen
+        here.
+
+        Marshalled to the message thread rather than called on the pool thread,
+        because the only interesting thing to do from it is load an instrument,
+        and that suspends processing and touches the editor.
+    */
+    void setCompletionHandler (std::function<void (juce::String, bool)> handler);
+
 private:
     void update (const juce::String& artifactId,
                  std::function<void (Status&)> mutate);
+
+    std::function<void (juce::String, bool)> onFinished_;
 
     juce::ThreadPool pool_ { 1 };
     mutable juce::CriticalSection lock_;

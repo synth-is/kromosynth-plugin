@@ -135,6 +135,14 @@ private:
     /** Swaps which surface is visible. */
     void showSite (bool shouldShowSite);
 
+    /** Shows the site and navigates it to a site-relative path.
+
+        Separate from showSite because that one loads lazily and ONCE, so a
+        reopen keeps whatever the user had reached, including a half-completed
+        sign-in. A deep link is the case where replacing that is the request.
+    */
+    void navigateSiteTo (const juce::String& path);
+
     bool siteVisible_ = false;
 
     // WebBrowserComponent has no URL getter in JUCE 9 -- goToURL only, no

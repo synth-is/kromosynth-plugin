@@ -3,6 +3,13 @@
 #include "PluginEditor.h"
 #include "ShellPage.h"
 
+// For kSpectrogramBins/Frames. PluginProcessor.h only forward-declares
+// FaustEngine -- enough to hold a unique_ptr, not enough to read a static
+// constant off it.
+#if KROMOSYNTH_HAS_FAUST
+ #include "FaustEngine.h"
+#endif
+
 #include <cstring>
 
 #ifndef KROMOSYNTH_WEB_APP_URL
@@ -156,7 +163,14 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             std::memcpy (bytes.data(), utf8, len);
 
             return juce::WebBrowserComponent::Resource {
-                std::move (bytes), juce::String ("text/html") };
+                // charset=utf-8 EXPLICITLY. The page carries <meta
+                // charset="utf-8"> and that is not enough: served from a custom
+                // scheme with no charset in the Content-Type, WKWebView decoded
+                // it as Latin-1 and a literal U+2026 in a placeholder attribute
+                // rendered as "characterâ\u0080¦". Escaped \uXXXX inside the
+                // script survived because those are ASCII bytes, which is why
+                // only the HTML text showed it.
+                std::move (bytes), juce::String ("text/html; charset=utf-8") };
         })
         .withNativeFunction ("engineState",
                              [this] (const juce::Array<juce::var>&,
@@ -181,6 +195,31 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
         {
             proc_.panic();
             done (juce::var (true));
+        })
+        .withNativeFunction ("getSpectrogram",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+           #if KROMOSYNTH_HAS_FAUST
+            const auto& bytes = proc_.faustSpectrogram();
+
+            if (bytes.empty()) { done (juce::var()); return; }
+
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("bins", FaustEngine::kSpectrogramBins);
+            o->setProperty ("frames", FaustEngine::kSpectrogramFrames);
+
+            // BASE64, not an array of numbers. 96x64 is 6144 values, which as
+            // JSON is around 25 kB of text to serialise, ship and parse every
+            // time an instrument loads; base64 of the same bytes is 8 kB and
+            // decodes in one atob call. The bridge is an event pair carrying
+            // JSON, so what goes over it is worth being careful about.
+            o->setProperty ("data", juce::Base64::toBase64 (bytes.data(), bytes.size()));
+
+            done (juce::var (o));
+           #else
+            done (juce::var());
+           #endif
         })
         .withNativeFunction ("listInstruments",
                              [this] (const juce::Array<juce::var>&,
@@ -361,6 +400,30 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
         {
             showSite (true);
+            done (juce::var (true));
+        })
+        .withNativeFunction ("openSitePath",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // Unlike openSite, this NAVIGATES -- showSite loads lazily and only
+            // once, deliberately, so that reopening the site does not throw
+            // away wherever the user had got to. Asking for a specific place is
+            // the one case where replacing that is the request.
+            const auto path = args.size() > 0 ? args[0].toString() : juce::String();
+
+            if (path.isEmpty() || ! path.startsWith ("/"))
+            {
+                // Only site-relative paths. Handing this an absolute URL would
+                // make a native function that navigates the embedded browser
+                // anywhere the page asks, which is a bigger capability than the
+                // shell needs.
+                done (juce::var (false));
+                return;
+            }
+
+            showSite (true);
+            navigateSiteTo (path);
             done (juce::var (true));
         })
         .withNativeFunction ("getAcquisitions",
@@ -669,6 +732,23 @@ void KromosynthAudioProcessorEditor::SiteBar::paint (juce::Graphics& g)
 void KromosynthAudioProcessorEditor::SiteBar::resized()
 {
     back.setBounds (getLocalBounds().removeFromLeft (110).reduced (4));
+}
+
+void KromosynthAudioProcessorEditor::navigateSiteTo (const juce::String& path)
+{
+    if (site_ == nullptr) return;
+
+    // Same ?client marker showSite appends, so the app still knows where it is
+    // -- a deep link that lost it would render the browser presentation inside
+    // the plugin.
+    const juce::String url = juce::String (KROMOSYNTH_WEB_APP_URL)
+                           + path
+                           + (path.contains ("?") ? "&" : "?")
+                           + "client=synthis-plugin";
+
+    proc_.logEvent ("navigating to " + url);
+    site_->goToURL (url);
+    siteLoaded_ = true;
 }
 
 void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)

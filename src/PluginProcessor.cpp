@@ -50,6 +50,49 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
     logFile_.getParentDirectory().createDirectory();
     logEvent ("processor_constructed host=" + hostName
               + " wrapper=" + juce::AudioProcessor::getWrapperTypeDescription (wrapperType));
+
+    // A freshly acquired instrument becomes the ACTIVE one.
+    //
+    // The point of pressing "Add to plugin" from the site is to play the thing.
+    // Without this the user has to leave the site, find it in the library and
+    // click it -- and finding it was the problem they had in the first place.
+    // With it, a MIDI keyboard plays the new instrument while they carry on
+    // browsing.
+    //
+    // It DOES replace whatever was loaded, and that is the intended reading of
+    // the request rather than an oversight: the plugin holds one instrument,
+    // and the user just asked for this one. Only on success, so a failed
+    // download never silences a working instrument.
+    //
+    // The weak_ptr is the guard that matters: the callback is dispatched from a
+    // pool thread through the message queue, so the processor can be gone by
+    // the time it runs.
+    acquisitions_.setCompletionHandler (
+        [this, weak = std::weak_ptr<int> (lifetime_)] (juce::String artifactId, bool ok)
+    {
+        if (weak.expired() || ! ok || artifactId.isEmpty()) return;
+
+        logEvent ("acquisition_autoload id=" + artifactId);
+
+        {
+            const juce::ScopedLock sl (pendingLock_);
+            pendingInstrumentId_ = artifactId;
+        }
+
+        // loadPendingInstrument needs an engine to load into. When the host has
+        // not activated the plugin yet the id simply waits, and prepareToPlay
+        // picks it up -- the same route setStateInformation uses.
+        bool ready = false;
+       #if KROMOSYNTH_HAS_FAUST
+        ready = ready || faust_ != nullptr;
+       #endif
+       #if KROMOSYNTH_HAS_SAMPLER
+        ready = ready || engine_ != nullptr;
+       #endif
+
+        if (ready)
+            loadPendingInstrument();
+    });
 }
 
 void KromosynthAudioProcessor::logEvent (const juce::String& event)
@@ -291,6 +334,11 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
 
         faustWasm_ = resolved.primary;
         faustJson_ = resolved.metadata;
+
+        // What the artefact declares about itself. Read here rather than in
+        // applyFaustTrim, which also runs on a sample-rate change and must not
+        // touch the disk on that path.
+        faustDeclared_ = InstrumentLibrary::readSidecar (resolved.primary.getParentDirectory());
 
         // ONE voice to start. Measuring needs an instance, and the polyphony
         // that measurement implies is not known until it has run.
@@ -536,6 +584,63 @@ void KromosynthAudioProcessor::applyFaustTrim()
     // The caller holds the suspend window.
     if (faust_ == nullptr || ! faust_->isLoaded()) return;
 
+    // ── Can the declared numbers be used instead of measuring? ─────────────
+    //
+    // ARTEFACT_CONTRACT §3.2 says the plugin should trust the declared trim and
+    // re-measure only rtf. That is not implementable as written, and the reason
+    // is in FaustEngine::measure: "RTF comes free: it is the wall clock of the
+    // render the peak needed." The two numbers are one piece of work. Skipping
+    // the peak render to keep the rtf render is not a thing that exists.
+    //
+    // So the choice is whole or nothing:
+    //
+    //   runtime matches  -> take trim, cap and rtf from the artefact, render
+    //                       nothing. The saving is the entire measurement.
+    //
+    //   runtime differs  -> measure. The rtf is needed, the peak arrives with
+    //                       it, and a peak measured HERE at the host's rate and
+    //                       block is strictly better than one measured on a
+    //                       server at 48k/512 -- the two differed by 0.66 dB on
+    //                       the same module. Preferring the stored value in
+    //                       this branch would mean discarding a fresher, more
+    //                       accurate number for a staler one.
+    //
+    // Today rtfPlatform is 'v8-faustwasm' and this is wasmtime, so the second
+    // branch is the live one and the declared trim is used as a CROSS-CHECK
+    // instead. That is not a consolation prize: it compares a number produced
+    // by render-socket against one produced here, after the artefact has been
+    // through a socket, a zip, an install and a different wasm runtime. A
+    // divergence means something in that chain changed the DSP.
+    const bool runtimeMatches = faustDeclared_.hasMeasured
+                             && faustDeclared_.rtfPlatform.isNotEmpty()
+                             && faustDeclared_.rtfPlatform == FaustEngine::runtimeId();
+
+    if (runtimeMatches)
+    {
+        const float trim = juce::jlimit (0.001f, 100.0f, faustDeclared_.trim);
+
+        faust_->setOutputGain (trim);
+        faustTrim_ = trim;
+        faustRawPeak_ = faustDeclared_.peak;
+        faustVoices_ = juce::jlimit (1, 32, faustDeclared_.capAt4x);
+        faust_->setVoiceCount (faustVoices_);
+        faustRtf_ = faustDeclared_.rtf;
+
+        // No render happened, so there is nothing to draw. Cleared rather than
+        // left stale: showing the PREVIOUS instrument's spectrogram behind this
+        // one would be worse than showing none.
+        faustSpectrogram_.clear();
+
+        logEvent ("faust_declared rtf=" + juce::String (faustDeclared_.rtf, 1)
+                  + " voices=" + juce::String (faustVoices_)
+                  + " raw_peak=" + juce::String (faustDeclared_.peak, 6)
+                  + " trim=" + juce::String (trim, 4)
+                  + " trim_db=" + juce::String (faustDeclared_.trimDb, 1)
+                  + " platform=\"" + faustDeclared_.rtfPlatform + "\""
+                  + " -- measurement skipped, artefact measured on this runtime");
+        return;
+    }
+
     faust_->setOutputGain (1.0f);
 
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
@@ -561,6 +666,7 @@ void KromosynthAudioProcessor::applyFaustTrim()
     faust_->setOutputGain (trim);
     faustTrim_ = trim;
     faustRawPeak_ = peak;
+    faustSpectrogram_ = measured.spectrogram;
 
     // Polyphony sized to THIS genome rather than to a constant. The archive
     // spans 36x to 2231x single-voice RTF, so a fixed 8 either wastes an
@@ -583,6 +689,32 @@ void KromosynthAudioProcessor::applyFaustTrim()
               + " trim=" + juce::String (trim, 4)
               + " trim_db=" + juce::String (20.0f * std::log10 (juce::jmax (1.0e-9f, trim)), 1)
               + " measure_ms=" + juce::String (ms, 1));
+
+    // ── the cross-check ─────────────────────────────────────────────────
+    //
+    // The peak the server declared against the peak measured here, on the same
+    // module after a socket, a zip and an install. Two independent
+    // implementations over two wasm runtimes, so agreement is evidence the
+    // whole chain preserved the DSP -- and this is the only place that
+    // comparison happens on a user's machine rather than in a test.
+    //
+    // A 2 dB band, not equality. The rate and block differ from the server's
+    // 48k/512 and that alone moved a peak by 0.66 dB, so a tight bound would
+    // report the difference between two correct measurements. 2 dB is wide
+    // enough to ignore that and narrow enough that a wrong module, a truncated
+    // download or a compile divergence does not hide in it.
+    if (faustDeclared_.hasMeasured && faustDeclared_.peak > 1.0e-6f && peak > 1.0e-6f)
+    {
+        const float deltaDb = 20.0f * std::log10 (peak / faustDeclared_.peak);
+
+        if (std::abs (deltaDb) > 2.0f)
+            logEvent ("faust_peak_divergence declared="
+                      + juce::String (faustDeclared_.peak, 6)
+                      + " measured=" + juce::String (peak, 6)
+                      + " delta_db=" + juce::String (deltaDb, 2)
+                      + " declared_at=" + juce::String (faustDeclared_.rtfPlatform)
+                      + " -- the artefact and this engine disagree about the same module");
+    }
 }
 
 #endif

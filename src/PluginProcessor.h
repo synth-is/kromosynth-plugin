@@ -205,13 +205,28 @@ private:
     // shell being asked again.
     std::unique_ptr<FaustEngine> faust_;
     juce::File faustWasm_, faustJson_;
+
+    // What the artefact SAYS about itself, read from synthis.json at load.
+    // Empty for instruments that predate the contract or were placed by hand,
+    // which is why nothing here may be required.
+    InstrumentLibrary::Metadata faustDeclared_;
     double faustRate_ = 0.0;
     int faustBlock_ = 0;
 
+public:
+    /** The loaded genome's spectrogram, or empty. See FaustEngine::Measured. */
+    const std::vector<std::uint8_t>& faustSpectrogram() const noexcept { return faustSpectrogram_; }
+
+private:
     void reloadFaustIfNeeded (double sampleRate, int samplesPerBlock);
     void applyFaustTrim();
 
     float faustTrim_ = 1.0f, faustRawPeak_ = 0.0f;
+
+    // Log-frequency spectrogram of the loaded genome, from the measurement
+    // render. Empty when nothing is loaded, when the artefact's own numbers
+    // were trusted so no render happened, or when the genome was silent.
+    std::vector<std::uint8_t> faustSpectrogram_;
     double faustRtf_ = 0.0;
     int faustVoices_ = 1;
    #endif
