@@ -127,6 +127,15 @@ float mtof (int note) noexcept
     return 440.0f * std::pow (2.0f, (float) (note - 69) / 12.0f);
 }
 
+/** One step of a linear gain ramp. */
+inline float rampToward (float current, float target, float step) noexcept
+{
+    if (current == target) return target;
+    const float delta = target - current;
+    return std::abs (delta) <= step ? target
+                                    : current + (delta > 0.0f ? step : -step);
+}
+
 /** Short-time Fourier magnitudes of a capture, on a log frequency scale.
 
     Returns kSpectrogramFrames rows of kSpectrogramBins bytes, or empty when
@@ -276,11 +285,36 @@ struct FaustVoice
     // null tests, which is how it was found.
     bool noteDriven = false;
 
+    // Per-note level correction, 1.0 until a noteOn sets it. Parameter-driven
+    // voices keep 1.0, which is what stops measure() from measuring its own
+    // compensation.
+    //
+    // TWO values, because this cannot be stepped. noteOff sets note = -1 while
+    // the voice is still RINGING, so noteOn picks that voice as free and would
+    // change its correction underneath sound that is still playing. On a genome
+    // with a 29 dB pitch spread that is a 29 dB instantaneous step, and it
+    // clicks -- inconsistently, because it depends on which voice was picked
+    // and whether it was still audible.
+    float compGain = 1.0f, compTarget = 1.0f;
+
     // Held by the sustain pedal after its key came up. The note number is
     // cleared so the same key can retrigger, but the voice keeps sounding
     // until the pedal lifts.
     bool sustained = false;
 };
+
+/** Zeroes a voice's DSP struct. The one thing a genome cannot decline. */
+inline void initVoice (FaustVoice& v, double sampleRate) noexcept
+{
+    wasmtime_val_raw_t args[2];
+    args[0].i32 = (std::int32_t) v.dspPtr;
+    args[1].i32 = (std::int32_t) sampleRate;
+
+    wasm_trap_t* trap = nullptr;
+    if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
+        wasmtime_error_delete (err);
+    if (trap != nullptr) wasm_trap_delete (trap);
+}
 
 struct FaustEngineImpl
 {
@@ -312,6 +346,26 @@ struct FaustEngineImpl
 
     bool sustainDown = false;
     float outputGain = 1.0f;
+
+    // The soft ceiling. DEFAULT OFF, and that is not a detail: measure() renders
+    // through process() and would report a squashed peak instead of the
+    // genome's real one, and faust-probe's null test compares raw samples
+    // against the platform reference, which a ceiling would alter above roughly
+    // 0.2. Only playback turns it on.
+    bool ceiling = false;
+
+    // Measured peaks at c3, a4, a5. All zero means compensation is off.
+    float peakC3 = 0.0f, peakA4 = 0.0f, peakA5 = 0.0f;
+
+    // The sweep table and the level every note is corrected towards. Empty
+    // table means no compensation.
+    std::vector<float> pitchPeaks;
+    float referencePeak = 0.0f;
+
+    // Gain units per sample for the correction ramp: a full 0 to 1 traversal in
+    // 5 ms. Long enough that a step is inaudible, short enough that it is over
+    // before any musically meaningful part of the attack.
+    float compRampStep = 1.0f;
 
     // Diagnostics. A stuck note has two possible causes -- the engine mishandled
     // a note-off, or no note-off arrived -- and they need completely different
@@ -502,6 +556,7 @@ FaustEngine::load (const juce::File& wasmFile,
     // declare -- has already lost ~11 dB and is safely under the threshold.
     impl_->graceFrames = (int) (1.5 * sampleRate);
     impl_->fadeFrames  = (int) (0.2 * sampleRate);
+    impl_->compRampStep = 1.0f / juce::jmax (1.0f, (float) (0.005 * sampleRate));
 
     if (impl_->engine == nullptr) impl_->engine = wasm_engine_new();
     if (impl_->engine == nullptr) { r.detail = "wasm_engine_new failed"; return r; }
@@ -679,7 +734,14 @@ FaustEngine::Measured FaustEngine::measure()
     const float saved = impl_->outputGain;
     impl_->outputGain = 1.0f;
 
+    // And with the ceiling off, for the same reason one step further: a genome
+    // peaking at 11.39 would be reported as peaking at 1.0, and every level
+    // decision downstream would be made from a number the ceiling invented.
+    const bool savedCeiling = impl_->ceiling;
+    impl_->ceiling = false;
+
     float peak = 0.0f;
+    float perPitch[3] = { 0.0f, 0.0f, 0.0f };
     const auto t0 = juce::Time::getHighResolutionTicks();
 
     // Samples from the a4 probe, kept for the spectrogram. a4 rather than all
@@ -694,6 +756,7 @@ FaustEngine::Measured FaustEngine::measure()
     {
         const int p = pitches[pi];
         const bool capturing = (p == 69);
+        float here = 0.0f;
 
         panic();
         // Parameter-driven, so forced release never engages: this must measure
@@ -705,7 +768,7 @@ FaustEngine::Measured FaustEngine::measure()
         for (int b = 0; b < holdBlocks; ++b)
         {
             process (scratch, noMidi);
-            peak = juce::jmax (peak, scratch.getMagnitude (0, impl_->maxBlockSize));
+            here = juce::jmax (here, scratch.getMagnitude (0, impl_->maxBlockSize));
             if (capturing)
                 capture.insert (capture.end(), scratch.getReadPointer (0),
                                 scratch.getReadPointer (0) + impl_->maxBlockSize);
@@ -719,11 +782,18 @@ FaustEngine::Measured FaustEngine::measure()
         for (int b = 0; b < afterBlocks; ++b)
         {
             process (scratch, noMidi);
-            peak = juce::jmax (peak, scratch.getMagnitude (0, impl_->maxBlockSize));
+            here = juce::jmax (here, scratch.getMagnitude (0, impl_->maxBlockSize));
             if (capturing)
                 capture.insert (capture.end(), scratch.getReadPointer (0),
                                 scratch.getReadPointer (0) + impl_->maxBlockSize);
         }
+
+        // Kept PER PITCH, not just folded into the maximum. The maximum is what
+        // a single output gain would be set from, and on a genome measured at
+        // c3 11.39 / a4 0.40 that gain makes the instrument inaudible wherever
+        // it was auditioned. These three are what setPitchCompensation needs.
+        perPitch[pi] = here;
+        peak = juce::jmax (peak, here);
     }
 
     const double elapsed = juce::Time::highResolutionTicksToSeconds (
@@ -731,9 +801,13 @@ FaustEngine::Measured FaustEngine::measure()
 
     panic();
     impl_->outputGain = saved;
+    impl_->ceiling = savedCeiling;
     peak_.store (0.0f, std::memory_order_relaxed);
 
     m.peak = peak;
+    m.peakC3 = perPitch[0];
+    m.peakA4 = perPitch[1];
+    m.peakA5 = perPitch[2];
 
     // Free-running, and labelled so. d3321de measured that holding a real block
     // cadence costs 2.3-2.9x more than rendering flat out, so this ranks
@@ -751,6 +825,64 @@ FaustEngine::Measured FaustEngine::measure()
     // Computed AFTER the timing is taken, so the FFT never lands inside the
     // measured interval and inflates the genome's apparent cost.
     m.spectrogram = buildSpectrogram (capture, impl_->sampleRate);
+
+    // ── the pitch sweep ─────────────────────────────────────────────────────
+    //
+    // A SHORTER window than the three reference pitches: 1 s holding the gate
+    // and 0.5 s after, rather than 2 s and 3 s. This table is used for the
+    // SHAPE of level against pitch, not for the absolute level, and the shape
+    // is established early. Twelve pitches at the full window would be 60 s of
+    // audio per load, which on the slowest genome measured is three seconds of
+    // staring at nothing.
+    //
+    // Scaled so the entry at a4 equals the full-window a4 peak, so the table is
+    // consistent with the reference the notes are corrected towards even though
+    // it was measured over a different window.
+    {
+        const int sweepHold = (int) (1.0 * impl_->sampleRate) / impl_->maxBlockSize;
+        const int sweepAfter = (int) (0.5 * impl_->sampleRate) / impl_->maxBlockSize;
+
+        m.pitchPeaks.resize ((size_t) kSweepCount, 0.0f);
+
+        for (int s = 0; s < kSweepCount; ++s)
+        {
+            const int note = kSweepFirstNote + s * kSweepStep;
+
+            panic();
+            if (idxFreq >= 0) setParameter (idxFreq, mtof (note));
+            if (idxGain >= 0) setParameter (idxGain, 1.0f);
+            if (idxGate >= 0) setParameter (idxGate, 1.0f);
+
+            float here = 0.0f;
+            for (int b = 0; b < sweepHold; ++b)
+            {
+                process (scratch, noMidi);
+                here = juce::jmax (here, scratch.getMagnitude (0, impl_->maxBlockSize));
+            }
+
+            if (idxGate >= 0) setParameter (idxGate, 0.0f);
+
+            for (int b = 0; b < sweepAfter; ++b)
+            {
+                process (scratch, noMidi);
+                here = juce::jmax (here, scratch.getMagnitude (0, impl_->maxBlockSize));
+            }
+
+            m.pitchPeaks[(size_t) s] = here;
+        }
+
+        // a4 is entry 7: 48 + 7*3 = 69.
+        const float sweepA4 = m.pitchPeaks[7];
+
+        if (sweepA4 > 1.0e-6f && m.peakA4 > 1.0e-6f)
+        {
+            const float scale = m.peakA4 / sweepA4;
+            for (auto& v : m.pitchPeaks) v *= scale;
+        }
+
+        panic();
+        peak_.store (0.0f, std::memory_order_relaxed);
+    }
 
     return m;
 }
@@ -774,6 +906,8 @@ void FaustEngine::panic() noexcept
         v.idle = true;
         v.quietBlocks = 0;
         v.sustained = false;
+        v.compGain = 1.0f;
+        v.compTarget = 1.0f;
 
         // init() rather than gate=0. A genome that ignores its gate ignores it
         // during a panic too, and 16 of 33 measured elites do exactly that.
@@ -815,12 +949,78 @@ void FaustEngine::setParameter (int byteOffset, float value) noexcept
     }
 }
 
+void FaustEngine::setOutputCeiling (bool shouldLimit) noexcept
+{
+    if (impl_ != nullptr) impl_->ceiling = shouldLimit;
+}
+
+void FaustEngine::setPitchCompensation (const std::vector<float>& pitchPeaks, float referencePeak)
+{
+    if (impl_ == nullptr) return;
+
+    impl_->pitchPeaks = pitchPeaks;
+    impl_->referencePeak = referencePeak;
+}
+
+namespace
+{
+/** Estimated peak at a MIDI note, read from the measured sweep.
+
+    Interpolated in dB between adjacent entries, because level tracks pitch
+    multiplicatively. Clamped at both ends rather than extrapolated: the table
+    says nothing about pitches outside the range it was measured over, and an
+    extrapolation is most confident exactly where it has no evidence.
+*/
+float estimatePeakAt (int note, const std::vector<float>& table) noexcept
+{
+    if (table.empty()) return 0.0f;
+
+    const float pos = (float) (note - FaustEngine::kSweepFirstNote)
+                    / (float) FaustEngine::kSweepStep;
+
+    if (pos <= 0.0f) return table.front();
+    if (pos >= (float) (table.size() - 1)) return table.back();
+
+    const int i = (int) pos;
+    const float frac = pos - (float) i;
+
+    const float a = std::log10 (juce::jmax (1.0e-6f, table[(size_t) i]));
+    const float b = std::log10 (juce::jmax (1.0e-6f, table[(size_t) i + 1]));
+
+    return std::pow (10.0f, a + (b - a) * frac);
+}
+} // namespace
+
 void FaustEngine::noteOn (int note, int velocity) noexcept
 {
     FaustVoice* chosen = nullptr;
 
+    // SILENT VOICES FIRST, and this order is the whole fix for retrigger
+    // crackle.
+    //
+    // This used to take the first voice with note < 0. noteOff sets note = -1
+    // immediately while the voice is STILL RINGING -- a drone never decays at
+    // all, and anything else has 1.5 s of grace before the forced release --
+    // so after one note, voice 0 was "free" and still sounding, and every
+    // subsequent note retriggered on top of it while voices 1..N sat idle and
+    // already zeroed. Playing repeatedly hammered one voice.
+    //
+    // An idle voice has been through initVoice(), so its DSP struct is zeroed
+    // and a note starting on it is indistinguishable from the first note after
+    // a load -- which is what the browser preview does every time, and why it
+    // has no crackle to begin with.
     for (auto& v : impl_->voices)
-        if (v.note < 0) { chosen = &v; break; }
+        if (v.idle) { chosen = &v; break; }
+
+    // Then a released voice that has not yet fallen silent. Oldest first, so
+    // the one that has had longest to decay is taken rather than whichever
+    // happens to sit earliest in the array.
+    if (chosen == nullptr)
+    {
+        std::uint64_t oldest = ~0ull;
+        for (auto& v : impl_->voices)
+            if (v.note < 0 && v.startedAt < oldest) { oldest = v.startedAt; chosen = &v; }
+    }
 
     // Steal the oldest. Crude, and deliberately so until there is a reason to
     // be cleverer -- a released voice still ringing is indistinguishable here
@@ -834,6 +1034,12 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
 
     if (chosen == nullptr) return;
 
+    // Captured BEFORE idle is cleared. A silent voice can take its correction
+    // immediately -- there is nothing to step -- and that leaves the genome's
+    // own attack exactly as it renders. Only a voice that is still sounding
+    // needs the ramp.
+    const bool wasSilent = chosen->idle;
+
     chosen->note = note;
     chosen->gateOpen = true;
     chosen->startedAt = ++impl_->counter;
@@ -845,6 +1051,34 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
     chosen->quietBlocks = 0;
     chosen->noteDriven = true;
     chosen->sustained = false;
+
+    // Level this note to the reference pitch. Off when nothing was measured, so
+    // the null test and any un-measured load behave exactly as before.
+    if (! impl_->pitchPeaks.empty() && impl_->referencePeak > 0.0f)
+    {
+        const float here = estimatePeakAt (note, impl_->pitchPeaks);
+
+        // ASYMMETRIC bounds, and the asymmetry is the point. Boosting is what
+        // amplifies whatever the DSP is doing at a pitch where it barely
+        // sounds, so that direction is capped at +18 dB. Attenuating cannot
+        // create anything, so it is allowed down to -60 dB.
+        //
+        // A symmetric +-18 dB clamp was the first version and it defeated the
+        // fix on the genome that motivated it: 01M1JD666ZTWGTCT4W2GDTVQMF needs
+        // -29.1 dB at c3 and would have been held at -18.1, delivering a peak
+        // of 1.42 -- still clipping, on the note the correction exists for.
+        chosen->compTarget = here > 1.0e-6f
+            ? juce::jlimit (0.001f, 8.0f, impl_->referencePeak / here)
+            : 1.0f;
+    }
+    else
+    {
+        chosen->compTarget = 1.0f;
+    }
+
+    if (wasSilent)
+        chosen->compGain = chosen->compTarget;
+
     impl_->notesOn.fetch_add (1, std::memory_order_relaxed);
 
     if (impl_->idxFreq >= 0) setParam (*chosen, impl_->idxFreq, mtof (note));
@@ -1036,7 +1270,8 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
 
                 for (int i = 0; i < chunk; ++i)
                 {
-                    impl_->mix[(size_t) i] += src[i] * v.forceGain;
+                    v.compGain = rampToward (v.compGain, v.compTarget, impl_->compRampStep);
+                    impl_->mix[(size_t) i] += src[i] * v.forceGain * v.compGain;
                     v.forceGain = juce::jmax (0.0f, v.forceGain - step);
                 }
 
@@ -1050,19 +1285,16 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
                     v.peakRecent = 0.0f;
                     v.idle = true;
 
-                    wasmtime_val_raw_t ia[2];
-                    ia[0].i32 = (std::int32_t) v.dspPtr;
-                    ia[1].i32 = (std::int32_t) impl_->sampleRate;
-                    wasm_trap_t* itrap = nullptr;
-                    if (auto* ierr = wasmtime_func_call_unchecked (v.ctx, &v.fInit, ia, 2, &itrap))
-                        wasmtime_error_delete (ierr);
-                    if (itrap != nullptr) wasm_trap_delete (itrap);
+                    initVoice (v, impl_->sampleRate);
                 }
             }
             else
             {
                 for (int i = 0; i < chunk; ++i)
-                    impl_->mix[(size_t) i] += src[i];
+                {
+                    v.compGain = rampToward (v.compGain, v.compTarget, impl_->compRampStep);
+                    impl_->mix[(size_t) i] += src[i] * v.compGain;
+                }
             }
 
             // A released voice that has actually fallen silent stops being
@@ -1075,6 +1307,24 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
                 {
                     v.idle = true;
                     v.releasing = false;
+
+                    // ZEROED on the way out, not left as it was.
+                    //
+                    // Only the forced-stop path used to re-initialise, so a
+                    // voice that simply went quiet kept the note's filter and
+                    // delay state -- and the next note on that voice started on
+                    // top of it. Measured with --clicks on
+                    // 01M1JD666ZTWGTCT4W2GDTVQMF: playing the SAME note again
+                    // produced a sample-to-sample jump of 1.66, against 0.04
+                    // for the first note from a fresh engine. That is the
+                    // crackle, and it is why the browser preview never has one
+                    // -- it renders a single note into a fresh processor.
+                    //
+                    // Safe here specifically BECAUSE the voice is now idle. A
+                    // genome that self-oscillates from a zeroed struct cannot
+                    // start again while nothing calls compute() on it, which is
+                    // the guarantee the idle flag already provides.
+                    initVoice (v, impl_->sampleRate);
                 }
             }
             else
@@ -1085,8 +1335,30 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
 
         // outputs == 1 for this substrate, so the mono result is copied across
         // the pair. See the header: this is the opposite of SamplerEngine.
+        //
+        // SOFT CEILING before it goes out. Two things can put the sum past full
+        // scale even with per-note correction: voices ADD, and a resonance
+        // narrower than the sweep's three-semitone spacing can sit between two
+        // table entries and be under-attenuated.
+        //
+        // tanh rather than a hard clip. Both bound the signal; hard clipping
+        // introduces a discontinuity and the odd harmonics that go with it,
+        // which is the harsh sound this replaces. tanh is smooth, and below
+        // about half scale it is within a fraction of a dB of unity -- so a
+        // single note at the preview's level passes through essentially
+        // untouched and only a genuine overload is shaped.
+        //
+        // This is the dynamic equivalent of what the preview does statically:
+        // renderFaustGenome attenuates a render whose peak exceeds 1.0 rather
+        // than letting it clip.
+        for (int i = 0; i < chunk; ++i)
+        {
+            const float x = impl_->mix[(size_t) i] * impl_->outputGain;
+            impl_->mix[(size_t) i] = impl_->ceiling ? std::tanh (x) : x;
+        }
+
         for (int ch = 0; ch < numChannels; ++ch)
-            buffer.copyFrom (ch, pos, impl_->mix.data(), chunk, impl_->outputGain);
+            buffer.copyFrom (ch, pos, impl_->mix.data(), chunk, 1.0f);
 
         pos = chunkEnd;
     }

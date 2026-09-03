@@ -26,5 +26,9 @@ target_compile_definitions(faust_probe PRIVATE
 target_link_libraries(faust_probe PRIVATE
     wasmtime::wasmtime
     juce::juce_audio_basics
+    # FaustEngine::measure builds a spectrogram with juce::dsp::FFT. The probe
+    # got away without this while nothing here called measure() -- LTO simply
+    # stripped the unreferenced code -- and the click test calls it.
+    juce::juce_dsp
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags)

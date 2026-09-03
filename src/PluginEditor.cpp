@@ -196,6 +196,13 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             proc_.panic();
             done (juce::var (true));
         })
+        .withNativeFunction ("removeInstrument",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            const auto id = args.size() > 0 ? args[0].toString() : juce::String();
+            done (juce::var (proc_.removeInstrument (id)));
+        })
         .withNativeFunction ("getSpectrogram",
                              [this] (const juce::Array<juce::var>&,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)

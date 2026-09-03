@@ -21,16 +21,25 @@ static constexpr int kFaustVoices = 8;
 // kromosynth-composing so a genome trimmed there and here lands in the same
 // place.
 //
-// Measured over 120 archive genomes, raw peaks span 0.0236 to 2.3975 -- a 40 dB
-// range that nothing normalises. The loudest clips by 7.6 dB on ONE voice at
-// full velocity, before polyphony. Without a trim, choosing an instrument is a
-// coin flip between inaudible and painful, and the user cannot tell which is
-// coming.
+// NO LONGER THE TARGET FOR PLAYBACK. It is kept because faust-probe, the
+// artefact and this file all report `trim` against it, and one vocabulary
+// across the three is worth more than the constant itself.
 //
-// MEASURED AT LOAD, not carried with the artefact, because the artefact carries
-// nothing yet. ARTEFACT_NUMBERS_2026-09-01 argues it should; when it does, the
-// stored value is preferred and this measurement is skipped.
+// THE PLUGIN NOW MATCHES THE PREVIEW instead of normalising to a fixed peak.
+// The site auditions a sound by rendering it at one pitch and attenuating ONLY
+// if it exceeds full scale -- never boosting, deliberately, so a quiet elite
+// sounds quiet. Normalising to 0.25 here made the plugin disagree with the
+// audition by however far the genome sat from that target, and on a genome with
+// a wide pitch spread by 31 dB at the very note the user had listened to.
 static constexpr float kFaustTargetPeak = 0.25f;
+
+// Delivered level for one note at full velocity, matching renderFaustGenome's
+// clip protection exactly: attenuate above full scale, never boost.
+//
+// Headroom for polyphony is deliberately NOT taken here. It would be a silent
+// per-instrument level change that puts the plugin back out of step with the
+// site, and the honest place for it is one control the user can see.
+static constexpr float kFaustCeiling = 1.0f;
 #endif
 
 KromosynthAudioProcessor::KromosynthAudioProcessor()
@@ -275,6 +284,41 @@ void KromosynthAudioProcessor::loadPendingInstrument()
     // instrument did not come back" needs an answer.
     if (! outcome.ok)
         logEvent ("state_load_failed instrument=\"" + id + "\" detail=\"" + outcome.detail + "\"");
+}
+
+bool KromosynthAudioProcessor::removeInstrument (const juce::String& id)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    // Stop it BEFORE the files move. The engine holds the module bytes in
+    // memory, so a removed instrument would keep playing perfectly well and the
+    // user would have deleted something that is still making sound -- and the
+    // next reload would then fail on a file that is no longer there.
+    if (current_.ok && current_.id == id)
+    {
+        suspendProcessing (true);
+
+       #if KROMOSYNTH_HAS_FAUST
+        if (faust_ != nullptr) faust_->panic();
+        faustWasm_ = juce::File{};
+        faustJson_ = juce::File{};
+        faustDeclared_ = InstrumentLibrary::Metadata{};
+        faustSpectrogram_.clear();
+       #endif
+
+        active_ = Active::none;
+        current_ = LoadOutcome{};
+
+        suspendProcessing (false);
+        updateHostDisplay();
+    }
+
+    const bool ok = library_.remove (id);
+
+    logEvent ("instrument_removed id=" + id + " ok=" + juce::String (ok ? 1 : 0)
+              + " (moved to Trash)");
+
+    return ok;
 }
 
 void KromosynthAudioProcessor::panic()
@@ -611,14 +655,28 @@ void KromosynthAudioProcessor::applyFaustTrim()
     // by render-socket against one produced here, after the artefact has been
     // through a socket, a zip, an install and a different wasm runtime. A
     // divergence means something in that chain changed the DSP.
+    // ALSO requires a sweep table. Without one the artefact cannot level the
+    // keyboard, and taking its rtf while re-measuring for the table would be
+    // two sources of truth for one load. Nothing emits a table yet, so this
+    // branch does not fire today -- which is the safe direction.
     const bool runtimeMatches = faustDeclared_.hasMeasured
                              && faustDeclared_.rtfPlatform.isNotEmpty()
-                             && faustDeclared_.rtfPlatform == FaustEngine::runtimeId();
+                             && faustDeclared_.rtfPlatform == FaustEngine::runtimeId()
+                             && ! faustDeclared_.pitchPeaks.empty();
 
     if (runtimeMatches)
     {
-        const float trim = juce::jlimit (0.001f, 100.0f, faustDeclared_.trim);
+        // Same staging as the measured branch below, from the artefact's own
+        // numbers: the reference pitch sets the level, the other two set the
+        // per-note correction.
+        const float ref = faustDeclared_.peakA4 > 0.0f ? faustDeclared_.peakA4
+                                                       : faustDeclared_.peak;
+        const float trim = ref > 1.0e-6f
+            ? juce::jlimit (0.001f, 100.0f, juce::jmin (1.0f, kFaustCeiling / ref))
+            : 1.0f;
 
+        faust_->setPitchCompensation (faustDeclared_.pitchPeaks, ref);
+        faust_->setOutputCeiling (true);
         faust_->setOutputGain (trim);
         faustTrim_ = trim;
         faustRawPeak_ = faustDeclared_.peak;
@@ -649,8 +707,32 @@ void KromosynthAudioProcessor::applyFaustTrim()
 
     const float peak = measured.peak;
 
+    // ── level, matched to the preview ───────────────────────────────────────
+    //
+    // The REFERENCE PITCH sets the level, and the other two pitches only set
+    // the per-note correction. a4 is the reference because a preview renders at
+    // the sound's stored noteDelta, which is 0 for the sounds checked, and 0 is
+    // a4 by the same convention freqForNoteDelta uses on the render server.
+    //
+    // Attenuate-only, exactly as renderFaustGenome does: a genome quieter than
+    // full scale is left alone, so a quiet elite is quiet here too. Boosting it
+    // to a target is what made the plugin disagree with the audition.
+    const float reference = measured.peakA4 > 0.0f ? measured.peakA4 : peak;
+
     // A genome that measured silent gets no trim rather than an infinite one.
-    float trim = peak > 1.0e-6f ? kFaustTargetPeak / peak : 1.0f;
+    float trim = reference > 1.0e-6f ? juce::jmin (1.0f, kFaustCeiling / reference) : 1.0f;
+
+    // Worst case the sweep actually saw, after correction. Reported rather than
+    // corrected for: it is the honest answer to "can this instrument clip", and
+    // the ceiling in the engine is what stops it doing so audibly.
+    float worstCorrected = 0.0f;
+    for (size_t i = 0; i < measured.pitchPeaks.size(); ++i)
+    {
+        const float p = measured.pitchPeaks[i];
+        if (p <= 1.0e-6f) continue;
+        const float comp = juce::jlimit (0.001f, 8.0f, reference / p);
+        worstCorrected = juce::jmax (worstCorrected, p * comp);
+    }
 
     // A measurement can be wrong, and a wrong one used verbatim is worse than
     // none: a raw peak of 23182060 yields -159 dB and silences the instrument
@@ -662,6 +744,15 @@ void KromosynthAudioProcessor::applyFaustTrim()
         trim = kFaustTargetPeak / 8.0f;
 
     trim = juce::jlimit (0.001f, 100.0f, trim);
+
+    // Every note levelled to the reference pitch, so the whole keyboard plays
+    // at the level the audition established rather than only one key of it.
+    faust_->setPitchCompensation (measured.pitchPeaks, reference);
+
+    // Enabled only now, and only for playback. measure() has just finished, and
+    // running it with the ceiling on would have reported a peak the ceiling
+    // invented rather than the genome's.
+    faust_->setOutputCeiling (true);
 
     faust_->setOutputGain (trim);
     faustTrim_ = trim;
@@ -685,7 +776,15 @@ void KromosynthAudioProcessor::applyFaustTrim()
     logEvent ("faust_measure rtf=" + juce::String (measured.rtf, 1)
               + " voices=" + juce::String (faustVoices_)
               + " raw_peak=" + juce::String (peak, 6)
-              + " target=" + juce::String (kFaustTargetPeak, 3)
+              + " c3=" + juce::String (measured.peakC3, 4)
+              + " a4=" + juce::String (measured.peakA4, 4)
+              + " a5=" + juce::String (measured.peakA5, 4)
+              + " spread_db=" + juce::String (20.0f * std::log10 (
+                    juce::jmax (1.0e-9f, peak)
+                    / juce::jmax (1.0e-9f, juce::jmin (measured.peakC3,
+                                  juce::jmin (measured.peakA4, measured.peakA5)))), 1)
+              + " reference=" + juce::String (reference, 6)
+              + " sweep_worst=" + juce::String (worstCorrected, 4)
               + " trim=" + juce::String (trim, 4)
               + " trim_db=" + juce::String (20.0f * std::log10 (juce::jmax (1.0e-9f, trim)), 1)
               + " measure_ms=" + juce::String (ms, 1));

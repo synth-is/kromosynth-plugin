@@ -202,6 +202,39 @@ public:
         double rtf = 0.0;        ///< single-voice real-time factor, free-running
         int    capAt4x = 1;      ///< voices sustainable at the §3.3 headroom bar
 
+        /** Per-pitch peaks at c3, a4 and a5, which the overall peak hides.
+
+            Carried because ONE number cannot level this substrate. Measured
+            2026-09-03 on 01M1JD666ZTWGTCT4W2GDTVQMF: c3 11.3854, a4 0.3992,
+            a5 2.4816 — a 29.1 dB spread across the keyboard. A single output
+            gain set from the loudest pitch makes that genome inaudible at a4;
+            set from the quietest it clips by 29 dB at c3.
+
+            ARTEFACT_NUMBERS put the spread at a median of 3.8 dB and a maximum
+            of 24.2 dB over 120 archive genomes. This one is past that maximum,
+            so the figure describes the older archive rather than the substrate.
+        */
+        float peakC3 = 0.0f, peakA4 = 0.0f, peakA5 = 0.0f;
+
+        /** Measured peak at every kSweepStep semitones from kSweepFirstNote.
+
+            A TABLE, not three points and a curve. Measured 2026-09-03 on
+            01M1JD666ZTWGTCT4W2GDTVQMF, peak against pitch is not smooth:
+
+              midi 48  11.39      midi 66   0.396
+              midi 54   0.378     midi 69   0.399
+              midi 60   0.351     midi 72   3.466   <- resonance
+              midi 63   0.340     midi 81   2.482
+
+            Interpolating the three reference pitches in log frequency puts midi
+            72 at 0.63 against an actual 3.47, so the correction
+            under-attenuates and the note is delivered at 2.2 and clips. At midi
+            54 the same curve reads 21.3 dB HIGH and attenuates the note into
+            near-silence. A model fitted to three points is right at three
+            points.
+        */
+        std::vector<float> pitchPeaks;
+
         /** Coarse log-frequency spectrogram of the a4 probe, or empty.
 
             kSpectrogramFrames rows of kSpectrogramBins bytes, row-major, each
@@ -223,6 +256,19 @@ public:
 
     static constexpr int kSpectrogramBins = 128;
     static constexpr int kSpectrogramFrames = 192;
+
+    /** The pitch sweep behind Measured::pitchPeaks.
+
+        Three semitones is a compromise arrived at by measuring rather than
+        guessing: the sweep that found the C5 resonance used this spacing, and
+        halving it would double a load-time cost that is already the slowest
+        part of opening an instrument. A resonance narrower than a minor third
+        can still hide between two entries, which is what the output ceiling in
+        PluginProcessor is for.
+    */
+    static constexpr int kSweepFirstNote = 48;   // c3
+    static constexpr int kSweepStep = 3;
+    static constexpr int kSweepCount = 12;       // 48..81, ending on a5
 
     /** Renders this genome offline at several pitches and reports peak and RTF.
 
@@ -259,6 +305,56 @@ public:
 
     /** Changes polyphony without recompiling the module. */
     bool setVoiceCount (int numVoices);
+
+    /** Per-note gain so every key delivers the level the preview delivered.
+
+        THE PROBLEM. The site previews a sound by rendering it at ONE pitch and
+        attenuating only if it exceeds full scale. The plugin played the same
+        genome at a single output gain chosen from the LOUDEST of three pitches.
+        For a genome with a 29 dB pitch spread those disagree by 31 dB at the
+        very pitch the user auditioned — the preview's own note.
+
+        THE RULE. Every note is scaled so its peak matches the peak at the
+        reference pitch, and the reference pitch is delivered at exactly the
+        level the preview delivers. Playing the audition note reproduces the
+        audition; playing any other note gives the same instrument at the same
+        loudness rather than a different one.
+
+        Peaks come from the MEASURED TABLE, not from a curve fitted to three
+        points: see Measured::pitchPeaks for why that is wrong here. Between
+        entries the estimate is interpolated in dB; outside the table it is
+        clamped rather than extrapolated.
+
+        Applied at the VOICE OUTPUT, not through the `gain` parameter. `gain` is
+        the genome's own widget and an evolved program may route it into a
+        nonlinearity, so scaling there could change the timbre instead of only
+        the level. Scaling the samples cannot.
+
+        An empty table disables it, which is the default: a parameter-driven
+        render — measure() itself — must never be compensated, or the
+        measurement would be of its own correction.
+    */
+    void setPitchCompensation (const std::vector<float>& pitchPeaks, float referencePeak);
+
+    /** Soft-limits the summed output. OFF by default, and that matters.
+
+        Per-note correction cannot guarantee the sum stays inside full scale:
+        voices ADD, and a resonance narrower than the sweep's three-semitone
+        spacing can sit between two table entries and be under-attenuated. On
+        01M1JD666ZTWGTCT4W2GDTVQMF the resonance at midi 72 is 14.8 dB above
+        what a three-point fit predicted, which is audible as harsh clipping.
+
+        tanh, not a hard clip: both bound the signal, but hard clipping adds a
+        discontinuity and the odd harmonics that go with it. Below about half
+        scale tanh is within a fraction of a dB of unity, so a single note at
+        the preview's level passes through essentially untouched.
+
+        OFF by default because measure() renders through the same path and would
+        report a peak the ceiling invented, and because faust-probe's null test
+        compares raw samples against the platform reference. Only playback turns
+        it on.
+    */
+    void setOutputCeiling (bool shouldLimit) noexcept;
 
     /** Applied to the summed output. 1.0 is off, and off is the default: the
         null test compares raw output against the platform reference and must

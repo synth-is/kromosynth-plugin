@@ -128,6 +128,24 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     border: 1px solid #30363d; border-radius: 4px; padding: 1px 7px;
   }
   .row .treebtn:hover { background: #30363d; color: #e6edf3; }
+  .row .rmbtn {
+    flex: 0 0 auto; font: inherit; font-size: 11px; cursor: pointer;
+    background: transparent; color: #6e7681;
+    border: 1px solid transparent; border-radius: 4px; padding: 1px 7px;
+  }
+  .row:hover .rmbtn { border-color: #30363d; }
+  .row .rmbtn:hover { background: #3d1d1d; border-color: #6e2f2f; color: #f85149; }
+  .row .confirm { flex: 0 0 auto; font-size: 11px; color: #f0883e; }
+  .row .confirm button {
+    font: inherit; font-size: 11px; cursor: pointer; margin-left: 6px;
+    border-radius: 4px; padding: 1px 7px;
+  }
+  .row .confirm .yes {
+    background: #6e2f2f; color: #ffdcd7; border: 1px solid #8e3b3b;
+  }
+  .row .confirm .no {
+    background: transparent; color: #7d8590; border: 1px solid #30363d;
+  }
   .row .dot {
     width: 7px; height: 7px; border-radius: 50%;
     background: #30363d; flex: 0 0 auto;
@@ -476,6 +494,54 @@ function render () {
       });
       top.appendChild(tree);
     }
+
+    // Remove. Inline confirmation rather than a modal: the whole page is one
+    // list, and a dialog over it to ask about one row is more interruption than
+    // the action deserves -- especially since it goes to the Trash and is
+    // recoverable, so the confirm is politeness rather than a safety net.
+    const rm = document.createElement('button');
+    rm.className = 'rmbtn';
+    rm.textContent = '\u00d7';
+    rm.title = 'Move this instrument to the Trash';
+    rm.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+
+      const confirm = document.createElement('span');
+      confirm.className = 'confirm';
+      confirm.appendChild(document.createTextNode('Move to Trash?'));
+
+      const yes = document.createElement('button');
+      yes.className = 'yes';
+      yes.textContent = 'remove';
+      yes.addEventListener('click', async function (e2) {
+        e2.stopPropagation();
+        try {
+          const ok = await call('removeInstrument', e.id);
+          setStatus(ok ? 'Moved \u201c' + e.name + '\u201d to the Trash.'
+                       : 'Could not remove that instrument.', ok ? undefined : 'err');
+          // Dropped from the new set too, or a re-added copy would inherit the
+          // badge from the one that was just removed.
+          newIds.delete(e.id);
+          refresh();
+        } catch (err) {
+          setStatus(String(err), 'err');
+        }
+      });
+
+      const no = document.createElement('button');
+      no.className = 'no';
+      no.textContent = 'cancel';
+      no.addEventListener('click', function (e2) {
+        e2.stopPropagation();
+        confirm.replaceWith(rm);
+      });
+
+      confirm.appendChild(yes);
+      confirm.appendChild(no);
+      rm.replaceWith(confirm);
+    });
+
+    top.appendChild(rm);
 
     row.appendChild(top);
 

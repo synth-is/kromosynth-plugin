@@ -83,6 +83,26 @@ public:
         // ── measured ────────────────────────────────────────────────────────
         bool hasMeasured = false;
         float trim = 0.0f, trimDb = 0.0f, peak = 0.0f;
+
+        /** Per-pitch peaks, which the overall peak hides.
+
+            Needed as much as `peak` is: the plugin levels every note to the
+            reference pitch from these three, and a genome measured at c3 11.39
+            / a4 0.40 is unplayable without them.
+        */
+        float peakC3 = 0.0f, peakA4 = 0.0f, peakA5 = 0.0f;
+
+        /** Measured peak every 3 semitones from midi 48, when the artefact
+            carries a sweep.
+
+            Nothing emits this yet. It is read anyway so that the day the
+            contract adds it, an artefact measured on a matching runtime can be
+            used WITHOUT re-measuring -- and until then its absence is what
+            keeps the plugin measuring, which is the safe direction. Three
+            reference peaks are not enough to level this substrate: see
+            FaustEngine::Measured::pitchPeaks.
+        */
+        std::vector<float> pitchPeaks;
         double rtf = 0.0;
         juce::String rtfPlatform, articulation;
         int capAt4x = 0;
@@ -138,6 +158,22 @@ public:
     };
 
     Resolved resolve (const juce::String& id) const;
+
+    /** Moves an instrument to the Trash. Returns false if there was nothing
+        there, or if the id is not one this library would accept.
+
+        TRASH, NOT DELETE, and that is the whole design. A downloaded instrument
+        cost the user an extraction from their monthly quota, and a mis-click in
+        a list is easy; macOS already has the place where reversible deletions
+        go, and putting it there means the plugin never destroys something the
+        user paid for. It also means this needs no confirmation dialog to be
+        safe -- only one to be polite.
+
+        Delegates to resolve() for validation rather than repeating it. `id`
+        arrives from JavaScript, so "../../.." is a string someone can send, and
+        a second copy of that check is a second thing to forget to update.
+    */
+    bool remove (const juce::String& id) const;
 
     /** Reads the display name from an instrument's synthis.json, written at
         acquisition time from the label the site showed.

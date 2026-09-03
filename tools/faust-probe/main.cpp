@@ -446,6 +446,165 @@ int runMeasure (const juce::File& wasmFile, const juce::File& jsonFile,
     return 0;
 }
 
+/** Plays notes through the engine and reports sample-to-sample discontinuities.
+
+    A click IS a discontinuity: one sample far from the last. The browser
+    preview cannot produce one, because it renders a single note offline from a
+    fresh processor; the plugin plays live with REUSED voices, and every
+    difference between the two lives on that seam.
+
+    So rather than reasoning about which seam it is, this drives the seams --
+    note from silence, note switch, retrigger on the same voice, overlap -- and
+    prints where the jumps actually are. The largest jump per phase is the
+    answer; guessing at causes is what this replaces.
+*/
+static int runClickTest (const juce::File& wasmFile, const juce::File& jsonFile, int voices)
+{
+    FaustEngine engine;
+
+    const auto load = engine.load (wasmFile, jsonFile, kSampleRate, kBlockSize, voices);
+    if (! load.ok)
+    {
+        std::printf ("load failed: %s\n", load.detail.toRawUTF8());
+        return 1;
+    }
+
+    // Exactly the plugin's playback configuration. Without the compensation and
+    // the ceiling this would measure a different engine than the one that
+    // clicks.
+    const auto m = engine.measure();
+    engine.setPitchCompensation (m.pitchPeaks, m.peakA4 > 0.0f ? m.peakA4 : m.peak);
+    engine.setOutputCeiling (true);
+    engine.setOutputGain (m.peakA4 > 1.0e-6f ? juce::jmin (1.0f, 1.0f / m.peakA4) : 1.0f);
+    engine.setVoiceCount (voices);
+
+    juce::AudioBuffer<float> buf { 1, kBlockSize };
+
+    float previous = 0.0f;
+    bool havePrevious = false;
+
+    const auto runBlocks = [&] (const char* label, int blocks, const juce::MidiBuffer& firstBlockMidi)
+    {
+        // TWO numbers, because one cannot tell a click from a waveform.
+        //
+        // A sawtooth at 0.4 peak jumps 0.8 at every cycle reset, legitimately,
+        // and the first version of this reported that as "audible". What marks
+        // a CLICK is a jump at the note BOUNDARY that the rest of the note does
+        // not also produce -- so the first 5 ms after the event are measured
+        // separately from everything after them.
+        const int boundarySamples = (int) (0.005 * kSampleRate);
+
+        float atBoundary = 0.0f, inSteadyState = 0.0f;
+        int sampleIndex = 0;
+
+        for (int b = 0; b < blocks; ++b)
+        {
+            const juce::MidiBuffer& midi = (b == 0) ? firstBlockMidi : juce::MidiBuffer{};
+            buf.clear();
+            engine.process (buf, midi);
+
+            const auto* d = buf.getReadPointer (0);
+            for (int i = 0; i < kBlockSize; ++i)
+            {
+                if (havePrevious)
+                {
+                    const float jump = std::abs (d[i] - previous);
+                    float& into = sampleIndex < boundarySamples ? atBoundary : inSteadyState;
+                    if (jump > into) into = jump;
+                }
+                previous = d[i];
+                havePrevious = true;
+                ++sampleIndex;
+            }
+        }
+
+        // A boundary jump well past what the note itself produces is the thing
+        // being looked for. The margin is deliberately generous: a note that
+        // starts abruptly by design is not a defect.
+        const bool click = atBoundary > 0.02f && atBoundary > inSteadyState * 2.5f;
+
+        std::printf ("  %-26s boundary %.5f   steady %.5f%s\n",
+                     label, atBoundary, inSteadyState, click ? "   <-- CLICK" : "");
+        return atBoundary;
+    };
+
+    const auto noteOnAt = [] (int note)
+    {
+        juce::MidiBuffer mb;
+        mb.addEvent (juce::MidiMessage::noteOn (1, note, (juce::uint8) 100), 0);
+        return mb;
+    };
+    const auto noteOffAt = [] (int note)
+    {
+        juce::MidiBuffer mb;
+        mb.addEvent (juce::MidiMessage::noteOff (1, note), 0);
+        return mb;
+    };
+
+    const int blocksPerSecond = (int) (kSampleRate / kBlockSize);
+
+    std::printf ("clicks     rate=%.0f block=%d voices=%d\n", kSampleRate, kBlockSize, voices);
+    std::printf ("           boundary = largest jump in the first 5 ms after the event\n");
+    std::printf ("           steady   = largest jump over the rest of the phase\n\n");
+
+    // Silence first, so the baseline is the engine doing nothing.
+    runBlocks ("idle", 4, juce::MidiBuffer{});
+
+    // 1. A note from a genuinely fresh engine.
+    runBlocks ("first note (fresh)", blocksPerSecond, noteOnAt (69));
+    runBlocks ("  ... released", blocksPerSecond * 2, noteOffAt (69));
+
+    // 2. The SAME note again. The voice is reused, and unless something reset
+    //    it, the DSP struct still holds the first note's filter and delay state.
+    runBlocks ("same note again (reuse)", blocksPerSecond, noteOnAt (69));
+    runBlocks ("  ... released", blocksPerSecond * 2, noteOffAt (69));
+
+    // 3. A DIFFERENT pitch on the reused voice. This is where the per-note
+    //    correction changes as well as the frequency.
+    runBlocks ("different pitch (reuse)", blocksPerSecond, noteOnAt (48));
+    runBlocks ("  ... released", blocksPerSecond * 2, noteOffAt (48));
+
+    // 4. Switching while the previous note is still sounding.
+    runBlocks ("note held", blocksPerSecond / 4, noteOnAt (60));
+    runBlocks ("switch while sounding", blocksPerSecond / 4, noteOnAt (72));
+    runBlocks ("switch again", blocksPerSecond / 4, noteOnAt (55));
+
+    // 5. More notes than voices, forcing a steal of something still audible.
+    for (int i = 0; i < voices + 2; ++i)
+        runBlocks (i == 0 ? "stacking notes" : "  ... another",
+                   blocksPerSecond / 8, noteOnAt (50 + i * 2));
+
+    // 6. PLAYING. Short notes with short gaps, moving around -- the case the
+    //    phases above miss entirely, because they release for two full seconds
+    //    and let every voice fall silent first.
+    //
+    //    This is what a person does, and it is where the crackle was reported.
+    //    A released voice is marked free IMMEDIATELY while it is still ringing,
+    //    so at this tempo the allocator is choosing between voices that are all
+    //    still sounding.
+    std::printf ("\n");
+    engine.panic();
+    havePrevious = false;
+
+    const int shortNote = juce::jmax (1, blocksPerSecond / 6);   // ~170 ms
+    const int shortGap  = juce::jmax (1, blocksPerSecond / 12);  // ~85 ms
+    const int melody[] = { 60, 64, 67, 64, 60, 67, 72, 67 };
+
+    for (int i = 0; i < (int) (sizeof (melody) / sizeof (melody[0])); ++i)
+    {
+        char label[64];
+        std::snprintf (label, sizeof (label), "playing: note %d", melody[i]);
+        runBlocks (label, shortNote, noteOnAt (melody[i]));
+
+        char offLabel[64];
+        std::snprintf (offLabel, sizeof (offLabel), "  ... off");
+        runBlocks (offLabel, shortGap, noteOffAt (melody[i]));
+    }
+
+    std::printf ("\n");
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc < 3)
@@ -473,6 +632,10 @@ int main (int argc, char** argv)
         if (juce::String (argv[i]) == "--plan") planArg = i + 1;
         if (juce::String (argv[i]) == "--ref")  refArg  = i + 1;
     }
+
+    for (int i = 3; i < argc; ++i)
+        if (juce::String (argv[i]) == "--clicks")
+            return runClickTest (wasmFile, jsonFile, voices);
 
     for (int i = 3; i < argc; ++i)
         if (juce::String (argv[i]) == "--measure")

@@ -141,6 +141,16 @@ public:
     */
     void panic();
 
+    /** Moves an instrument to the Trash, unloading it first if it is the one
+        currently playing.
+
+        Unloading first is not tidiness. The engine holds the module bytes in
+        memory, so a removed instrument goes on sounding exactly as before --
+        the user would have deleted something still playing, and only found out
+        at the next reload, on a file that is no longer there.
+    */
+    bool removeInstrument (const juce::String& id);
+
     /** Live engine state for the shell: notes in, notes out, voices sounding.
         Exists so "the note is stuck" can be told apart from "no note-off
         arrived" without attaching a debugger to a DAW.

@@ -128,6 +128,22 @@ InstrumentLibrary::Metadata InstrumentLibrary::readSidecar (const juce::File& fo
         m.trim          = (float) (double) child (measured, "trim");
         m.trimDb        = (float) (double) child (measured, "trimDb");
         m.peak          = (float) (double) child (measured, "peak");
+        m.peakC3        = (float) (double) child (measured, "peakC3");
+        m.peakA4        = (float) (double) child (measured, "peakA4");
+        m.peakA5        = (float) (double) child (measured, "peakA5");
+
+        // Optional and, today, always absent. Read whole or not at all for the
+        // same reason the descriptor vector is: the entries are positional, and
+        // a short table would shift every pitch above the gap.
+        if (auto* sweep = child (measured, "pitchPeaks").getArray())
+        {
+            if (sweep->size() >= 2)
+            {
+                m.pitchPeaks.reserve ((size_t) sweep->size());
+                for (const auto& v : *sweep)
+                    m.pitchPeaks.push_back ((float) (double) v);
+            }
+        }
         m.rtf           = (double) child (measured, "rtf");
         m.rtfPlatform   = text (measured, "rtfPlatform");
         m.capAt4x       = (int) child (measured, "capAt4x");
@@ -141,6 +157,26 @@ InstrumentLibrary::Metadata InstrumentLibrary::readSidecar (const juce::File& fo
 juce::String InstrumentLibrary::readSidecarName (const juce::File& folder)
 {
     return readSidecar (folder).name;
+}
+
+bool InstrumentLibrary::remove (const juce::String& id) const
+{
+    // resolve() carries the id validation AND answers whether this is really an
+    // instrument, so a caller cannot use this to move an arbitrary directory
+    // under the library root to the Trash.
+    if (resolve (id).kind == Kind::none)
+        return false;
+
+    const auto folder = root().getChildFile (id);
+
+    if (! folder.isDirectory())
+        return false;
+
+    // moveToTrash rather than deleteRecursively. The instrument cost an
+    // extraction from a monthly quota; the Trash is where a reversible deletion
+    // belongs, and it is what makes a single click on a small button in a list
+    // an acceptable interaction at all.
+    return folder.moveToTrash();
 }
 
 juce::String InstrumentLibrary::readDisplayName (const juce::File& sfz,
