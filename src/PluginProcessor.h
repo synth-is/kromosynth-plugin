@@ -108,6 +108,16 @@ public:
     // addParameter; this is a borrowed pointer for reading it per block.
     juce::AudioParameterFloat* outputLevelDb_ = nullptr;
 
+    // Envelope, applied by FaustEngine per voice. The sampler does not use
+    // these: sfizz owns its voices and their envelopes, and there is no
+    // per-voice gain to reach from outside -- shaping them means setting
+    // ampeg_* opcodes at load, which is a different mechanism and a different
+    // feel, so it is deliberately not pretended to be the same control.
+    juce::AudioParameterFloat* attackS_ = nullptr;
+    juce::AudioParameterFloat* decayS_ = nullptr;
+    juce::AudioParameterFloat* sustain_ = nullptr;
+    juce::AudioParameterFloat* releaseS_ = nullptr;
+
     // Exposed so async callbacks can capture the File BY VALUE and still log
     // after this processor is gone. juce::File is a value type holding a path
     // string — appending to it touches no live object, which is exactly what

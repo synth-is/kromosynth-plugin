@@ -43,19 +43,52 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
     : juce::AudioProcessor (BusesProperties()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
-    // THE FIRST PARAMETER THIS PLUGIN HAS EVER EXPOSED. Until now the host saw
-    // none at all: nothing automatable, nothing in the DAW's own generic UI.
+    // ORDER MATTERS HERE, which it did not before. With
+    // JUCE_FORCE_LEGACY_PARAM_IDS the AudioUnit parameter id is the index, so
+    // the order these are added is the order a host presents them. Attack,
+    // Decay, Sustain, Release first, because that ordering is the whole
+    // convention for these four; Output last, because it belongs to the
+    // instrument rather than to the envelope.
     //
-    // Output level is the right one to start with because it is the visible
-    // half of a conflict that cannot be settled silently. Matching the site's
-    // preview means one note at full velocity reaches full scale -- that IS the
-    // preview's level -- and two notes therefore do not fit. Every fixed
-    // compromise is wrong for somebody: 0 dB clips chords, -12 dB quietly
-    // contradicts the audition the user just heard.
+    // ENVELOPE. These multiply the genome's own rather than replacing it --
+    // see FaustEngine::setEnvelope -- so they lengthen an attack but never
+    // shorten one, and shorten a tail but never extend it.
     //
-    // Default 0 dB, which is preview parity, because that is the promise the
-    // site makes. Someone playing chords turns it down and the limiter stops
-    // working; someone A/B-ing against the site leaves it alone.
+    // The defaults are chosen to leave the instrument sounding as it does
+    // today, because the site's preview is the reference and an envelope that
+    // reshaped every sound on load would break that on contact. A = 0, D = 0,
+    // S = 1 is a flat envelope: while a key is held the genome is heard exactly
+    // as rendered.
+    //
+    // R = 1.5 s is the exception, and it matches the grace period the forced
+    // release already used, so gate-ignoring genomes stop about when they did
+    // before -- but by decaying rather than by being cut off after a fixed wait.
+    addParameter (attackS_ = new juce::AudioParameterFloat (
+        juce::ParameterID { "attack", 1 }, "Attack",
+        juce::NormalisableRange<float> { 0.0f, 5.0f, 0.001f, 0.4f }, 0.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("s")));
+
+    addParameter (decayS_ = new juce::AudioParameterFloat (
+        juce::ParameterID { "decay", 1 }, "Decay",
+        juce::NormalisableRange<float> { 0.0f, 5.0f, 0.001f, 0.4f }, 0.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("s")));
+
+    addParameter (sustain_ = new juce::AudioParameterFloat (
+        juce::ParameterID { "sustain", 1 }, "Sustain",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f }, 1.0f));
+
+    addParameter (releaseS_ = new juce::AudioParameterFloat (
+        juce::ParameterID { "release", 1 }, "Release",
+        juce::NormalisableRange<float> { 0.005f, 10.0f, 0.001f, 0.4f }, 1.5f,
+        juce::AudioParameterFloatAttributes().withLabel ("s")));
+
+    // Output level is the visible half of a conflict that cannot be settled
+    // silently. Matching the site's preview means one note at full velocity
+    // reaches full scale -- that IS the preview's level -- and two notes
+    // therefore do not fit. Every fixed compromise is wrong for somebody:
+    // 0 dB clips chords, -12 dB quietly contradicts the audition the user just
+    // heard. Default 0 dB, which is preview parity, because that is the promise
+    // the site makes.
     addParameter (outputLevelDb_ = new juce::AudioParameterFloat (
         juce::ParameterID { "output", 1 },
         "Output",
@@ -551,6 +584,11 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
         logEvent ("sampler_load ok=" + juce::String (result.ok ? 1 : 0)
                   + " regions=" + juce::String (result.numRegions)
                   + " voices=" + juce::String (result.numVoices)
+                  // The mapped range, because an instrument that plays nothing
+                  // from a hardware keyboard and everything from an on-screen
+                  // one is usually being played outside it.
+                  + " keys=" + juce::String (engine_->mappedKeyRange().getStart())
+                  + "-" + juce::String (engine_->mappedKeyRange().getEnd())
                   + " ms=" + juce::String (result.loadMs, 1)
                   + " tail_s=" + juce::String (result.tailSeconds, 3)
                   + " tail_ms=" + juce::String (result.tailMs, 1)
@@ -864,6 +902,26 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // such stage, so it is applied to the buffer afterwards.
     const float levelDb = outputLevelDb_ != nullptr ? outputLevelDb_->get() : 0.0f;
     const float level = juce::Decibels::decibelsToGain (levelDb, -36.0f);
+
+    // Pushed per block rather than per note, so a moving automation lane is
+    // heard on notes already sounding rather than only on the next one.
+    //
+    // BOTH engines, by different routes: Faust applies its own envelope per
+    // voice, the sampler shapes sfizz's through the CC modulation the SFZ
+    // already declares. Same controls, same reading -- 0 leaves the artefact
+    // as generated -- but not the same mechanism, so neither is pretended to
+    // be the other.
+   #if KROMOSYNTH_HAS_FAUST
+    if (faust_ != nullptr && attackS_ != nullptr)
+        faust_->setEnvelope (attackS_->get(), decayS_->get(),
+                             sustain_->get(), releaseS_->get());
+   #endif
+
+   #if KROMOSYNTH_HAS_SAMPLER
+    if (engine_ != nullptr && attackS_ != nullptr)
+        engine_->setEnvelope (attackS_->get(), decayS_->get(),
+                              sustain_->get(), releaseS_->get());
+   #endif
 
     // Routed on active_ rather than on "whichever engine exists", because both
     // engines can be built and both can be constructed while only one holds an

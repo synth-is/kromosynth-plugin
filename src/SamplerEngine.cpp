@@ -192,6 +192,30 @@ SamplerEngine::LoadResult SamplerEngine::load (const juce::File& sfzFile)
     loaded_ = result.ok;
     numRegions_ = result.numRegions;
 
+    // The mapped key range, read from the SFZ text rather than from sfizz.
+    //
+    // A generated instrument covers only the pitches that were RENDERED --
+    // the one inspected while chasing "the sampler ignores my keyboard" maps
+    // 42..90, so a controller an octave low is silent on every key. sfizz has
+    // no API for this and scanning the source is cheap and exact: the file is
+    // already on disk and lokey/hikey are the opcodes that define it.
+    mappedKeys_ = { -1, -1 };
+
+    if (loaded_)
+    {
+        const auto text = sfzFile.loadFileAsString();
+        int lo = 128, hi = -1;
+
+        for (const auto& line : juce::StringArray::fromLines (text))
+        {
+            const auto trimmed = line.trim();
+            if (trimmed.startsWith ("lokey=")) lo = juce::jmin (lo, trimmed.fromFirstOccurrenceOf ("=", false, false).getIntValue());
+            if (trimmed.startsWith ("hikey=")) hi = juce::jmax (hi, trimmed.fromFirstOccurrenceOf ("=", false, false).getIntValue());
+        }
+
+        if (hi >= lo) mappedKeys_ = { lo, hi };
+    }
+
     // Timed separately from loadMs, because 129 queries per region is a
     // number nobody would notice growing. The first version of this did NOT
     // time it and reported a load cost that silently excluded 5418 synchronous
@@ -260,6 +284,36 @@ void SamplerEngine::dispatch (int delay, const juce::MidiMessage& message) noexc
         synth_.polyAftertouch (delay, message.getNoteNumber(), message.getAfterTouchValue());
 }
 
+void SamplerEngine::setEnvelope (float attackS, float decayS,
+                                 float sustain, float releaseS) noexcept
+{
+    // The ranges the artefact declares, from sfzGenerator.js. Constants rather
+    // than parsed from the SFZ because nothing sets envelopeCCRanges, so these
+    // are what every generated instrument carries -- but they are the reason
+    // this mapping is exact, so if the generator's defaults change these must
+    // change with them.
+    constexpr float kAttackRange = 4.0f;   // ampeg_attack_oncc70
+    constexpr float kDecayRange = 8.0f;    // ampeg_decay_oncc71
+    constexpr float kReleaseRange = 8.0f;  // ampeg_release_oncc73
+
+    const float cc[4] = {
+        juce::jlimit (0.0f, 1.0f, attackS / kAttackRange),
+        juce::jlimit (0.0f, 1.0f, decayS / kDecayRange),
+        // ampeg_sustain_oncc72 has a NEGATIVE range: more CC means less
+        // sustain. Inverted here so the control still reads high-is-more.
+        juce::jlimit (0.0f, 1.0f, 1.0f - sustain),
+        juce::jlimit (0.0f, 1.0f, releaseS / kReleaseRange),
+    };
+
+    for (int i = 0; i < 4; ++i)
+    {
+        if (std::abs (cc[i] - lastEnvCc_[i]) < 1.0e-4f) continue;
+
+        lastEnvCc_[i] = cc[i];
+        synth_.hdcc (0, 70 + i, cc[i]);
+    }
+}
+
 void SamplerEngine::process (juce::AudioBuffer<float>& buffer,
                              const juce::MidiBuffer& midi) noexcept
 {
@@ -314,7 +368,23 @@ void SamplerEngine::process (juce::AudioBuffer<float>& buffer,
             // behaviour inside the synth.
             const int delay = juce::jlimit (0, chunk - 1, metadata.samplePosition - pos);
 
-            dispatch (delay, metadata.getMessage());
+            const auto msg = metadata.getMessage();
+
+            if (msg.isNoteOn())
+            {
+                // Counted, and the note number kept, because "the sampler does
+                // not respond to my keyboard" has two very different causes
+                // that look identical from outside. Either the notes never
+                // arrive -- a host routing problem -- or they arrive and land
+                // outside the SFZ's mapped range, which for a generated
+                // instrument is only the pitches that were rendered. Faust has
+                // no range at all and plays anything, which is exactly why the
+                // two engines can disagree about the same keyboard.
+                notesReceived_.fetch_add (1, std::memory_order_relaxed);
+                lastNote_.store (msg.getNoteNumber(), std::memory_order_relaxed);
+            }
+
+            dispatch (delay, msg);
         }
 
         float* channels[2];

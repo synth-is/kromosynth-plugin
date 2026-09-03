@@ -65,6 +65,19 @@ target_compile_definitions(KromosynthPlugin PRIVATE
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
 
+    # AudioUnit parameter IDs become the parameter INDEX rather than a hash of
+    # the string id. Without this, juce_audio_plugin_client_AU_1.mm derives the
+    # AU id as juceParamID.hashCode() -- "decay" becomes 95459258 -- and a host
+    # that presents parameters in id order shows them in an order nobody chose.
+    # GarageBand listed them Decay, Sustain, Attack, Release, Output against an
+    # ADSR ordering that is the entire convention for these four controls.
+    #
+    # The cost is that every parameter id changes, so automation and saved
+    # parameter state written by an earlier build will not map. That is free
+    # today, because these parameters are hours old and the plugin is not
+    # released; it stops being free the moment someone automates one.
+    JUCE_FORCE_LEGACY_PARAM_IDS=1
+
     # STAGE 1 (2026-08-28): native integration and a resource provider are now
     # ON for the shell component. The Stage 0 reasoning below was correct and
     # is kept because it explains what changed and why it was safe to change.

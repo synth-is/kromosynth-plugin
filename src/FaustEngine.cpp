@@ -328,6 +328,23 @@ struct FaustVoice
     // and whether it was still audible.
     float compGain = 1.0f, compTarget = 1.0f;
 
+    // The plugin's own amplitude envelope, MULTIPLYING the genome's rather than
+    // replacing it.
+    //
+    // It cannot replace it: the envelope is inside the compiled DSP, shaped by
+    // the seed's own parameters, and nothing in the wasm ABI reaches in to
+    // change it. So this can lengthen an attack but never shorten one, and can
+    // cut a tail short but never extend it.
+    //
+    // That asymmetry is still worth having, because the one thing it CAN do is
+    // the thing most needed: 16 of the 33 measured genomes ignore their gate
+    // entirely and sound forever. Today those are stopped by a grace period and
+    // a blunt 0.2 s fade. A release envelope makes them playable instead of
+    // merely stoppable.
+    enum class Env { off, attack, decay, sustain, release };
+    Env envStage = Env::off;
+    float envLevel = 0.0f;
+
     // Held by the sustain pedal after its key came up. The note number is
     // cleared so the same key can retrigger, but the voice keeps sounding
     // until the pedal lifts.
@@ -400,6 +417,13 @@ struct FaustEngineImpl
     // down moves the signal out of limiting rather than merely making the
     // limited result quieter.
     std::atomic<float> outputLevel { 1.0f };
+
+    // Envelope shape, in per-sample terms. Recomputed when the parameters or
+    // the sample rate change.
+    std::atomic<float> envAttackInc { 1.0f };
+    std::atomic<float> envDecayInc { 1.0f };
+    std::atomic<float> envSustain { 1.0f };
+    std::atomic<float> envReleaseCoef { 0.0f };
 
     // Measured peaks at c3, a4, a5. All zero means compensation is off.
     float peakC3 = 0.0f, peakA4 = 0.0f, peakA5 = 0.0f;
@@ -611,6 +635,13 @@ FaustEngine::load (const juce::File& wasmFile,
     impl_->limiterAttack = std::exp (-1.0f / (0.001f * (float) sampleRate));
     impl_->limiterRelease = std::exp (-1.0f / (0.150f * (float) sampleRate));
     impl_->limiterGain = 1.0f;
+
+    // A USABLE default envelope, not a zeroed one. envReleaseCoef starting at
+    // 0.0 would make every release instantaneous -- a hard cut, which is a
+    // click -- for any caller that never sets the parameters, and faust-probe
+    // is exactly such a caller. Flat while held, 1.5 s release, matching the
+    // grace period the forced release already used.
+    setEnvelope (0.0f, 0.0f, 1.0f, 1.5f);
 
     if (impl_->engine == nullptr) impl_->engine = wasm_engine_new();
     if (impl_->engine == nullptr) { r.detail = "wasm_engine_new failed"; return r; }
@@ -975,6 +1006,8 @@ void FaustEngine::panic() noexcept
         v.sustained = false;
         v.compGain = 1.0f;
         v.compTarget = 1.0f;
+        v.envStage = FaustVoice::Env::off;
+        v.envLevel = 0.0f;
 
         // init() rather than gate=0. A genome that ignores its gate ignores it
         // during a panic too, and 16 of 33 measured elites do exactly that.
@@ -1026,6 +1059,31 @@ void FaustEngine::setOutputLevel (float linearGain) noexcept
     if (impl_ != nullptr)
         impl_->outputLevel.store (juce::jlimit (0.0f, 4.0f, linearGain),
                                   std::memory_order_relaxed);
+}
+
+void FaustEngine::setEnvelope (float attackS, float decayS,
+                               float sustain, float releaseS) noexcept
+{
+    if (impl_ == nullptr) return;
+
+    const float sr = (float) juce::jmax (1.0, impl_->sampleRate);
+
+    // A zero-length stage becomes a one-sample stage rather than a division by
+    // zero, so "instant" is expressible and still ramped.
+    impl_->envAttackInc.store (1.0f / juce::jmax (1.0f, attackS * sr),
+                               std::memory_order_relaxed);
+    impl_->envDecayInc.store (1.0f / juce::jmax (1.0f, decayS * sr),
+                              std::memory_order_relaxed);
+    impl_->envSustain.store (juce::jlimit (0.0f, 1.0f, sustain),
+                             std::memory_order_relaxed);
+
+    // Release is EXPONENTIAL where attack and decay are linear, because a
+    // linear fade to zero has an audible corner at the end and a decaying one
+    // does not. The coefficient is set so the level reaches -60 dB in the
+    // requested time, which is the usual reading of a release length.
+    impl_->envReleaseCoef.store (
+        std::exp (-6.9078f / juce::jmax (1.0f, releaseS * sr)),
+        std::memory_order_relaxed);
 }
 
 void FaustEngine::setPitchCompensation (const std::vector<float>& pitchPeaks, float referencePeak)
@@ -1162,6 +1220,12 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
     if (wasSilent)
         chosen->compGain = chosen->compTarget;
 
+    // Attack starts from wherever the envelope IS, not from zero. On a silent
+    // voice that is zero anyway; on one still releasing it avoids a step down
+    // to zero before the rise, which would be a click of exactly the kind the
+    // allocator was changed to avoid.
+    chosen->envStage = FaustVoice::Env::attack;
+
     impl_->notesOn.fetch_add (1, std::memory_order_relaxed);
 
     if (impl_->idxFreq >= 0) setParam (*chosen, impl_->idxFreq, mtof (note));
@@ -1202,6 +1266,7 @@ void FaustEngine::noteOff (int note) noexcept
         v.note = -1;
         v.releasing = true;
         v.framesSinceRelease = 0;
+        v.envStage = FaustVoice::Env::release;
         v.peakAtRelease = v.peakRecent;
         v.forcing = false;
         v.forceGain = 1.0f;
@@ -1347,6 +1412,72 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
                 }
             }
 
+            // Applied to every NOTE-DRIVEN voice, whatever stage it is in --
+            // including Env::off, which means the release has finished and the
+            // level is 0.
+            //
+            // Testing `stage != off` here instead was a bug with a nasty shape:
+            // the moment a release completed the envelope stopped applying, so
+            // the voice jumped back to full gain and the note came back. It
+            // never reached a build because faust-probe --clicks showed sound
+            // after a release that should have been silent.
+            //
+            // measure() drives the DSP through setParameter and never calls
+            // noteOn, so its voices are not note-driven and are not shaped --
+            // the same guard that keeps the pitch correction out of the
+            // measurement.
+            const bool enveloped = v.noteDriven;
+
+            const float aInc = impl_->envAttackInc.load (std::memory_order_relaxed);
+            const float dInc = impl_->envDecayInc.load (std::memory_order_relaxed);
+            const float sLvl = impl_->envSustain.load (std::memory_order_relaxed);
+            const float rCoef = impl_->envReleaseCoef.load (std::memory_order_relaxed);
+
+            const auto stepEnvelope = [&] (FaustVoice& voice)
+            {
+                switch (voice.envStage)
+                {
+                    case FaustVoice::Env::attack:
+                        voice.envLevel += aInc;
+                        if (voice.envLevel >= 1.0f)
+                        {
+                            voice.envLevel = 1.0f;
+                            voice.envStage = FaustVoice::Env::decay;
+                        }
+                        break;
+
+                    case FaustVoice::Env::decay:
+                        voice.envLevel -= dInc;
+                        if (voice.envLevel <= sLvl)
+                        {
+                            voice.envLevel = sLvl;
+                            voice.envStage = FaustVoice::Env::sustain;
+                        }
+                        break;
+
+                    case FaustVoice::Env::sustain:
+                        voice.envLevel = sLvl;
+                        break;
+
+                    case FaustVoice::Env::release:
+                        voice.envLevel *= rCoef;
+                        // Below -80 dB it is silence, and letting it crawl
+                        // toward zero forever would keep the voice out of the
+                        // idle path that zeroes its DSP state.
+                        if (voice.envLevel < 1.0e-4f)
+                        {
+                            voice.envLevel = 0.0f;
+                            voice.envStage = FaustVoice::Env::off;
+                        }
+                        break;
+
+                    case FaustVoice::Env::off:
+                        break;
+                }
+
+                return voice.envLevel;
+            };
+
             if (v.forcing)
             {
                 const float step = 1.0f / (float) juce::jmax (1, impl_->fadeFrames);
@@ -1354,7 +1485,8 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
                 for (int i = 0; i < chunk; ++i)
                 {
                     v.compGain = rampToward (v.compGain, v.compTarget, impl_->compRampStep);
-                    impl_->mix[(size_t) i] += src[i] * v.forceGain * v.compGain;
+                    const float env = enveloped ? stepEnvelope (v) : 1.0f;
+                    impl_->mix[(size_t) i] += src[i] * v.forceGain * v.compGain * env;
                     v.forceGain = juce::jmax (0.0f, v.forceGain - step);
                 }
 
@@ -1376,7 +1508,8 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
                 for (int i = 0; i < chunk; ++i)
                 {
                     v.compGain = rampToward (v.compGain, v.compTarget, impl_->compRampStep);
-                    impl_->mix[(size_t) i] += src[i] * v.compGain;
+                    const float env = enveloped ? stepEnvelope (v) : 1.0f;
+                    impl_->mix[(size_t) i] += src[i] * v.compGain * env;
                 }
             }
 

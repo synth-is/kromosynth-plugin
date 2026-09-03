@@ -69,18 +69,31 @@ In the plugin:
 
 - **Output gain** is attenuate-only against the a4 reference, matching
   `renderFaustGenome`. A genome below full scale is left alone.
-- **Per-note correction** scales every key to that reference, from the measured
-  12-point table. Applied at the VOICE OUTPUT, not through the `gain`
+- **Per-note correction** scales every key to that reference, from a measured
+  **21-point table covering midi 36..96** — a keyboard, not a comfortable
+  middle. It was 48..81, and outside that range the estimate was clamped to the
+  edge entry and still allowed to boost: midi 36, the first key on a GarageBand
+  keyboard, delivered 4.1 against a target of 1.0.
+  Applied at the VOICE OUTPUT, not through the `gain`
   parameter: `gain` is the genome's own widget and an evolved program may route
   it into a nonlinearity, so scaling there could change timbre rather than only
   level.
+- **Attenuate only.** A correction may pull a pitch down toward the reference;
+  it must never push one up. Attenuating can at worst fail to attenuate enough;
+  boosting acts on an estimate, and the estimate is what may be wrong. Measured
+  over 12 genomes from the timbre-seeded run at every semitone, allowing boost
+  gives a worst delivered peak of 20.8 and forbidding it gives 14.9.
 - **Ramped, not stepped**, over 5 ms. A voice picked while still ringing would
   otherwise have its correction changed underneath sounding audio — up to a
   29 dB instantaneous step.
-- **Soft ceiling** (`tanh`) on the summed output, because voices add and a
-  resonance narrower than the sweep spacing can hide between table entries.
-  OFF by default: `measure()` renders through the same path and would report a
-  peak the ceiling invented, and the null test compares raw samples.
+- **Limiter** on the summed output — 1 ms attack, 150 ms release, gain
+  reduction rather than per-sample shaping — because voices add and a resonance
+  narrower than the sweep spacing can hide between entries. A bare `tanh` here
+  was wrong: it is a saturator, nonlinear everywhere, so once the levelling
+  became correct and every pitch arrived at exactly 1.0, the whole instrument
+  moved into its worst region at once and got audibly *more* distorted. OFF by
+  default: `measure()` renders through the same path and would report a peak
+  the ceiling invented, and the null test compares raw samples.
 
 ## 5. OPEN — stealing still clicks
 
@@ -96,6 +109,73 @@ voice, and it costs the stolen note's tail, which is why it has not been done
 speculatively. Two cheaper things that are NOT the fix and should not be
 mistaken for it: raising the cap only postpones it, and a longer release fade
 changes what the instrument sounds like.
+
+## 5b. Host parameters and the envelope
+
+The plugin exposed **no host-visible parameters at all** until 2026-09-03:
+nothing automatable, nothing in a DAW's generic UI. There are now five —
+Output, Attack, Decay, Sustain, Release.
+
+### What the envelope can and cannot do
+
+On the Faust side it **multiplies** the genome's own envelope rather than
+replacing it. The genome's envelope is inside the compiled DSP, shaped by its
+seed's parameters, and nothing in the wasm ABI reaches in to change it. So the
+controls can lengthen an attack but never shorten one, and cut a tail short but
+never extend it.
+
+The asymmetry is worth having because of the one thing it *can* do: **16 of 33
+measured genomes ignore their gate entirely** and sound indefinitely. Those were
+previously stopped by a 1.5 s grace period and a blunt 0.2 s fade. A release
+makes them playable rather than merely stoppable.
+
+Attack and decay are linear, release exponential to −60 dB in the given time —
+a linear fade to zero has an audible corner at the end. Applied at the voice
+output, for the same reason the pitch correction is.
+
+### Defaults are deliberately neutral
+
+A = 0, D = 0, S = 1 is a flat envelope: while a key is held the genome is heard
+exactly as rendered, so the site's preview remains the reference. R = 1.5 s is
+the exception, matching the grace period the forced release already used, so
+gate-ignoring genomes stop about when they did — by decaying rather than being
+cut off.
+
+### The sampler uses the same controls by a different mechanism
+
+An earlier version of this document claimed SFZ envelopes could not be shaped
+from outside because sfizz owns its voices. **That was wrong.** `sfizz::Sfizz`
+exposes `hdcc`, and `sfzGenerator.js` has been emitting the CC mappings all
+along:
+
+```
+ampeg_attack_oncc70=4      ampeg_decay_oncc71=8
+ampeg_sustain_oncc72=-base ampeg_release_oncc73=8
+```
+
+Nothing overrides `envelopeCCRanges`, so those defaults are what every artefact
+carries and `SamplerEngine::setEnvelope`'s mapping is exact. If the generator's
+defaults change, the constants in that function must change with them.
+
+The values ADD to what the artefact baked in, so 0 reads as "as generated" on
+both engines. `ampeg_sustain_oncc72` has a negative range — more CC means less
+sustain — and the mapping inverts it so the control still reads high-is-more.
+
+### Parameter ORDER is not ours to choose
+
+GarageBand shows them as DECAY, SUSTAIN, ATTACK, RELEASE, OUTPUT, which is
+neither the order they are added nor alphabetical. JUCE's AU wrapper derives
+the AudioUnit parameter ID from a **hash of the string ID**:
+
+```cpp
+AudioUnitParameterID paramHash = juceParamID.hashCode();   // "decay" -> 95459258
+```
+
+Sorting by that hash predicts DECAY first and OUTPUT last, which matches, but
+not the middle three — so the order is clearly ID-derived without the exact
+rule being known. `JUCE_FORCE_LEGACY_PARAM_IDS` would make the AU IDs
+sequential indices instead, which very likely restores the intended order, at
+the cost of changing every ID and invalidating saved automation. Untested.
 
 ## 6. Things that are not the cause, verified
 

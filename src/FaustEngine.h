@@ -378,6 +378,27 @@ public:
     */
     void setOutputLevel (float linearGain) noexcept;
 
+    /** An amplitude envelope applied per voice, MULTIPLYING the genome's own.
+
+        It cannot replace it. The genome's envelope lives inside the compiled
+        DSP, shaped by its seed's parameters, and nothing in the wasm ABI
+        reaches in to change it. So this lengthens an attack but never shortens
+        one, and cuts a tail short but never extends it.
+
+        The asymmetry is worth having because of what it CAN do: 16 of 33
+        measured genomes ignore their gate and sound indefinitely, and were
+        stopped only by a grace period and a blunt fade. A release makes those
+        playable rather than merely stoppable.
+
+        Attack and decay are linear, release exponential to -60 dB in the given
+        time -- a linear fade to zero has an audible corner at the end.
+
+        Applied at the voice output, like the pitch correction and for the same
+        reason: `gain` is the genome's own widget and an evolved program may
+        route it somewhere that changes timbre rather than level.
+    */
+    void setEnvelope (float attackS, float decayS, float sustain, float releaseS) noexcept;
+
     /** Applied to the summed output. 1.0 is off, and off is the default: the
         null test compares raw output against the platform reference and must
         not be silently scaled. Only the processor sets this.

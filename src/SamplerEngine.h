@@ -79,6 +79,27 @@
 class SamplerEngine
 {
 public:
+    /** Shapes the amplitude envelope of the loaded SFZ, through the CC
+        modulation the artefact already declares.
+
+        SFZ DOES support this and I said otherwise -- sfizz owns its voices, but
+        `hdcc` is the documented way in, and sfzGenerator.js has been emitting
+        the mappings all along:
+
+            ampeg_attack_oncc70=4     ampeg_decay_oncc71=8
+            ampeg_sustain_oncc72=-base  ampeg_release_oncc73=8
+
+        Nothing overrides `envelopeCCRanges`, so those defaults are what every
+        artefact carries and the mapping below is exact rather than assumed.
+
+        The values ADD to what the artefact baked in, so 0 means "as generated"
+        -- the same reading as the Faust engine, where a flat envelope leaves
+        the genome as rendered. Sustain is the exception in the SFZ's own terms:
+        its range is negative, so more CC means less sustain, and the mapping
+        here inverts it so that the control still reads high-is-more.
+    */
+    void setEnvelope (float attackS, float decayS, float sustain, float releaseS) noexcept;
+
     SamplerEngine();
     ~SamplerEngine();
 
@@ -167,6 +188,30 @@ private:
     double measureTailSeconds (int regionCount);
 
     sfz::Sfizz synth_;
+
+    // Last CC values sent for the envelope, so an unchanged control is not
+    // re-sent every block. sfizz treats each hdcc as an event to schedule.
+    float lastEnvCc_[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
+
+    // Note-ons seen, and the most recent note number. Read by the shell so a
+    // silent sampler can be told apart: notes arriving and no voices sounding
+    // means the key is outside the SFZ's mapped range, while no notes at all
+    // means they never reached the plugin.
+    std::atomic<int> notesReceived_ { 0 };
+    std::atomic<int> lastNote_ { -1 };
+
+public:
+    int notesReceived() const noexcept { return notesReceived_.load (std::memory_order_relaxed); }
+    int lastNote() const noexcept { return lastNote_.load (std::memory_order_relaxed); }
+    int activeVoices() const noexcept { return synth_.getNumActiveVoices(); }
+
+    /** Lowest and highest key the loaded SFZ actually maps. A generated
+        instrument covers only the pitches that were rendered.
+    */
+    juce::Range<int> mappedKeyRange() const noexcept { return mappedKeys_; }
+
+private:
+    juce::Range<int> mappedKeys_ { -1, -1 };
 
     // Only used when the host hands us a mono bus. Sized in prepare().
     juce::AudioBuffer<float> scratch_;
