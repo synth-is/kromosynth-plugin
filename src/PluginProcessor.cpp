@@ -17,21 +17,18 @@
 // characterised at rather than one picked here.
 static constexpr int kFaustVoices = 8;
 
-// Peak the plugin trims a Faust instrument to, matching trimForLevel in
-// kromosynth-composing so a genome trimmed there and here lands in the same
-// place.
+// Peak the plugin used to normalise a Faust instrument to.
 //
-// NO LONGER THE TARGET FOR PLAYBACK. It is kept because faust-probe, the
-// artefact and this file all report `trim` against it, and one vocabulary
-// across the three is worth more than the constant itself.
+// NO LONGER USED, and kept only so the reason is not lost: the plugin matches
+// what the SITE delivers rather than normalising to a target of its own. The
+// site is attenuate-only and never boosts, so a quiet elite sounds quiet;
+// normalising to 0.25 here disagreed with the audition by however far a genome
+// sat from that target, and on 01M1JD666ZTWGTCT4W2GDTVQMF by 31 dB at the very
+// pitch the preview renders.
 //
-// THE PLUGIN NOW MATCHES THE PREVIEW instead of normalising to a fixed peak.
-// The site auditions a sound by rendering it at one pitch and attenuating ONLY
-// if it exceeds full scale -- never boosting, deliberately, so a quiet elite
-// sounds quiet. Normalising to 0.25 here made the plugin disagree with the
-// audition by however far the genome sat from that target, and on a genome with
-// a wide pitch spread by 31 dB at the very note the user had listened to.
-static constexpr float kFaustTargetPeak = 0.25f;
+// Its last use was inside an implausibility guard, where it silently became the
+// level of every hot instrument -- see the note beside that guard.
+[[maybe_unused]] static constexpr float kFaustTargetPeak = 0.25f;
 
 // Delivered level for one note at full velocity, matching renderFaustGenome's
 // clip protection exactly: attenuate above full scale, never boost.
@@ -46,6 +43,26 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
     : juce::AudioProcessor (BusesProperties()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
+    // THE FIRST PARAMETER THIS PLUGIN HAS EVER EXPOSED. Until now the host saw
+    // none at all: nothing automatable, nothing in the DAW's own generic UI.
+    //
+    // Output level is the right one to start with because it is the visible
+    // half of a conflict that cannot be settled silently. Matching the site's
+    // preview means one note at full velocity reaches full scale -- that IS the
+    // preview's level -- and two notes therefore do not fit. Every fixed
+    // compromise is wrong for somebody: 0 dB clips chords, -12 dB quietly
+    // contradicts the audition the user just heard.
+    //
+    // Default 0 dB, which is preview parity, because that is the promise the
+    // site makes. Someone playing chords turns it down and the limiter stops
+    // working; someone A/B-ing against the site leaves it alone.
+    addParameter (outputLevelDb_ = new juce::AudioParameterFloat (
+        juce::ParameterID { "output", 1 },
+        "Output",
+        juce::NormalisableRange<float> { -36.0f, 6.0f, 0.1f },
+        0.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("dB")));
+
     // One log file per host process, named after the host, because the whole
     // Stage 0 question is "does this behave differently in Logic vs Live vs
     // Reaper vs Bitwig" and mixing four hosts into one file loses that.
@@ -730,20 +747,31 @@ void KromosynthAudioProcessor::applyFaustTrim()
     {
         const float p = measured.pitchPeaks[i];
         if (p <= 1.0e-6f) continue;
-        const float comp = juce::jlimit (0.001f, 8.0f, reference / p);
+        const float comp = juce::jmin (1.0f, reference / p);
         worstCorrected = juce::jmax (worstCorrected, p * comp);
     }
 
-    // A measurement can be wrong, and a wrong one used verbatim is worse than
-    // none: a raw peak of 23182060 yields -159 dB and silences the instrument
-    // with no indication why. Nothing in the archive exceeds 2.4 -- measured
-    // across all 120 -- so a peak past 8 is a broken measurement rather than a
-    // loud genome. Clamped and logged rather than trusted.
-    const bool implausible = peak > 8.0f;
+    // ONLY a broken measurement, not merely a loud one.
+    //
+    // This tested `peak > 8.0` and replaced the trim with a fixed 0.03125,
+    // written when ARTEFACT_NUMBERS had measured nothing in the archive above
+    // 2.4. The TIMBRE-seeded runs peak at 56, 706 and 1990 legitimately, so the
+    // guard fired on CORRECT measurements and discarded the computed trim --
+    // 0.03125 against a correct 0.00142 is 26.9 dB too loud, which is an
+    // instrument delivering 22.0 into a ceiling built for 1.0. It also made
+    // three instruments with references of 706, 8.1 and 0.54 all log the same
+    // trim, which is what gave it away.
+    //
+    // The real failure it was written for is a peak of 23182060, seen once when
+    // the measurement raced the audio thread. That is not a loud genome, it is
+    // a broken number, and the threshold now says so. Nothing else needs a
+    // special case: trim = min(1, 1/reference) is bounded and correct for every
+    // finite peak.
+    const bool implausible = ! std::isfinite (peak) || peak > 1.0e4f;
     if (implausible)
-        trim = kFaustTargetPeak / 8.0f;
+        trim = 1.0e-4f;
 
-    trim = juce::jlimit (0.001f, 100.0f, trim);
+    trim = juce::jlimit (1.0e-6f, 1.0f, trim);
 
     // Every note levelled to the reference pitch, so the whole keyboard plays
     // at the level the audition established rather than only one key of it.
@@ -830,6 +858,13 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
+    // Read once per block. Faust takes it as an engine setting so that it lands
+    // BEFORE the limiter -- turning the level down has to move the signal out
+    // of limiting, not just make the limited result quieter. The sampler has no
+    // such stage, so it is applied to the buffer afterwards.
+    const float levelDb = outputLevelDb_ != nullptr ? outputLevelDb_->get() : 0.0f;
+    const float level = juce::Decibels::decibelsToGain (levelDb, -36.0f);
+
     // Routed on active_ rather than on "whichever engine exists", because both
     // engines can be built and both can be constructed while only one holds an
     // instrument. Falling through to the sampler because it happens to be
@@ -839,6 +874,7 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     if (active_ == Active::sampler && engine_ != nullptr)
     {
         engine_->process (buffer, midiMessages);
+        buffer.applyGain (level);
         return;
     }
    #endif
@@ -846,6 +882,7 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
    #if KROMOSYNTH_HAS_FAUST
     if (active_ == Active::faust && faust_ != nullptr)
     {
+        faust_->setOutputLevel (level);
         faust_->process (buffer, midiMessages);
         return;
     }

@@ -495,6 +495,7 @@ static int runClickTest (const juce::File& wasmFile, const juce::File& jsonFile,
         const int boundarySamples = (int) (0.005 * kSampleRate);
 
         float atBoundary = 0.0f, inSteadyState = 0.0f;
+        float loudest = 0.0f;
         int sampleIndex = 0;
 
         for (int b = 0; b < blocks; ++b)
@@ -512,6 +513,7 @@ static int runClickTest (const juce::File& wasmFile, const juce::File& jsonFile,
                     float& into = sampleIndex < boundarySamples ? atBoundary : inSteadyState;
                     if (jump > into) into = jump;
                 }
+                loudest = juce::jmax (loudest, std::abs (d[i]));
                 previous = d[i];
                 havePrevious = true;
                 ++sampleIndex;
@@ -523,8 +525,14 @@ static int runClickTest (const juce::File& wasmFile, const juce::File& jsonFile,
         // starts abruptly by design is not a defect.
         const bool click = atBoundary > 0.02f && atBoundary > inSteadyState * 2.5f;
 
-        std::printf ("  %-26s boundary %.5f   steady %.5f%s\n",
-                     label, atBoundary, inSteadyState, click ? "   <-- CLICK" : "");
+        // LEVEL as well as jumps. A click is a discontinuity, but distortion
+        // from voices SUMMING is not -- it is a smooth signal that has simply
+        // gone past full scale, and a jump-only measure cannot see it at all.
+        // The ceiling starts acting at 0.8.
+        std::printf ("  %-26s peak %.3f%s   boundary %.5f   steady %.5f%s\n",
+                     label, loudest,
+                     loudest > 0.8f ? " <-CEILING" : "          ",
+                     atBoundary, inSteadyState, click ? "   <-- CLICK" : "");
         return atBoundary;
     };
 
@@ -600,6 +608,27 @@ static int runClickTest (const juce::File& wasmFile, const juce::File& jsonFile,
         std::snprintf (offLabel, sizeof (offLabel), "  ... off");
         runBlocks (offLabel, shortGap, noteOffAt (melody[i]));
     }
+
+    // 7. OVERLAP. Notes held on top of each other around the reference pitch,
+    //    which is where the levelling puts the loudest notes. Each voice can
+    //    deliver up to full scale on its own, so this is where they sum.
+    //
+    //    TWO SECONDS per phase, not a quarter. A quarter-second hold showed a
+    //    single a4 peaking at 0.021 on a genome whose reference peak is 706 --
+    //    not because the levelling was wrong but because the genome had barely
+    //    started. It swells, which is the same property that made a short sweep
+    //    window read 15 dB low. A test shorter than the sound it measures
+    //    reports the silence at the beginning.
+    std::printf ("\n");
+    engine.panic();
+    havePrevious = false;
+
+    const int holdBlocks = juce::jmax (1, blocksPerSecond * 2);
+
+    runBlocks ("overlap: a4", holdBlocks, noteOnAt (69));
+    runBlocks ("  + a4 and c5", holdBlocks, noteOnAt (72));
+    runBlocks ("  + and e5", holdBlocks, noteOnAt (76));
+    runBlocks ("  + and g5", holdBlocks, noteOnAt (79));
 
     std::printf ("\n");
     return 0;

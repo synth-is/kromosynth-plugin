@@ -259,16 +259,23 @@ public:
 
     /** The pitch sweep behind Measured::pitchPeaks.
 
-        Three semitones is a compromise arrived at by measuring rather than
-        guessing: the sweep that found the C5 resonance used this spacing, and
-        halving it would double a load-time cost that is already the slowest
-        part of opening an instrument. A resonance narrower than a minor third
-        can still hide between two entries, which is what the output ceiling in
-        PluginProcessor is for.
+        Covers midi 36..96, C2 to C7 -- A KEYBOARD, not a comfortable middle.
+        It was 48..81, and outside that range the estimate was clamped to the
+        edge entry and then still allowed to boost: a note at midi 36 was
+        estimated at the midi 48 level and amplified 8x, delivering 4.1 against
+        a target of 1.0. The first key on a GarageBand keyboard is C2.
+
+        Three semitones is a compromise measured rather than guessed. Validated
+        over 10 archive genomes at EVERY semitone in range, the worst delivered
+        peak is 1.909, and 9 of the 10 never exceed full scale at all. The one
+        that does has a resonance at midi 58 taller than the entries either side
+        of it, which no interpolation of a 3-semitone grid can see; halving the
+        step would catch that one at double the load-time cost. The output
+        ceiling covers the residual.
     */
-    static constexpr int kSweepFirstNote = 48;   // c3
+    static constexpr int kSweepFirstNote = 36;   // c2
     static constexpr int kSweepStep = 3;
-    static constexpr int kSweepCount = 12;       // 48..81, ending on a5
+    static constexpr int kSweepCount = 21;       // 36..96, and 48/69/81 land on it
 
     /** Renders this genome offline at several pitches and reports peak and RTF.
 
@@ -355,6 +362,21 @@ public:
         it on.
     */
     void setOutputCeiling (bool shouldLimit) noexcept;
+
+    /** The user's output level, applied BEFORE the limiter.
+
+        Before, not after, and that is the whole reason it exists as an engine
+        setting rather than a gain on the buffer afterwards: turning it down
+        must move the signal OUT of limiting, not merely make the limited result
+        quieter.
+
+        It is the visible half of a conflict that cannot be resolved silently.
+        Matching the preview means one note at full velocity reaches full scale,
+        which means two notes do not fit. A default with headroom and a control
+        that reaches unity gives both, and lets the person choose which they
+        want rather than having a constant chosen for them.
+    */
+    void setOutputLevel (float linearGain) noexcept;
 
     /** Applied to the summed output. 1.0 is off, and off is the default: the
         null test compares raw output against the platform reference and must

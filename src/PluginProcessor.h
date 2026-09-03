@@ -104,6 +104,10 @@ public:
     // is to survive the editor being destroyed and recreated.
     void logEvent (const juce::String& event);
 
+    // The only host-visible parameter. Owned by the AudioProcessor base after
+    // addParameter; this is a borrowed pointer for reading it per block.
+    juce::AudioParameterFloat* outputLevelDb_ = nullptr;
+
     // Exposed so async callbacks can capture the File BY VALUE and still log
     // after this processor is gone. juce::File is a value type holding a path
     // string — appending to it touches no live object, which is exactly what

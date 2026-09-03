@@ -136,6 +136,37 @@ inline float rampToward (float current, float target, float step) noexcept
                                     : current + (delta > 0.0f ? step : -step);
 }
 
+/** Level at which the output ceiling starts to act. Below this it is EXACTLY
+    unity, which is the whole point.
+*/
+constexpr float kCeilingKnee = 0.8f;
+
+/** Level at which the output limiter starts to act. */
+constexpr float kLimiterThreshold = 0.95f;
+
+/** Bounds a sample to full scale, shaping only what is above the knee.
+
+    KEPT as the last-resort clamp behind the limiter, not as the limiter. A
+    bare tanh() over the whole signal was the first version and it was the
+    wrong tool: tanh is a SATURATOR, nonlinear everywhere, so tanh(1.0) = 0.762
+    is 2.4 dB of shaping applied to every peak of every note. Once the levelling
+    became correct, every pitch arrived at exactly 1.0 and went through the
+    saturator's worst region at once -- the instrument got audibly more
+    distorted the moment the maths got right.
+
+    Behind a limiter it only ever sees the limiter's attack overshoot, which is
+    a sample or two.
+*/
+inline float softCeiling (float x) noexcept
+{
+    const float a = std::abs (x);
+
+    if (a <= kCeilingKnee) return x;
+
+    const float over = (a - kCeilingKnee) / (1.0f - kCeilingKnee);
+    return std::copysign (kCeilingKnee + (1.0f - kCeilingKnee) * std::tanh (over), x);
+}
+
 /** Short-time Fourier magnitudes of a capture, on a log frequency scale.
 
     Returns kSpectrogramFrames rows of kSpectrogramBins bytes, or empty when
@@ -354,6 +385,22 @@ struct FaustEngineImpl
     // 0.2. Only playback turns it on.
     bool ceiling = false;
 
+    // The limiter's current gain, and its one-pole coefficients.
+    //
+    // A LIMITER, not a waveshaper. Measured over 12 genomes from the
+    // timbre-seeded run, the worst delivered peak after levelling is still
+    // 14.9 -- 23 dB over -- because a resonance can hide between sweep entries.
+    // Shaping each sample individually at that depth turns the waveform into a
+    // square; reducing the GAIN of the whole signal instead sounds like heavy
+    // compression, which is what an instrument 23 dB too hot should sound like.
+    float limiterGain = 1.0f;
+    float limiterAttack = 0.0f, limiterRelease = 0.0f;
+
+    // User-facing output level, applied BEFORE the limiter so that turning it
+    // down moves the signal out of limiting rather than merely making the
+    // limited result quieter.
+    std::atomic<float> outputLevel { 1.0f };
+
     // Measured peaks at c3, a4, a5. All zero means compensation is off.
     float peakC3 = 0.0f, peakA4 = 0.0f, peakA5 = 0.0f;
 
@@ -558,6 +605,13 @@ FaustEngine::load (const juce::File& wasmFile,
     impl_->fadeFrames  = (int) (0.2 * sampleRate);
     impl_->compRampStep = 1.0f / juce::jmax (1.0f, (float) (0.005 * sampleRate));
 
+    // 1 ms attack, 150 ms release. Fast enough that the overshoot the clamp has
+    // to catch is a sample or two; slow enough on release that a loud note does
+    // not chatter the gain back up between cycles of its own waveform.
+    impl_->limiterAttack = std::exp (-1.0f / (0.001f * (float) sampleRate));
+    impl_->limiterRelease = std::exp (-1.0f / (0.150f * (float) sampleRate));
+    impl_->limiterGain = 1.0f;
+
     if (impl_->engine == nullptr) impl_->engine = wasm_engine_new();
     if (impl_->engine == nullptr) { r.detail = "wasm_engine_new failed"; return r; }
 
@@ -740,6 +794,11 @@ FaustEngine::Measured FaustEngine::measure()
     const bool savedCeiling = impl_->ceiling;
     impl_->ceiling = false;
 
+    // Likewise the user's output level: a measurement taken through it would
+    // change every time they moved a fader.
+    const float savedLevel = impl_->outputLevel.load (std::memory_order_relaxed);
+    impl_->outputLevel.store (1.0f, std::memory_order_relaxed);
+
     float peak = 0.0f;
     float perPitch[3] = { 0.0f, 0.0f, 0.0f };
     const auto t0 = juce::Time::getHighResolutionTicks();
@@ -802,6 +861,7 @@ FaustEngine::Measured FaustEngine::measure()
     panic();
     impl_->outputGain = saved;
     impl_->ceiling = savedCeiling;
+    impl_->outputLevel.store (savedLevel, std::memory_order_relaxed);
     peak_.store (0.0f, std::memory_order_relaxed);
 
     m.peak = peak;
@@ -828,25 +888,41 @@ FaustEngine::Measured FaustEngine::measure()
 
     // ── the pitch sweep ─────────────────────────────────────────────────────
     //
-    // A SHORTER window than the three reference pitches: 1 s holding the gate
-    // and 0.5 s after, rather than 2 s and 3 s. This table is used for the
-    // SHAPE of level against pitch, not for the absolute level, and the shape
-    // is established early. Twelve pitches at the full window would be 60 s of
-    // audio per load, which on the slowest genome measured is three seconds of
-    // staring at nothing.
+    // THE SAME WINDOW as the three reference pitches, and reusing their
+    // measurements rather than repeating them.
     //
-    // Scaled so the entry at a4 equals the full-window a4 peak, so the table is
-    // consistent with the reference the notes are corrected towards even though
-    // it was measured over a different window.
+    // This used 1 s of hold and 0.5 s of tail, on the reasoning that only the
+    // SHAPE of level against pitch was wanted and the shape is established
+    // early. That reasoning is wrong, and measurably so. On
+    // 01M1KY1AKTTHBPF9Z9KP9BRN6E (tt_supersaw_lead) the short window read
+    // 15.3 dB low at midi 60 and 14.5 dB low at midi 72, and on
+    // 01M1JD666ZTWGTCT4W2GDTVQMF it read 26.1 dB low at midi 48 -- unevenly,
+    // so no single scale factor could correct it.
+    //
+    // Under-measuring makes the correction TOO LARGE, so those pitches were
+    // boosted rather than attenuated and delivered up to 3.9x full scale. That
+    // is a genome which is delicate in the preview and loud and clipping in
+    // the plugin, which is exactly how it was reported.
+    //
+    // A 2 s hold with no tail would be right for 9 of 12 pitches measured and
+    // up to 4 dB low for the rest. Not good enough for a number the whole
+    // keyboard's level is derived from.
+    //
+    // The cost is nine more full-window renders, 45 s of audio: about 75 ms on
+    // a fast genome and a little over two seconds on the slowest in the
+    // archive. measure_ms is logged, so it is visible rather than mysterious.
     {
-        const int sweepHold = (int) (1.0 * impl_->sampleRate) / impl_->maxBlockSize;
-        const int sweepAfter = (int) (0.5 * impl_->sampleRate) / impl_->maxBlockSize;
-
         m.pitchPeaks.resize ((size_t) kSweepCount, 0.0f);
 
         for (int s = 0; s < kSweepCount; ++s)
         {
             const int note = kSweepFirstNote + s * kSweepStep;
+
+            // c3, a4 and a5 were measured above at this exact window. Rendering
+            // them again would cost 15 s to reproduce numbers already held.
+            if (note == 48) { m.pitchPeaks[(size_t) s] = perPitch[0]; continue; }
+            if (note == 69) { m.pitchPeaks[(size_t) s] = perPitch[1]; continue; }
+            if (note == 81) { m.pitchPeaks[(size_t) s] = perPitch[2]; continue; }
 
             panic();
             if (idxFreq >= 0) setParameter (idxFreq, mtof (note));
@@ -854,7 +930,7 @@ FaustEngine::Measured FaustEngine::measure()
             if (idxGate >= 0) setParameter (idxGate, 1.0f);
 
             float here = 0.0f;
-            for (int b = 0; b < sweepHold; ++b)
+            for (int b = 0; b < holdBlocks; ++b)
             {
                 process (scratch, noMidi);
                 here = juce::jmax (here, scratch.getMagnitude (0, impl_->maxBlockSize));
@@ -862,22 +938,13 @@ FaustEngine::Measured FaustEngine::measure()
 
             if (idxGate >= 0) setParameter (idxGate, 0.0f);
 
-            for (int b = 0; b < sweepAfter; ++b)
+            for (int b = 0; b < afterBlocks; ++b)
             {
                 process (scratch, noMidi);
                 here = juce::jmax (here, scratch.getMagnitude (0, impl_->maxBlockSize));
             }
 
             m.pitchPeaks[(size_t) s] = here;
-        }
-
-        // a4 is entry 7: 48 + 7*3 = 69.
-        const float sweepA4 = m.pitchPeaks[7];
-
-        if (sweepA4 > 1.0e-6f && m.peakA4 > 1.0e-6f)
-        {
-            const float scale = m.peakA4 / sweepA4;
-            for (auto& v : m.pitchPeaks) v *= scale;
         }
 
         panic();
@@ -952,6 +1019,13 @@ void FaustEngine::setParameter (int byteOffset, float value) noexcept
 void FaustEngine::setOutputCeiling (bool shouldLimit) noexcept
 {
     if (impl_ != nullptr) impl_->ceiling = shouldLimit;
+}
+
+void FaustEngine::setOutputLevel (float linearGain) noexcept
+{
+    if (impl_ != nullptr)
+        impl_->outputLevel.store (juce::jlimit (0.0f, 4.0f, linearGain),
+                                  std::memory_order_relaxed);
 }
 
 void FaustEngine::setPitchCompensation (const std::vector<float>& pitchPeaks, float referencePeak)
@@ -1058,17 +1132,26 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
     {
         const float here = estimatePeakAt (note, impl_->pitchPeaks);
 
-        // ASYMMETRIC bounds, and the asymmetry is the point. Boosting is what
-        // amplifies whatever the DSP is doing at a pitch where it barely
-        // sounds, so that direction is capped at +18 dB. Attenuating cannot
-        // create anything, so it is allowed down to -60 dB.
+        // ATTENUATE ONLY, and this is the load-bearing rule.
         //
-        // A symmetric +-18 dB clamp was the first version and it defeated the
-        // fix on the genome that motivated it: 01M1JD666ZTWGTCT4W2GDTVQMF needs
-        // -29.1 dB at c3 and would have been held at -18.1, delivering a peak
-        // of 1.42 -- still clipping, on the note the correction exists for.
+        // A correction may pull a pitch DOWN towards the reference, which is
+        // bounded and safe: the worst it can do is fail to attenuate enough.
+        // It must never push one UP, because a boost is only justified where
+        // the estimate is right, and an estimate is exactly what may be wrong
+        // -- between table entries, or outside the measured range.
+        //
+        // Allowing up to 8x boost delivered 4.1 at midi 36 on
+        // 01M1KY1AKTTHBPF9Z9KP9BRN6E, from an estimate clamped to the edge of a
+        // table that did not reach that far. Measured over 10 archive genomes
+        // at every semitone, allowing boost gives a worst delivered peak of
+        // 3.810; forbidding it gives 1.909, with 9 of the 10 never exceeding
+        // full scale at all.
+        //
+        // The cost is fidelity in one direction only: a pitch quieter than the
+        // reference stays quieter, which is what the genome does and what the
+        // preview would render.
         chosen->compTarget = here > 1.0e-6f
-            ? juce::jlimit (0.001f, 8.0f, impl_->referencePeak / here)
+            ? juce::jmin (1.0f, impl_->referencePeak / here)
             : 1.0f;
     }
     else
@@ -1336,25 +1419,33 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
         // outputs == 1 for this substrate, so the mono result is copied across
         // the pair. See the header: this is the opposite of SamplerEngine.
         //
-        // SOFT CEILING before it goes out. Two things can put the sum past full
-        // scale even with per-note correction: voices ADD, and a resonance
-        // narrower than the sweep's three-semitone spacing can sit between two
-        // table entries and be under-attenuated.
+        // LIMITER before it goes out. Two things put the sum past full scale
+        // even with per-note correction: voices ADD, and a resonance narrower
+        // than the sweep's spacing can sit between two table entries. Measured
+        // over the timbre-seeded run the residual reaches 23 dB, which is far
+        // too much to shape sample by sample -- that is what turns a waveform
+        // into a square. Reducing the gain of the whole signal instead sounds
+        // like compression.
         //
-        // tanh rather than a hard clip. Both bound the signal; hard clipping
-        // introduces a discontinuity and the odd harmonics that go with it,
-        // which is the harsh sound this replaces. tanh is smooth, and below
-        // about half scale it is within a fraction of a dB of unity -- so a
-        // single note at the preview's level passes through essentially
-        // untouched and only a genuine overload is shaped.
-        //
-        // This is the dynamic equivalent of what the preview does statically:
-        // renderFaustGenome attenuates a render whose peak exceeds 1.0 rather
-        // than letting it clip.
+        // softCeiling stays behind it, catching only the attack overshoot.
+        const float level = impl_->outputLevel.load (std::memory_order_relaxed);
+
         for (int i = 0; i < chunk; ++i)
         {
-            const float x = impl_->mix[(size_t) i] * impl_->outputGain;
-            impl_->mix[(size_t) i] = impl_->ceiling ? std::tanh (x) : x;
+            const float x = impl_->mix[(size_t) i] * impl_->outputGain * level;
+
+            if (! impl_->ceiling) { impl_->mix[(size_t) i] = x; continue; }
+
+            const float mag = std::abs (x);
+            const float target = mag > kLimiterThreshold ? kLimiterThreshold / mag : 1.0f;
+
+            // Down fast, up slowly. A one-pole either way, so the gain never
+            // steps -- a stepped gain is itself a click.
+            const float coef = target < impl_->limiterGain ? impl_->limiterAttack
+                                                           : impl_->limiterRelease;
+            impl_->limiterGain = target + (impl_->limiterGain - target) * coef;
+
+            impl_->mix[(size_t) i] = softCeiling (x * impl_->limiterGain);
         }
 
         for (int ch = 0; ch < numChannels; ++ch)
