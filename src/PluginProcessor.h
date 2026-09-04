@@ -276,6 +276,42 @@ private:
         applyFaustTrim, because they must agree.
     */
     bool runtimeMeasurementNeeded() const;
+
+    /** The measurement cached beside the instrument, if it is still valid.
+
+        Measuring costs 105 seconds of rendered audio -- 1.2 to 4.8 s of wall
+        clock -- and the result depends on nothing that changes between one
+        selection of an instrument and the next. Switching back and forth
+        re-derived the same numbers every time.
+
+        VALIDITY IS THE WHOLE DESIGN. A stale cache here is worse than no cache:
+        it would set the level of the keyboard from numbers measured under
+        conditions that no longer hold, silently. So the file records everything
+        the measurement depends on and is rejected unless all of it matches:
+
+          runtime     wasmtime version plus OS and arch. A different runtime
+                      can produce different samples, which is the entire reason
+                      rtfPlatform exists in the artefact contract.
+          sampleRate  peak IS a function of sample rate -- 48000 and 44100
+                      differ by 0.66 dB overall and up to 3.8 dB at one pitch.
+                      Block size is NOT, measured, so it is not recorded.
+          module      size and hash of instrument.wasm. The artifactId is a
+                      folder name and a re-download reuses it; the bytes are
+                      what was actually measured.
+
+        Kept beside the instrument rather than in one central file so that
+        removing an instrument takes its cache with it, and named .local because
+        it belongs to THIS machine -- it is not part of the artefact and must
+        never be mistaken for the platform's own declared numbers, which stay in
+        synthis.json and remain available as a cross-check.
+    */
+    std::optional<FaustEngine::Measured> cachedMeasurement() const;
+
+    /** Writes the measurement beside the instrument for next time. */
+    void writeCachedMeasurement (const FaustEngine::Measured& measured) const;
+
+    /** measured.local.json for the currently loaded Faust instrument. */
+    juce::File cacheFileForCurrentFaust() const;
    #endif
 
     // Set while a measurement runs on measurePool_. Read by the editor.

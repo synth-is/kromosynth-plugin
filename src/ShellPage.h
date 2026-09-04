@@ -627,6 +627,13 @@ async function load (id) {
   try {
     let r = await call('loadInstrument', id);
 
+    // Traced, because the processor's log said ok=1 and the shell said failed,
+    // twice, and reconciling those by reasoning produced two wrong answers.
+    call('logFromShell', 'load start id=' + id
+      + ' ok=' + JSON.stringify(r && r.ok)
+      + ' measuring=' + JSON.stringify(r && r.measuring)
+      + ' detail=' + JSON.stringify(r && r.detail));
+
     // The Faust path hands the measurement to a background thread and returns
     // as soon as the module is in, so this first reply means "started", not
     // "ready". Polling rather than waiting for a push: the editor can be
@@ -657,6 +664,14 @@ async function load (id) {
       return;
     }
 
+    call('logFromShell', 'load settled id=' + id
+      + ' polls=' + (waited / 120)
+      + ' ok=' + JSON.stringify(r && r.ok)
+      + ' rid=' + JSON.stringify(r && r.id)
+      + ' regions=' + JSON.stringify(r && r.regions)
+      + ' tail=' + JSON.stringify(r && r.tailSeconds)
+      + ' detail=' + JSON.stringify(r && r.detail));
+
     // ok and regions are reported separately on purpose. F11: sfizz's
     // loadSfzFile returns true when every region was culled for an
     // unresolvable sample, so "it loaded" and "there is an instrument" are
@@ -672,6 +687,7 @@ async function load (id) {
     render();
     drawSpectrogram();
   } catch (err) {
+    call('logFromShell', 'load threw id=' + id + ' err=' + String(err));
     setStatus(String(err), 'err');
   } finally {
     // In a finally, not after the try: a failed load must not leave the list

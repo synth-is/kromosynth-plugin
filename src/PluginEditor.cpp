@@ -152,7 +152,13 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
         .withResourceProvider ([] (const juce::String& path)
                                -> std::optional<juce::WebBrowserComponent::Resource>
         {
-            if (path != "/" && path != "/index.html")
+            // The QUERY IS STRIPPED before matching, because the shell is
+            // loaded with a cache-busting one appended -- see where goToURL is
+            // called. Matching the raw path would 404 the page the moment that
+            // query existed.
+            const auto clean = path.upToFirstOccurrenceOf ("?", false, false);
+
+            if (clean != "/" && clean != "/index.html")
                 return std::nullopt;
 
             const juce::String html (kromosynth::shell::kIndexHtml);
@@ -395,6 +401,17 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
 
             done (juce::var (o));
         })
+        .withNativeFunction ("logFromShell",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // The page has no other way to leave a trace. Everything the shell
+            // does is invisible in the log, so "the UI said it failed" and
+            // "the processor said it succeeded" could only be reconciled by
+            // guessing -- twice, wrongly, before this existed.
+            proc_.logEvent ("shell: " + (args.isEmpty() ? juce::String() : args[0].toString()));
+            done (juce::var (true));
+        })
         .withNativeFunction ("getLoadState",
                              [this] (const juce::Array<juce::var>&,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
@@ -543,7 +560,25 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     // The shell, not the site. The site is a second component with native
     // integration OFF; see WP section 12. Not built yet -- acquisition needs
     // the sentinel-URL hook on the web app side.
-    const auto shellRoot = juce::WebBrowserComponent::getResourceProviderRoot();
+    // A unique URL per editor, as cheap insurance against the page being
+    // cached from the custom scheme.
+    //
+    // HONEST PROVENANCE: this was added on a WRONG diagnosis. Three shell
+    // fixes appeared to have no effect and a diagnostic added to trace them
+    // logged nothing, and I concluded WKWebView was serving a cached page. It
+    // was not. AUHostingServiceXPC_arrow had been running since 11:57 and
+    // loads the plugin binary ONCE -- every build installed afterwards was
+    // never loaded at all, because reopening the plugin WINDOW makes a new
+    // processor inside the same image. `processor_constructed` appearing
+    // repeatedly is not evidence that new code is running.
+    //
+    // Page caching was never demonstrated. This stays because it costs one
+    // string and removes a whole class of doubt from future "my fix had no
+    // effect" hunts -- but it is not the fix for anything observed here, and
+    // the thing to check first is whether the host process predates the build.
+    const auto shellRoot = juce::WebBrowserComponent::getResourceProviderRoot()
+                         + "?v=" + juce::String (juce::Time::getHighResolutionTicks());
+
     proc_.logEvent ("navigating to shell " + shellRoot);
     browser_->goToURL (shellRoot);
 #endif

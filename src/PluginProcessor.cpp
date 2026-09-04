@@ -472,10 +472,29 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         // suspendProcessing(false) moves with the measurement. Resuming here
         // would open the barrier while the render was still running, which is
         // precisely the race the comment above describes.
+        // Read ONCE. This hashes instrument.wasm, and calling it in the
+        // condition and again for the value would do that twice.
+        auto cached = r.ok ? cachedMeasurement() : std::nullopt;
+
         if (r.ok && ! runtimeMeasurementNeeded())
         {
             applyFaustTrim();
             suspendProcessing (false);
+        }
+        else if (r.ok && cached.has_value())
+        {
+            // MEASURED BEFORE, on this runtime, at this rate, from these exact
+            // module bytes. Nothing the measurement depends on has changed, so
+            // re-deriving it would spend seconds reproducing numbers already on
+            // disk -- which is what switching back and forth between two
+            // instruments used to do every time.
+            applyFaustMeasurement (*cached, 0.0);
+            suspendProcessing (false);
+
+            logEvent ("faust_measure_cached id=" + id
+                      + " peak=" + juce::String (cached->peak, 6)
+                      + " rtf=" + juce::String (cached->rtf, 1)
+                      + " voices=" + juce::String (faustVoices_));
         }
         else if (r.ok)
         {
@@ -502,6 +521,10 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
                     applyFaustMeasurement (measured, ms);
                     suspendProcessing (false);
                     measuring_.store (false, std::memory_order_relaxed);
+
+                    // Written AFTER applying, so a cache is only ever left
+                    // behind by a measurement that was actually used.
+                    writeCachedMeasurement (measured);
 
                     LoadOutcome done;
                     done.id = id;
@@ -770,6 +793,134 @@ KromosynthAudioProcessor::LoadOutcome KromosynthAudioProcessor::lastLoadOutcome(
     return lastOutcome_;
 }
 
+juce::File KromosynthAudioProcessor::cacheFileForCurrentFaust() const
+{
+    if (faustWasm_ == juce::File{}) return {};
+    return faustWasm_.getParentDirectory().getChildFile ("measured.local.json");
+}
+
+namespace
+{
+/** 64-bit FNV-1a over a file's bytes.
+
+    NOT cryptographic, and does not need to be: the only question it answers is
+    whether these are the same module bytes that were measured. juce::MD5 and
+    juce::SHA256 both live in juce_cryptography, and linking a whole module to
+    notice a replaced 28 KB file would be a poor trade.
+
+    Paired with the file SIZE, which is checked separately, so a collision would
+    have to be same-length as well.
+*/
+juce::String hashFile (const juce::File& file)
+{
+    juce::MemoryBlock block;
+
+    if (! file.loadFileAsData (block))
+        return {};
+
+    std::uint64_t h = 1469598103934665603ull;
+    const auto* bytes = static_cast<const std::uint8_t*> (block.getData());
+
+    for (size_t i = 0; i < block.getSize(); ++i)
+    {
+        h ^= bytes[i];
+        h *= 1099511628211ull;
+    }
+
+    return juce::String::toHexString ((juce::int64) h);
+}
+} // namespace
+
+std::optional<FaustEngine::Measured> KromosynthAudioProcessor::cachedMeasurement() const
+{
+    const auto file = cacheFileForCurrentFaust();
+
+    if (file == juce::File{} || ! file.existsAsFile())
+        return std::nullopt;
+
+    auto parsed = juce::JSON::parse (file.loadFileAsString());
+    auto* o = parsed.getDynamicObject();
+
+    if (o == nullptr) return std::nullopt;
+
+    const auto get = [o] (const char* key) { return o->getProperty (key); };
+
+    // Every condition the measurement depends on. A mismatch means discard,
+    // never adapt: there is no way to correct a peak measured at another rate
+    // or under another runtime, and using it anyway would mis-level the whole
+    // keyboard without saying so.
+    if ((int) get ("schema") != 1) return std::nullopt;
+    if (get ("runtime").toString() != FaustEngine::runtimeId()) return std::nullopt;
+    if ((double) get ("sampleRate") != faustRate_) return std::nullopt;
+    if ((juce::int64) get ("wasmBytes") != faustWasm_.getSize()) return std::nullopt;
+
+    if (get ("wasmHash").toString() != hashFile (faustWasm_))
+        return std::nullopt;
+
+    FaustEngine::Measured m;
+    m.peak    = (float) (double) get ("peak");
+    m.rtf     = (double) get ("rtf");
+    m.capAt4x = (int) get ("capAt4x");
+    m.peakC3  = (float) (double) get ("peakC3");
+    m.peakA4  = (float) (double) get ("peakA4");
+    m.peakA5  = (float) (double) get ("peakA5");
+
+    // WHOLE OR NOTHING for the table. A short one would shift every pitch above
+    // the gap, which is the same positional trap the descriptor vector has.
+    if (auto* arr = get ("pitchPeaks").getArray())
+    {
+        if (arr->size() != FaustEngine::kSweepCount) return std::nullopt;
+
+        m.pitchPeaks.reserve ((size_t) arr->size());
+        for (const auto& v : *arr) m.pitchPeaks.push_back ((float) (double) v);
+    }
+    else
+    {
+        return std::nullopt;
+    }
+
+    // The spectrogram is optional: it is a picture, and a missing one costs
+    // nothing but a blank panel.
+    juce::MemoryOutputStream spectro;
+    if (juce::Base64::convertFromBase64 (spectro, get ("spectrogram").toString()))
+    {
+        const auto* bytes = static_cast<const std::uint8_t*> (spectro.getData());
+        m.spectrogram.assign (bytes, bytes + spectro.getDataSize());
+    }
+
+    return m;
+}
+
+void KromosynthAudioProcessor::writeCachedMeasurement (const FaustEngine::Measured& m) const
+{
+    const auto file = cacheFileForCurrentFaust();
+    if (file == juce::File{}) return;
+
+    auto* o = new juce::DynamicObject();
+    o->setProperty ("schema", 1);
+    o->setProperty ("runtime", FaustEngine::runtimeId());
+    o->setProperty ("sampleRate", faustRate_);
+    o->setProperty ("wasmBytes", faustWasm_.getSize());
+    o->setProperty ("wasmHash", hashFile (faustWasm_));
+
+    o->setProperty ("peak", m.peak);
+    o->setProperty ("rtf", m.rtf);
+    o->setProperty ("capAt4x", m.capAt4x);
+    o->setProperty ("peakC3", m.peakC3);
+    o->setProperty ("peakA4", m.peakA4);
+    o->setProperty ("peakA5", m.peakA5);
+
+    juce::Array<juce::var> table;
+    for (const auto v : m.pitchPeaks) table.add (v);
+    o->setProperty ("pitchPeaks", table);
+
+    if (! m.spectrogram.empty())
+        o->setProperty ("spectrogram",
+                        juce::Base64::toBase64 (m.spectrogram.data(), m.spectrogram.size()));
+
+    file.replaceWithText (juce::JSON::toString (juce::var (o)));
+}
+
 void KromosynthAudioProcessor::applyFaustTrim()
 {
     // The caller holds the suspend window.
@@ -845,11 +996,26 @@ void KromosynthAudioProcessor::applyFaustTrim()
 
     faust_->setOutputGain (1.0f);
 
+    // The cache serves this path too -- it is the one prepareToPlay takes on a
+    // sample-rate change, and a rate change is exactly when the old numbers
+    // become invalid. cachedMeasurement checks the rate, so a genuine change
+    // misses and re-measures while a reopen at the same rate hits.
+    if (auto cached = cachedMeasurement())
+    {
+        logEvent ("faust_measure_cached peak=" + juce::String (cached->peak, 6)
+                  + " rtf=" + juce::String (cached->rtf, 1)
+                  + " -- sync path");
+
+        applyFaustMeasurement (*cached, 0.0);
+        return;
+    }
+
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
     const auto measured = faust_->measure();
     const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
 
     applyFaustMeasurement (measured, ms);
+    writeCachedMeasurement (measured);
 }
 
 void KromosynthAudioProcessor::applyFaustMeasurement (const FaustEngine::Measured& measured,
