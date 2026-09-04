@@ -381,7 +381,31 @@ function describe (e) {
   const bits = [];
 
   if (chr.soundType) bits.push({ text: chr.soundType });
-  if (chr.labels && chr.labels.brightness) bits.push({ text: chr.labels.brightness });
+
+  // THREE of the seven descriptor labels, chosen by measurement rather than by
+  // taste. Over 889 labelled sounds the seven dimensions are far from
+  // independent -- brightness, noisiness, rolloff and width correlate at 0.81
+  // to 0.92, so they are one spectral axis read four ways. Printing all four
+  // says the same thing four times and crowds out everything else.
+  //
+  // energy (-0.27 against brightness) and richness (-0.09) are the two that
+  // carry information the first axis does not. Percussive sits in between,
+  // correlating -0.61 with energy, so it is left to the filter rather than the
+  // row.
+  //
+  // All seven remain searchable -- see searchText -- so nothing is lost, only
+  // unprinted.
+  //
+  // These are CORPUS-RELATIVE: DescriptorLabelingService cuts at P33/P67 over
+  // the whole archive, so "bright" is a claim about where this sound sits among
+  // the others, and it moves when the archive grows. soundType above is the
+  // only absolute claim in this row, which is also why it is nearly useless on
+  // its own: 76% of the corpus is "textural".
+  if (chr.labels) {
+    ['brightness', 'energy', 'richness'].forEach(function (dim) {
+      if (chr.labels[dim]) bits.push({ text: chr.labels[dim] });
+    });
+  }
 
   // A drone is a fine pad and a poor MIDI instrument, and it is worth knowing
   // before playing one rather than after.
@@ -396,6 +420,13 @@ function describe (e) {
   if (msd.hasGate === false) bits.push({ text: 'no gate', warn: true });
 
   if (msd.capAt4x > 0) bits.push({ text: msd.capAt4x + ' voices' });
+
+  // Regions, for sampled instruments only. It used to sit in the kind column,
+  // which is now the one place both engines say something comparable, so the
+  // count belongs here with the other measured facts. It is also the honest
+  // analogue of a voice cap: how many rendered samples the instrument is
+  // actually made of.
+  if (e.kind !== 'faust' && e.regions > 0) bits.push({ text: e.regions + ' regions' });
 
   const when = datePart(e);
   if (when) bits.push({ text: when });
@@ -468,12 +499,19 @@ function render () {
 
     const meta = document.createElement('span');
     meta.className = 'meta';
-    // A Faust instrument has no regions to count -- it is synthesised, not
-    // sampled -- so the column says which engine will play it instead of
-    // sitting empty and looking like a failed load.
-    meta.textContent = e.kind === 'faust'
-      ? 'live \u00b7 Faust'
-      : (e.regions > 0 ? e.regions + ' regions' : '');
+    // SYMMETRIC, and generic. This said 'live \u00b7 Faust' for one engine and
+    // nothing at all for the other, so a sample instrument's row looked like a
+    // failed load rather than a different kind of thing.
+    //
+    // 'Faust' is dropped deliberately: it names the substrate, which matters to
+    // the platform and not to someone choosing an instrument to play. What a
+    // player needs to know is whether the sound is synthesised on the fly or
+    // read from rendered audio -- that is what decides whether it answers
+    // across the whole keyboard, and what the controls will do.
+    //
+    // The region count moves to the detail line below, with the other measured
+    // facts.
+    meta.textContent = e.kind === 'faust' ? 'live' : 'sampled';
 
     top.appendChild(dot);
     top.appendChild(name);
