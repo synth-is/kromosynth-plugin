@@ -632,9 +632,29 @@ async function load (id) {
     // "ready". Polling rather than waiting for a push: the editor can be
     // destroyed while a measurement runs, and a push into a destroyed editor
     // is the problem AcquisitionRunner already avoided the same way.
-    while (r.ok && r.measuring) {
+
+    // Loop on MEASURING ALONE, never on ok.
+    //
+    // getLoadState reports the last COMPLETED load, and on the first load of a
+    // session there isn't one -- the outcome is default-constructed, so ok is
+    // false. Testing `r.ok && r.measuring` therefore exited on the first poll
+    // and reported "Load failed" for a load that was measuring perfectly well
+    // and went on to succeed. Reopening the window showed the instrument
+    // active, because it had loaded all along.
+    //
+    // Capped so a measurement that never clears cannot hang the list forever.
+    // 20 s is comfortably past the slowest measurement observed, 4.8 s.
+    let waited = 0;
+
+    while (r.measuring && waited < 20000) {
       await new Promise(function (res) { setTimeout(res, 120); });
+      waited += 120;
       r = await call('getLoadState');
+    }
+
+    if (r.measuring) {
+      setStatus('Still measuring after 20 s \u2014 see the log', 'err');
+      return;
     }
 
     // ok and regions are reported separately on purpose. F11: sfizz's
