@@ -419,6 +419,18 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
             return outcome;
         }
 
+        // A second load while the first is still measuring would call
+        // faust_->load() underneath a background render -- new module bytes
+        // swapped in while the old ones are being rendered through. The shell
+        // disables the list during a load, so this is the backstop for anything
+        // that reaches the processor another way.
+        if (measuring_.load (std::memory_order_relaxed))
+        {
+            outcome.detail = "still measuring the previous instrument";
+            logEvent ("instrument_load_busy id=" + id);
+            return outcome;
+        }
+
         suspendProcessing (true);
 
         // Whatever was sounding must stop before the module bytes go away.
@@ -448,10 +460,67 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         // releasing the barrier raced the audio thread and produced a raw peak
         // of 23182060 -- an audible bang, and a -159 dB trim that silenced
         // every instrument loaded afterwards.
-        if (r.ok)
+        //
+        // THE RENDER NOW HAPPENS ON A BACKGROUND THREAD, and the barrier is
+        // what makes that safe rather than reckless: processing is suspended,
+        // so the audio thread is not in process() and cannot enter it. The
+        // background thread therefore has the engine to itself, exactly as the
+        // message thread did. What changes is only WHICH thread waits: the
+        // message thread returns immediately and the UI stays alive, instead of
+        // freezing for the one to three seconds a 105-second measurement takes.
+        //
+        // suspendProcessing(false) moves with the measurement. Resuming here
+        // would open the barrier while the render was still running, which is
+        // precisely the race the comment above describes.
+        if (r.ok && ! runtimeMeasurementNeeded())
+        {
             applyFaustTrim();
+            suspendProcessing (false);
+        }
+        else if (r.ok)
+        {
+            faust_->setOutputGain (1.0f);
+            measuring_.store (true, std::memory_order_relaxed);
 
-        suspendProcessing (false);
+            const auto startedAt = juce::Time::getMillisecondCounterHiRes();
+
+            measurePool_.addJob ([this, id, startedAt,
+                                  weak = std::weak_ptr<int> (lifetime_)]
+            {
+                // The pool is joined before faust_ is destroyed -- see where it
+                // is declared -- so the engine is alive for the render itself.
+                // The weak_ptr guards the hop back, which goes through the
+                // message queue and can outlive the processor.
+                auto measured = faust_->measure();
+                const auto ms = juce::Time::getMillisecondCounterHiRes() - startedAt;
+
+                juce::MessageManager::callAsync (
+                    [this, weak, id, measured = std::move (measured), ms]
+                {
+                    if (weak.expired()) return;
+
+                    applyFaustMeasurement (measured, ms);
+                    suspendProcessing (false);
+                    measuring_.store (false, std::memory_order_relaxed);
+
+                    LoadOutcome done;
+                    done.id = id;
+                    done.ok = true;
+                    {
+                        const juce::ScopedLock sl (outcomeLock_);
+                        lastOutcome_ = done;
+                    }
+                    current_ = done;
+
+                    logEvent ("instrument_measured id=" + id
+                              + " ms=" + juce::String (ms, 1));
+                    updateHostDisplay();
+                });
+            });
+        }
+
+        if (! r.ok)
+            suspendProcessing (false);
 
         outcome.ok = r.ok;
         outcome.detail = r.detail;
@@ -678,6 +747,29 @@ void KromosynthAudioProcessor::reloadFaustIfNeeded (double sampleRate, int sampl
     applyFaustTrim();
 }
 
+bool KromosynthAudioProcessor::runtimeMeasurementNeeded() const
+{
+    // ONE definition, because the load path and applyFaustTrim have to agree.
+    // If they disagreed, a load could skip the measurement while the apply step
+    // expected one, or start a background render whose result is then thrown
+    // away in favour of the artefact's numbers.
+    //
+    // ALSO requires a sweep table. Without one the artefact cannot level the
+    // keyboard, and taking its rtf while re-measuring for the table would be
+    // two sources of truth for one load. Nothing emits a table yet, so this
+    // returns true today -- which is the safe direction.
+    return ! (faustDeclared_.hasMeasured
+              && faustDeclared_.rtfPlatform.isNotEmpty()
+              && faustDeclared_.rtfPlatform == FaustEngine::runtimeId()
+              && ! faustDeclared_.pitchPeaks.empty());
+}
+
+KromosynthAudioProcessor::LoadOutcome KromosynthAudioProcessor::lastLoadOutcome() const
+{
+    const juce::ScopedLock sl (outcomeLock_);
+    return lastOutcome_;
+}
+
 void KromosynthAudioProcessor::applyFaustTrim()
 {
     // The caller holds the suspend window.
@@ -714,10 +806,7 @@ void KromosynthAudioProcessor::applyFaustTrim()
     // keyboard, and taking its rtf while re-measuring for the table would be
     // two sources of truth for one load. Nothing emits a table yet, so this
     // branch does not fire today -- which is the safe direction.
-    const bool runtimeMatches = faustDeclared_.hasMeasured
-                             && faustDeclared_.rtfPlatform.isNotEmpty()
-                             && faustDeclared_.rtfPlatform == FaustEngine::runtimeId()
-                             && ! faustDeclared_.pitchPeaks.empty();
+    const bool runtimeMatches = ! runtimeMeasurementNeeded();
 
     if (runtimeMatches)
     {
@@ -759,6 +848,17 @@ void KromosynthAudioProcessor::applyFaustTrim()
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
     const auto measured = faust_->measure();
     const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
+
+    applyFaustMeasurement (measured, ms);
+}
+
+void KromosynthAudioProcessor::applyFaustMeasurement (const FaustEngine::Measured& measured,
+                                                      double ms)
+{
+    // Split out of applyFaustTrim so the RENDER can happen on a background
+    // thread while this half stays on the message thread. Everything here
+    // touches engine settings and editor-visible state; nothing here renders.
+    if (faust_ == nullptr) return;
 
     const float peak = measured.peak;
 

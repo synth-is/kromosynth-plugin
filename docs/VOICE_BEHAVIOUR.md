@@ -172,10 +172,63 @@ AudioUnitParameterID paramHash = juceParamID.hashCode();   // "decay" -> 9545925
 ```
 
 Sorting by that hash predicts DECAY first and OUTPUT last, which matches, but
-not the middle three — so the order is clearly ID-derived without the exact
-rule being known. `JUCE_FORCE_LEGACY_PARAM_IDS` would make the AU IDs
-sequential indices instead, which very likely restores the intended order, at
-the cost of changing every ID and invalidating saved automation. Untested.
+not the middle three — my hash arithmetic was wrong for the others. `auval`
+settles it: the AU reports its parameter list **sorted by ID**, and that list is
+exactly the order GarageBand shows.
+
+**Fixed with `JUCE_FORCE_USE_LEGACY_PARAM_IDS=1`**, which makes the AU ID the
+parameter index, so add-order is presentation order. Verified — `auval` now
+reports `0:Attack 1:Decay 2:Sustain 3:Release 4:Output`.
+
+It silently did nothing twice before it worked, and both are worth keeping:
+
+1. **It was `PRIVATE`.** The AU wrapper compiles into the *format* target,
+   `KromosynthPlugin_AU`, which links the shared-code target rather than being
+   it — so a PRIVATE definition never reaches the file that reads the flag.
+2. **It was spelled `JUCE_FORCE_LEGACY_PARAM_IDS`.** The wrapper tests
+   `JUCE_FORCE_USE_LEGACY_PARAM_IDS`. A misspelled feature macro is not an
+   error anywhere: it compiles, links, installs and does nothing.
+
+Neither produced a warning, and the only symptom either time was a knob order
+that stayed wrong. Which is why this was checked with `auval` rather than by
+reading the source and believing it.
+
+The cost is that every parameter ID changed, so automation and saved parameter
+state from an earlier build will not map. Free while these parameters were hours
+old; not free again.
+
+GarageBand caches the layout per plugin instance, so an existing track keeps the
+old order until the plugin is re-added — that part is the host, not us.
+
+## 5c. Loading measures on a background thread
+
+A load renders 105 seconds of audio to level the keyboard: about 150 ms on a
+fast genome and up to 3.5 s on the slowest, measured from `measure_ms` in the
+log. On the message thread that froze the whole UI, and a plugin that stops
+repainting reads as crashed.
+
+Only the RENDER moved. The suspend barrier is what makes that safe rather than
+reckless: processing is suspended, so the audio thread is not inside
+`process()` and cannot enter it, and the background thread has the engine to
+itself exactly as the message thread did. What changes is only which thread
+waits.
+
+Four things that would each be a bug:
+
+- **`suspendProcessing(false)` moved with the measurement.** Resuming at the old
+  place would open the barrier while the render was still running — the race
+  that once produced a raw peak of 23182060.
+- **The pool is declared last**, after `logFile_` as well as after `faust_`.
+  Members destroy in reverse order, so it joins its job before the engine it
+  renders through and the file it logs to.
+- **One thread.** Two measurements at once would share voices and mix buffer.
+- **Polling, not pushing.** The shell polls `getLoadState`; a push would have to
+  cross into an editor that may have been destroyed since the load began, which
+  is the reason `AcquisitionRunner` polls too.
+
+The shell disables the list while a load runs, so a second load cannot start
+mid-measurement — a processor-side guard backs that up for anything arriving by
+another route.
 
 ## 6. Things that are not the cause, verified
 

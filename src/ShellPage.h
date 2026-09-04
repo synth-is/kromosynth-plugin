@@ -128,6 +128,24 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     border: 1px solid #30363d; border-radius: 4px; padding: 1px 7px;
   }
   .row .treebtn:hover { background: #30363d; color: #e6edf3; }
+
+  /* The list goes quiet while an instrument loads. Loading BLOCKS the message
+     thread for one to three seconds -- measure() renders 105 s of audio to
+     level the keyboard -- so further clicks would queue up behind it and
+     arrive as a burst afterwards. */
+  #list.busy { opacity: .55; pointer-events: none; }
+  #list.busy .row.pending { opacity: 1; }
+
+  /* CSS animation, deliberately. WKWebView runs the page in its own process,
+     so this keeps turning while our message thread is blocked -- which is the
+     whole point: the plugin is busy, not hung, and a static "Loading..." is
+     indistinguishable from a freeze. */
+  .spinner {
+    display: inline-block; width: 11px; height: 11px; flex: 0 0 auto;
+    border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%;
+    animation: spin .7s linear infinite; vertical-align: -1px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .row .rmbtn {
     flex: 0 0 auto; font: inherit; font-size: 11px; cursor: pointer;
     background: transparent; color: #6e7681;
@@ -586,9 +604,38 @@ function render () {
 }
 
 async function load (id) {
-  setStatus('Loading\u2026');
+  // Marked BEFORE the native call, because that call blocks the message thread
+  // and nothing after it will run until the load finishes. Everything the user
+  // needs to see has to be in the DOM by this point.
+  const row = list.querySelector('[data-id="' + id + '"]');
+  list.classList.add('busy');
+
+  let spinner = null;
+
+  if (row) {
+    row.classList.add('pending');
+    spinner = document.createElement('span');
+    spinner.className = 'spinner';
+    const top = row.firstChild;
+    if (top) top.insertBefore(spinner, top.firstChild);
+  }
+
+  // Says WHY it takes a moment. "Loading" invites the reading that something is
+  // stuck; naming the work makes a two-second wait legible.
+  setStatus('Measuring levels across the keyboard\u2026');
+
   try {
-    const r = await call('loadInstrument', id);
+    let r = await call('loadInstrument', id);
+
+    // The Faust path hands the measurement to a background thread and returns
+    // as soon as the module is in, so this first reply means "started", not
+    // "ready". Polling rather than waiting for a push: the editor can be
+    // destroyed while a measurement runs, and a push into a destroyed editor
+    // is the problem AcquisitionRunner already avoided the same way.
+    while (r.ok && r.measuring) {
+      await new Promise(function (res) { setTimeout(res, 120); });
+      r = await call('getLoadState');
+    }
 
     // ok and regions are reported separately on purpose. F11: sfizz's
     // loadSfzFile returns true when every region was culled for an
@@ -606,6 +653,14 @@ async function load (id) {
     drawSpectrogram();
   } catch (err) {
     setStatus(String(err), 'err');
+  } finally {
+    // In a finally, not after the try: a failed load must not leave the list
+    // permanently unclickable. render() rebuilds the rows and takes the
+    // spinner with them, but the busy class lives on the list itself and
+    // would survive.
+    list.classList.remove('busy');
+    if (spinner && spinner.parentNode) spinner.parentNode.removeChild(spinner);
+    if (row) row.classList.remove('pending');
   }
 }
 

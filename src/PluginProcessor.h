@@ -28,7 +28,11 @@ class SamplerEngine;
 #endif
 
 #if KROMOSYNTH_HAS_FAUST
-class FaustEngine;
+// The full definition, not a forward declaration: applyFaustMeasurement takes
+// FaustEngine::Measured, and a nested type cannot be forward-declared. Cheap to
+// include -- FaustEngine.h pulls juce_audio_basics and four standard headers,
+// and keeps wasmtime entirely inside its .cpp.
+#include "FaustEngine.h"
 #endif
 
 #include "InstrumentLibrary.h"
@@ -148,6 +152,22 @@ public:
     */
     LoadOutcome loadInstrument (const juce::String& id);
 
+    /** True while a Faust measurement is running on the background thread.
+
+        The instrument is loaded but NOT yet levelled, and processing stays
+        suspended until it is. See startLoadInstrument.
+    */
+    bool isMeasuring() const noexcept { return measuring_.load (std::memory_order_relaxed); }
+
+    /** The result of the last load, valid once isMeasuring() is false.
+
+        POLLED by the shell rather than pushed to it, for the reason
+        AcquisitionRunner already records: a push has to cross threads into an
+        editor that may have been destroyed since the work started, and a poll
+        cannot.
+    */
+    LoadOutcome lastLoadOutcome() const;
+
     /** Stops everything now. Bound to a shell control because a DAW's own
         panic is not guaranteed to reach a plugin -- GarageBand has no visible
         one -- and a genome that ignores its gate can otherwise only be
@@ -245,6 +265,27 @@ private:
     void reloadFaustIfNeeded (double sampleRate, int samplesPerBlock);
     void applyFaustTrim();
 
+   #if KROMOSYNTH_HAS_FAUST
+    /** The half of applyFaustTrim that does NOT render: applies a measurement
+        to the engine and to editor-visible state. Message thread only.
+    */
+    void applyFaustMeasurement (const FaustEngine::Measured& measured, double ms);
+
+    /** Whether this load has to render its own measurement, or can take the
+        artefact's numbers. One definition, shared by the load path and
+        applyFaustTrim, because they must agree.
+    */
+    bool runtimeMeasurementNeeded() const;
+   #endif
+
+    // Set while a measurement runs on measurePool_. Read by the editor.
+    std::atomic<bool> measuring_ { false };
+
+    // Guarded by the message thread: written when a load finishes, read by
+    // lastLoadOutcome() which the shell polls.
+    LoadOutcome lastOutcome_;
+    mutable juce::CriticalSection outcomeLock_;
+
     float faustTrim_ = 1.0f, faustRawPeak_ = 0.0f;
 
     // Log-frequency spectrogram of the loaded genome, from the measurement
@@ -283,6 +324,17 @@ private:
     AcquisitionRunner acquisitions_;
 
     juce::File logFile_;
+
+    // DECLARED LAST ON PURPOSE, after logFile_ as well as after faust_. Members
+    // are destroyed in reverse order, so this pool is torn down first -- and
+    // its destructor waits for a running job -- before anything that job
+    // touches: the engine it renders through and the log file it writes to.
+    // Declaring it one line earlier would leave a measurement running against
+    // a destroyed File.
+    //
+    // ONE thread: two measurements at once would render through the same
+    // engine, the same voices and the same mix buffer.
+    juce::ThreadPool measurePool_ { 1 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KromosynthAudioProcessor)
 };

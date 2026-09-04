@@ -60,23 +60,40 @@ endif()
 
 kromosynth_configure_target(KromosynthPlugin)
 
+# PUBLIC, and the visibility is half the point; the spelling is the other half.
+#
+# AudioUnit parameter ids become the parameter INDEX rather than a hash of the
+# string id. Without it, juce_audio_plugin_client_AU_1.mm derives the id as
+# juceParamID.hashCode() -- "decay" becomes 95459258 -- and the AU reports its
+# parameter list sorted by that id, so a host shows an order nobody chose.
+# GarageBand listed them Decay, Sustain, Attack, Release, Output against an
+# ADSR ordering that is the whole convention for these four controls. auval
+# confirms both the ids and the order.
+#
+# TWO ways this silently did nothing before it worked, both worth keeping:
+#
+#   1. It was PRIVATE. The AU wrapper is compiled into the FORMAT target --
+#      KromosynthPlugin_AU -- which links the shared-code target rather than
+#      being it, so a PRIVATE definition never reaches the file that reads the
+#      flag.
+#   2. It was spelled JUCE_FORCE_LEGACY_PARAM_IDS. The macro the wrapper tests
+#      is JUCE_FORCE_USE_LEGACY_PARAM_IDS. A misspelled feature macro is not an
+#      error anywhere: it compiles, links, installs and does nothing.
+#
+# Neither produced a warning. The only symptom either time was a knob order
+# that stayed wrong, which is why this was verified with auval rather than by
+# looking at the source and believing it.
+#
+# The cost is that every parameter id changes, so automation and saved parameter
+# state from an earlier build will not map. Free while these parameters are
+# hours old and the plugin is unreleased; not free after.
+target_compile_definitions(KromosynthPlugin PUBLIC
+    JUCE_FORCE_USE_LEGACY_PARAM_IDS=1)
+
 target_compile_definitions(KromosynthPlugin PRIVATE
     JUCE_WEB_BROWSER=1
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
-
-    # AudioUnit parameter IDs become the parameter INDEX rather than a hash of
-    # the string id. Without this, juce_audio_plugin_client_AU_1.mm derives the
-    # AU id as juceParamID.hashCode() -- "decay" becomes 95459258 -- and a host
-    # that presents parameters in id order shows them in an order nobody chose.
-    # GarageBand listed them Decay, Sustain, Attack, Release, Output against an
-    # ADSR ordering that is the entire convention for these four controls.
-    #
-    # The cost is that every parameter id changes, so automation and saved
-    # parameter state written by an earlier build will not map. That is free
-    # today, because these parameters are hours old and the plugin is not
-    # released; it stops being free the moment someone automates one.
-    JUCE_FORCE_LEGACY_PARAM_IDS=1
 
     # STAGE 1 (2026-08-28): native integration and a resource provider are now
     # ON for the shell component. The Stage 0 reasoning below was correct and

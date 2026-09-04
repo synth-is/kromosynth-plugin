@@ -387,6 +387,31 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             o->setProperty ("tailSeconds", r.tailSeconds);
             o->setProperty ("detail", r.detail);
 
+            // The Faust path returns as soon as the module is loaded and hands
+            // the measurement to a background thread, so "ok" here means the
+            // load started, not that the instrument is ready. The shell polls
+            // isMeasuring until this clears.
+            o->setProperty ("measuring", proc_.isMeasuring());
+
+            done (juce::var (o));
+        })
+        .withNativeFunction ("getLoadState",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // POLLED, not pushed, for the reason AcquisitionRunner records: a
+            // push has to cross threads into an editor that may have been
+            // destroyed since the work began, and a poll cannot.
+            auto* o = new juce::DynamicObject();
+            const auto r = proc_.lastLoadOutcome();
+
+            o->setProperty ("measuring", proc_.isMeasuring());
+            o->setProperty ("ok", r.ok);
+            o->setProperty ("id", r.id);
+            o->setProperty ("regions", r.numRegions);
+            o->setProperty ("tailSeconds", r.tailSeconds);
+            o->setProperty ("detail", r.detail);
+
             done (juce::var (o));
         })
         .withNativeFunction ("getStatus",
