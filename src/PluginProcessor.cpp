@@ -39,6 +39,65 @@ static constexpr int kFaustVoices = 8;
 static constexpr float kFaustCeiling = 1.0f;
 #endif
 
+namespace
+{
+/** A float parameter whose DISPLAYED NAME can change after construction.
+
+    EXPERIMENTAL, and narrow on purpose. It exists to answer one question before
+    any real work is built on the answer: does a host update a parameter's name
+    when the plugin changes it?
+
+    The question matters because AU and VST3 parameter lists are fixed at
+    construction -- a host reads them once -- while each Faust genome exposes a
+    DIFFERENT set of sliders: 31 distinct names across 22 seeds, 6 to 10 per
+    seed. Per-instrument named parameters are therefore impossible, and the only
+    route is a fixed pool renamed on load. If names do not refresh, that pool is
+    eight knobs labelled "Macro 1..8" with no indication of what they do, which
+    is worse than four that work -- and MIDI CC mapping becomes the better
+    answer for hardware control.
+
+    GarageBand is the specific doubt: it cached parameter ORDER until the host
+    process was fully quit, so it is a poor bet for refreshing parameter NAMES.
+
+    This one does NOTHING to the audio. It renames itself to the first slider
+    the loaded genome exposes and stops there. Deliberately: the identical
+    change that also wrote to the genome was reverted an hour ago for measuring
+    the instrument after altering it, and the ordering that fixes that is not
+    what is being tested here.
+*/
+class RenamableParameter final : public juce::AudioParameterFloat
+{
+public:
+    using juce::AudioParameterFloat::AudioParameterFloat;
+
+    juce::String getName (int maximumLength) const override
+    {
+        const juce::ScopedLock sl (nameLock_);
+        return displayName_.isEmpty() ? juce::AudioParameterFloat::getName (maximumLength)
+                                      : displayName_.substring (0, maximumLength);
+    }
+
+    void setDisplayName (const juce::String& name, juce::AudioProcessor& owner)
+    {
+        {
+            const juce::ScopedLock sl (nameLock_);
+            if (displayName_ == name) return;
+            displayName_ = name;
+        }
+
+        // withParameterInfoChanged is what asks the host to re-read names and
+        // ranges. Whether it acts on it is the experiment. The processor is
+        // passed in because AudioProcessorParameter does not expose its owner.
+        owner.updateHostDisplay (juce::AudioProcessorListener::ChangeDetails()
+                                     .withParameterInfoChanged (true));
+    }
+
+private:
+    mutable juce::CriticalSection nameLock_;
+    juce::String displayName_;
+};
+} // namespace
+
 KromosynthAudioProcessor::KromosynthAudioProcessor()
     : juce::AudioProcessor (BusesProperties()
           .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
@@ -95,6 +154,17 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
         juce::NormalisableRange<float> { -36.0f, 6.0f, 0.1f },
         0.0f,
         juce::AudioParameterFloatAttributes().withLabel ("dB")));
+
+    // EXPERIMENT, last so it cannot disturb the indices above. With legacy
+    // param ids the AU id IS the index, so adding here leaves Attack..Output at
+    // 0..4 and any automation on them intact.
+    //
+    // It does nothing but rename itself to the first slider the loaded genome
+    // exposes. See RenamableParameter for why that question comes before
+    // building a pool of eight.
+    addParameter (macro1_ = new RenamableParameter (
+        juce::ParameterID { "macro1", 1 }, "Macro 1",
+        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f }, 0.0f));
 
     // One log file per host process, named after the host, because the whole
     // Stage 0 question is "does this behave differently in Logic vs Live vs
@@ -1085,6 +1155,34 @@ void KromosynthAudioProcessor::applyFaustMeasurement (const FaustEngine::Measure
     // running it with the ceiling on would have reported a peak the ceiling
     // invented rather than the genome's.
     faust_->setOutputCeiling (true);
+
+    // EXPERIMENT: rename the macro to the first slider this genome exposes.
+    //
+    // freq, gain and gate are excluded because the plugin already drives them
+    // from MIDI -- they appear on 30, 24 and 29 of 30 instruments and are not
+    // the genome's character. What remains is what a player would actually want
+    // a knob for: lvl, cut, res, drv, att and so on.
+    //
+    // NOTHING IS WRITTEN to the slider. The name is the whole experiment; the
+    // version that also wrote was reverted for measuring an instrument after
+    // altering it.
+    if (macro1_ != nullptr)
+    {
+        juce::String first;
+
+        for (const auto& p : faust_->parameters())
+        {
+            if (p.label == "freq" || p.label == "gain" || p.label == "gate") continue;
+            first = p.label;
+            break;
+        }
+
+        if (auto* renamable = dynamic_cast<RenamableParameter*> (macro1_))
+            renamable->setDisplayName (first.isEmpty() ? "Macro 1" : first, *this);
+
+        logEvent ("macro_rename_attempt to=\"" + (first.isEmpty() ? juce::String ("Macro 1") : first)
+                  + "\" reported_as=\"" + macro1_->getName (32) + "\"");
+    }
 
     faust_->setOutputGain (trim);
     faustTrim_ = trim;

@@ -122,6 +122,11 @@ public:
     juce::AudioParameterFloat* sustain_ = nullptr;
     juce::AudioParameterFloat* releaseS_ = nullptr;
 
+    // Experiment: does a host refresh a parameter's displayed name? Renamed on
+    // load to the first slider the genome exposes, and does nothing else.
+    // Typed as the base class so the header need not see RenamableParameter.
+    juce::AudioParameterFloat* macro1_ = nullptr;
+
     // Exposed so async callbacks can capture the File BY VALUE and still log
     // after this processor is gone. juce::File is a value type holding a path
     // string — appending to it touches no live object, which is exactly what
