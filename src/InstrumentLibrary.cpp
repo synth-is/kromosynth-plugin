@@ -73,6 +73,22 @@ InstrumentLibrary::Metadata InstrumentLibrary::readSidecar (const juce::File& fo
     m.substrate      = text (source, "substrate");
     m.evolutionRunId = text (source, "evolutionRunId");
     m.soundClass     = text (source, "class");
+
+    // Only what tells two renditions of one sound apart. sampleRate and
+    // pitchSampling are in the artefact too but do not distinguish anything a
+    // person is choosing between.
+    if (auto* render = child (source, "render").getDynamicObject())
+    {
+        m.hasRender = true;
+        m.renderDuration = (double) render->getProperty ("duration");
+        m.velocityLayers = (int) render->getProperty ("velocityLayers");
+
+        if (auto* range = render->getProperty ("pitchRange").getDynamicObject())
+        {
+            m.pitchLow  = range->getProperty ("low").toString();
+            m.pitchHigh = range->getProperty ("high").toString();
+        }
+    }
     m.creator        = text (source, "creator");
     m.discoveredAt   = text (source, "discoveredAt");
     m.adoptedAt      = text (source, "adoptedAt");

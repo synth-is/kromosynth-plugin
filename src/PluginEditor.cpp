@@ -302,6 +302,24 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                     if (m.generation >= 0)
                         source->setProperty ("generation", m.generation);
 
+                    if (m.hasRender)
+                    {
+                        juce::DynamicObject::Ptr render (new juce::DynamicObject());
+
+                        if (m.renderDuration > 0.0) render->setProperty ("duration", m.renderDuration);
+                        if (m.velocityLayers > 0)   render->setProperty ("velocityLayers", m.velocityLayers);
+
+                        if (m.pitchLow.isNotEmpty() && m.pitchHigh.isNotEmpty())
+                        {
+                            juce::DynamicObject::Ptr range (new juce::DynamicObject());
+                            range->setProperty ("low", m.pitchLow);
+                            range->setProperty ("high", m.pitchHigh);
+                            render->setProperty ("pitchRange", juce::var (range.get()));
+                        }
+
+                        source->setProperty ("render", juce::var (render.get()));
+                    }
+
                     if (source->getProperties().size() > 0)
                         o->setProperty ("source", juce::var (source.get()));
                 }

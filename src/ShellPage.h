@@ -431,7 +431,89 @@ function describe (e) {
   const when = datePart(e);
   if (when) bits.push({ text: when });
 
+  // Which of its siblings this is. Two live instruments from one sound are
+  // identical and the useful action is removing one; two sample sets from one
+  // sound differ by how they were rendered and the useful action is choosing
+  // between them. Either way the first thing to know is that there IS another.
+  if (e._sibling) {
+    const r = (e.source && e.source.render) || null;
+
+    // Named by what DIFFERS where the artefact says so, and by position where
+    // it does not. A live instrument extracted twice has nothing to tell apart
+    // -- same genome, same everything -- so "1 of 2" is the whole truth there.
+    const how = r
+      ? [r.duration != null ? r.duration + 's' : null,
+         r.pitchRange ? r.pitchRange.low + '\u2013' + r.pitchRange.high : null,
+         r.velocityLayers ? r.velocityLayers + ' vel' : null].filter(Boolean).join(' \u00b7 ')
+      : '';
+
+    bits.push({ text: e._sibling.index + ' of ' + e._sibling.of + ' from this sound'
+                      + (how ? ' \u2014 ' + how : '') });
+  }
+
   return bits;
+}
+
+function soundIdOf (e) {
+  // SINGULAR. The sidecar stores `source.soundIds` as an array, but
+  // InstrumentLibrary::readSidecar takes its first element into Metadata as
+  // `soundId` and that is what reaches this page. Reading the array name here
+  // returned undefined for every instrument, so nothing ever grouped -- and
+  // silently, because "no siblings" looks exactly like "no duplicates".
+  //
+  // The array form is still accepted in case a future payload passes the
+  // sidecar through unflattened.
+  const src = e.source || {};
+  if (src.soundId) return src.soundId;
+  return (src.soundIds && src.soundIds.length) ? src.soundIds[0] : null;
+}
+
+/**
+ * Keeps instruments made from the SAME SOUND next to each other, without
+ * changing where the group as a whole lands.
+ *
+ * Two things produce siblings. Extracting a sound twice mints a fresh
+ * artifactId each time, so the library ends up with two identical live
+ * instruments under unrelated names. And a sample set can be rendered from one
+ * sound at different durations, pitch ranges or velocity layers, which are
+ * genuinely different instruments worth keeping side by side.
+ *
+ * Deliberately NOT a nested tree. The chosen sort still decides the order, and
+ * a group simply follows its first member -- so sorting by name or by type
+ * behaves as before and siblings merely stop being scattered. A real grouped
+ * view belongs with the larger interface change, not ahead of it.
+ *
+ * Instruments with no soundId pass through untouched. Every sample instrument
+ * installed before the sidecar fix is in that position: the run id and sound id
+ * were never written into the artefact, so they cannot be grouped at all.
+ */
+function groupBySound (list) {
+  const groups = new Map();
+  const out = [];
+
+  list.forEach(function (e) {
+    const sid = soundIdOf(e);
+
+    if (!sid) { out.push([e]); return; }
+
+    if (groups.has(sid)) { groups.get(sid).push(e); return; }
+
+    const g = [e];
+    groups.set(sid, g);
+    out.push(g);
+  });
+
+  // Sibling position stamped here, where the group is still intact. The rows
+  // are rendered from a flat list and would otherwise have to rediscover it.
+  const flat = [];
+  out.forEach(function (g) {
+    g.forEach(function (e, i) {
+      e._sibling = g.length > 1 ? { index: i + 1, of: g.length } : null;
+      flat.push(e);
+    });
+  });
+
+  return flat;
 }
 
 function render () {
@@ -462,7 +544,7 @@ function render () {
   // partition and not a change of sort.
   const fresh = matched.filter(function (e) { return newIds.has(e.id); }).sort(compareEntries);
   const rest = matched.filter(function (e) { return !newIds.has(e.id); }).sort(compareEntries);
-  const shown = fresh.concat(rest);
+  const shown = groupBySound(fresh).concat(groupBySound(rest));
 
   document.getElementById('count').textContent =
     (needle ? shown.length + ' of ' + entries.length : entries.length)

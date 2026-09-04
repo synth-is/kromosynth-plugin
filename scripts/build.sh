@@ -161,4 +161,36 @@ if ! codesign --verify --deep --strict "$AU_DEST" 2>/dev/null; then
 fi
 
 echo
-echo "Restart the host before testing — AU caches component scans."
+
+# A WARNING NOBODY READS IS NOT A WARNING.
+#
+# "Restart the host before testing" has been printed here since Stage 0 and was
+# ignored three times in one day, each time costing a round of debugging a build
+# that was never loaded -- once including a diagnosis of a WKWebView caching
+# problem that does not exist.
+#
+# The reason it is easy to ignore: reopening the plugin WINDOW looks like a
+# restart. It is not. GarageBand hosts AU plugins out of process, that process
+# loads the binary ONCE, and a new plugin instance inside it runs the old image.
+# `processor_constructed` appears in the log every time and looks like proof of
+# fresh code.
+#
+# So this no longer advises. It checks, and says which image is running.
+HOST_LINE=$(ps -eo lstart=,comm= | grep -i AUHostingServiceXPC | grep -v grep | head -1)
+
+if [ -n "$HOST_LINE" ]; then
+  HOST_EPOCH=$(date -j -f "%a %b %e %T %Y" "$(echo "$HOST_LINE" | sed 's/ *\/System.*//')" +%s 2>/dev/null)
+  BIN_EPOCH=$(stat -f %m "$AU_DEST/Contents/MacOS/$(basename "${AU_DEST%.component}")" 2>/dev/null)
+
+  if [ -n "$HOST_EPOCH" ] && [ -n "$BIN_EPOCH" ] && [ "$HOST_EPOCH" -lt "$BIN_EPOCH" ]; then
+    echo "  *** THE RUNNING AU HOST PREDATES THIS BUILD ***"
+    echo "      host started: $(date -r $HOST_EPOCH '+%H:%M:%S')   this build: $(date -r $BIN_EPOCH '+%H:%M:%S')"
+    echo
+    echo "      Quit the DAW entirely. Closing the plugin window is NOT enough:"
+    echo "      the host process outlives it and keeps the old binary loaded."
+  else
+    echo "  No AU host is holding an older image."
+  fi
+else
+  echo "  No AU host running — the next launch will load this build."
+fi

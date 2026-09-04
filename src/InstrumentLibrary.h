@@ -108,6 +108,21 @@ public:
         int capAt4x = 0;
         bool hasGate = false;
 
+        /** How a SAMPLE SET was rendered, when the artefact says.
+
+            What distinguishes two renditions of one sound: a shorter duration,
+            a narrower pitch range, fewer velocity layers. Without these the
+            plugin can group siblings but can only number them, leaving the
+            person to guess which is which.
+
+            Absent on live instruments, which have no render settings, and on
+            every sample set packaged before the sidecar carried them.
+        */
+        bool hasRender = false;
+        double renderDuration = 0.0;
+        juce::String pitchLow, pitchHigh;
+        int velocityLayers = 0;
+
         bool isEmpty() const noexcept { return name.isEmpty() && ! hasMeasured
                                             && ! hasDescriptors && soundType.isEmpty(); }
     };
