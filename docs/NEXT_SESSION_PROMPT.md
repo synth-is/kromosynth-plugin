@@ -50,17 +50,18 @@ about the gate.
 
 ## Where things stand
 
-Session A is half done and the half that landed is unproven by ear.
+Session A's prerequisite landed. The feature it unblocked was built, heard,
+and reverted the same day.
 
 | commit | what |
 |---|---|
-| `b5a0bda` | previous session's prompt rotation — revert point for EVERYTHING |
-| `c8550bf` | A1: `writeParameter`, the non-waking write. Unconditionally correct |
-| `520b122` | native ADSR binding, adoption, exponential forced fade. THE EXPERIMENT |
+| `b5a0bda` | previous session's prompt rotation |
+| `c8550bf` | A1: `writeParameter`, the non-waking write. Unconditionally correct, currently UNUSED |
+| `520b122` | native ADSR binding, adoption, exponential forced fade |
+| `149302a` | this prompt |
+| `2e6aef6` | **revert of `520b122`**, on hearing it. `src/` is byte-identical to `c8550bf` |
 
-`git reset --hard c8550bf` reverts the experiment and keeps A1.
-
-Installed 2026-09-05 14:43 with `--backup`, signed, not notarised.
+Installed 2026-09-05 15:06 with `--backup`, signed, not notarised.
 
 ### The gate that still means something
 
@@ -82,28 +83,57 @@ cmake --build build/faust --target faust_probe --config Release
 
 ---
 
-## THE OPEN VERDICT
+## THE VERDICT: reverted, and the reason
 
-**Does the native ADSR binding stay?** Not answerable by statistics; it needs
-the ear. The listening test, in order:
+**Switching the multiplying envelope off for natively-bound genomes is a
+POLYPHONY regression.** Heard within minutes of installing, on an arpeggio.
 
-1. `7d8517f2` — binds natively (att 1.2, dec 1, sus 0.85, rel 3). The Attack
-   knob should adopt ~1.2 s on load. Turning it DOWN should speed up the onset.
-   That single gesture is the whole justification for the change: a multiplying
-   envelope can never shorten an attack.
-2. `0fbe73fb` — binds natively AND ignores its gate. The regression candidate.
-   The multiplier used to pull the level down through the 1.5 s before the
-   forced fade; now nothing does.
-3. `28a614a9` — does not bind. Must be unchanged.
-4. Pre-registered check 3, not yet run: delete `measured.local.json` beside an
-   instrument to force a re-measure, and compare `raw_peak` against the value
-   already in the append-only log from before this build. It should not move,
-   because `panic()` calls `init()` and that resets every slider — but that is a
-   reading, and the check exists because a reading was wrong once already.
+`#4PJBB` (`bf6b5d74`) became audibly constrained with voices changing rapidly.
+Status read 16-voice cap, 914 note-ons, **220 force-stopped**. Adoption itself
+worked perfectly — the log shows `att=0.0050/0.0050 dec=0.2000/0.2000
+sus=0.7500/0.7500 rel=0.3000/0.3000`, knob matching genome on all four.
 
-If it stays, write the verdict into this file with what was heard. If it goes,
-`git reset --hard c8550bf` and record WHY next to the measurements below, which
-remain true either way.
+The mechanism: `bf6b5d74` is one of the five instruments that flip from
+respecting their gate to ignoring it as the hold lengthens. On such a genome the
+raw output does not fall at note-off, so **the multiplier's release was doing
+all the work of ending a note.** Without it, every released note sounds at full
+level for the whole 1.5 s grace before the forced fade begins. An arpeggio
+exhausts sixteen voices almost immediately and every new note steals a sounding
+one.
+
+**The measurement was right and the judgement was wrong.** The overlap WAS
+measured — 2/16 at a 2 s hold, 4/16 at 8 s — and called an acceptable cost. It
+weighed how one note's ENDING would sound and never whether the voice would be
+AVAILABLE. A released voice held at full level is not merely less graceful, it
+is occupied, and voice availability is what an arpeggio spends.
+
+**No gate could have caught it, and that is the more important finding.**
+`faust-probe` drives `FaustEngine` directly and never calls
+`setEnvelopeShaping` or `writeParameter`. The entire binding lived in
+`PluginProcessor`, which **no gate reaches**. The null test passing at 33/33 was
+correct and irrelevant.
+
+**The retry is not the same thing again.** Either the multiplier's release stays
+on as a backstop for genomes that do not articulate, or the forced-release grace
+shortens under voice pressure so an occupied voice is reclaimed rather than held
+for 1.5 s. The second is more interesting and is new information: the grace
+period was sized against a decaying tail with no thought for how many voices
+were free.
+
+### Practical note that cost time
+
+**The UI shows short codes, not UUIDs.** Instrument folders are UUIDs; the shell
+shows `displayName` from `synthis.json`. The mapping for the ones named above:
+
+```
+bf6b5d74…  #4PJBB     native-bound, flips at long hold, the one that broke
+7d8517f2…  #P9MGK     native-bound, att 1.2 — the shorten-the-attack test
+0fbe73fb…  #FSKP0     native-bound AND ignores its gate at 2 s
+28a614a9…  #E0MYX     does not bind, control case
+```
+
+Generate the whole map with a one-liner over
+`~/Music/Synth.is/Instruments/*/synthis.json`.
 
 ---
 
@@ -161,13 +191,20 @@ the pattern is in the commit messages for `c8550bf` and `520b122`.
 
 ## Next
 
-### A-i. Replace pre-registered check 2
+### A-i. A gate that reaches PluginProcessor
 
-It cannot fail on a fade-shape change. What it needs to sample is the FADE
-REGION: render a force-stopping genome, note-off, and read the envelope of the
-0.2 s after `forcing` engages. The two things to assert are that it still
-terminates (an exponential never reaches zero; the code clamps at 1e-4) and that
-the voice still reaches idle and zeroes its DSP struct afterwards.
+**The highest-value item here, and the reason `520b122` shipped broken.** Every
+gate drives `FaustEngine` directly. Nothing exercises the processor's parameter
+path, so the ADSR binding, adoption, and anything the macro pool does are
+untested by construction.
+
+What it has to measure is not sample-accuracy but VOICE AVAILABILITY: play a
+fast pattern, and report how many notes found an idle voice, how many stole one,
+and how many were force-stopped. `220 force-stopped` against 914 note-ons is the
+number that would have failed the change before it was ever installed.
+
+Secondary, and still true: pre-registered check 2 cannot fail on a fade-shape
+change. It samples the first 5 ms after an event; forcing engages at 1.5 s.
 
 ### A-ii. Adoption versus session restore
 
@@ -308,11 +345,20 @@ should not be committed).
    `compGain` and before the envelope — `peakRecent` is taken from `src[i]`. So
    nothing done to the envelope changes WHEN a voice is force-stopped, only what
    is heard before the fade starts.
-10. **`JUCE_FORCE_USE_LEGACY_PARAM_IDS`** — note the spelling, and it must be
+10. **The multiplying envelope's release is load-bearing for POLYPHONY**, not
+    only for grace. On a genome whose raw output does not fall at note-off it is
+    the only thing ending a note, and a note that does not end holds a voice.
+    Switching it off cost an arpeggio all sixteen of its voices — see the
+    verdict above. Its own documentation does not say this, which is why it was
+    switched off.
+11. **The forced-release grace is 1.5 s and takes no account of voice
+    pressure.** It was sized against the shape of a decaying tail. When voices
+    are scarce it is far too patient.
+12. **`JUCE_FORCE_USE_LEGACY_PARAM_IDS`** — note the spelling, and it must be
     `PUBLIC`. It silently did nothing twice: once `PRIVATE` (the AU wrapper
     compiles into the *format* target, which links the shared-code target rather
     than being it), once misspelled. A misspelled feature macro compiles, links,
     installs and does nothing. Verified with `auval`, not by reading.
-11. **Neutral for a multiplier is 1.0.** The reverted 2026-09-04 ADSR binding set
+13. **Neutral for a multiplier is 1.0.** The reverted 2026-09-04 ADSR binding set
     `envReleaseCoef` to 0.0 calling it neutral; the release stage multiplies by
     it, so that silenced a voice on the first sample after note-off.
