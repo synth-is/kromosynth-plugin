@@ -372,6 +372,13 @@ should not be committed).
   Fix: thread the result into the job state, gate the label on `ok: true`, and
   show failures ON THE CARD rather than in a toast that vanishes.
 
+  **DECIDED AND WRITTEN UP** in
+  `kromosynth-desktop/packages/web/doc/PLUGIN_ACQUISITION_AUTH_DECISION.md`
+  (`0a0af75`): acquisition requires an account, the modal opens on
+  `code === 'AUTH_REQUIRED'`, and the acquisition resumes after auth without a
+  second click. Four changes in a fixed order, the label fix first. All the work
+  is in kromosynth-desktop; nothing in this repo changes.
+
   This is why it stayed invisible until a missing toast in a different host was
   noticed. Same pattern as `--clicks` reporting "identical" for a change that
   had definitely run: a layer asserting an outcome it does not observe.
