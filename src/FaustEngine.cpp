@@ -1057,6 +1057,16 @@ void FaustEngine::setParameter (int byteOffset, float value) noexcept
     }
 }
 
+void FaustEngine::writeParameter (int byteOffset, float value) noexcept
+{
+    if (! loaded_) return;
+
+    // The whole of it. Everything setParameter does beyond this line is the
+    // part a per-block caller must not have -- see the header.
+    for (auto& v : impl_->voices)
+        setParam (v, byteOffset, value);
+}
+
 void FaustEngine::setOutputCeiling (bool shouldLimit) noexcept
 {
     if (impl_ != nullptr) impl_->ceiling = shouldLimit;

@@ -130,6 +130,37 @@ public:
     // a separate one that could be right while the shipping path is wrong.
     void setParameter (int byteOffset, float value) noexcept;
 
+    /** Writes a genome parameter on every voice WITHOUT touching voice state.
+
+        The twin of setParameter, and the difference between them is the whole
+        reason both exist.
+
+        setParameter WAKES every voice and marks it parameter-driven. That is
+        right for measure() and for the null test, which drive the DSP directly
+        and never issue a note-on -- without it nothing would ever leave idle
+        and both would render silence. Called once per block it is wrong three
+        times over: every voice stays out of idle forever, which costs the CPU
+        saving and the allocator's "prefer a silent voice" rule that fixed
+        retrigger crackle; and it clears noteDriven, which is the flag the pitch
+        compensation and the envelope both key off, so moving a knob would
+        silently disable the levelling.
+
+        This one writes the DSP struct and does nothing else.
+
+        CALL IT EVERY BLOCK, not on change. init() restores every slider to its
+        declared init -- measured 2026-09-05 over the 30 installed instruments,
+        139 of 139 non-MIDI sliders, no exceptions -- and init() runs whenever a
+        voice idles, is force-stopped, or the engine panics. A write-on-change
+        design would lose the value at the next voice recycle and restore it
+        only when the user happened to touch the control again.
+
+        CLAMP BEFORE CALLING. setParamValue stores whatever it is given:
+        139 of 139 sliders kept a value one unit below their declared minimum
+        verbatim. An attack of 0 s on a slider declared 0.0005..4 is a divisor
+        the genome's author never saw.
+    */
+    void writeParameter (int byteOffset, float value) noexcept;
+
     /** Every control the genome publishes.
 
         NOT a fixed set. Surveyed over the 120-elite archive: freq appears on
