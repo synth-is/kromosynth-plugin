@@ -325,6 +325,41 @@ should not be committed).
 
 ## Outstanding, smaller
 
+- **Acquisition from inside the plugin DOES NOT WORK IN REAPER (VST3).** Found
+  2026-09-05. The site hands over by navigating to `synthis://acquire?...` and
+  the plugin catches it in `pageAboutToLoad`. In GarageBand that logs
+  `acquisition_sentinel` then `acquisition_queued` then
+  `acquisition_autoload`. In Reaper it logs **nothing** — not even a
+  `page_about_to_load` line for the sentinel URL, which a rejected navigation
+  would still produce. So WKWebView inside Reaper is dropping the custom-scheme
+  navigation before the delegate sees it. `interceptsSentinels` is set
+  unconditionally on the site browser, so it is not a flag.
+
+  `ArtifactAcquisition.h` already anticipated this and its parser accepts
+  `https://<anything>/__synthis_plugin/acquire?...` as a fallback. But
+  `pluginHost.js` deliberately refuses to emit that form: an https sentinel is
+  a real request that carries the ticket in a query string into Cloudflare's
+  edge logs, and it would do so **exactly when the plugin is not listening** —
+  which is now a case that happens. So the fallback as designed leaks in
+  precisely the failing case.
+
+  Worth considering instead: keep an https path so WebKit reliably delivers the
+  navigation, but move the ticket into the FRAGMENT, which is never sent to a
+  server. `https://synth.is/__synthis_plugin/acquire?artifact=...&file=...#ticket=...`
+  A fragment-only change may not trigger the navigation delegate, so the path
+  has to change too. Not yet designed, not yet measured.
+
+  NOT a blocker for the Reaper render loop, which never acquires. Instruments
+  already in `~/Music/Synth.is/Instruments` load and measure fine in Reaper.
+
+- **The site's "Sent to plugin" toast is unconditional.** `pluginHost.js` fires
+  it on the line after `window.location.href = sentinel`, having checked
+  nothing. It cannot know whether the plugin caught the navigation, so it
+  claims success in a host where acquisition is silently broken. The plugin's
+  own acquisition bar is the only honest indicator, and its ABSENCE is what
+  exposed this. Either the toast should say what it actually knows, or the
+  handover should be confirmable.
+
 - **`docs/VOICE_BEHAVIOUR.md` has four stale claims now.** It says the plugin's
   envelope cannot reach the genome's own sliders — disproved twice over, first
   by reading and now by `520b122` shipping it; §5 lists voice stealing as open
