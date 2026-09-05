@@ -262,6 +262,63 @@ private:
     double faustRate_ = 0.0;
     int faustBlock_ = 0;
 
+    /** One of the genome's own sliders, and everything needed to drive it.
+
+        The RANGE is carried because setParamValue does not clamp: measured
+        2026-09-05, 139 of 139 sliders across the 30 installed instruments
+        stored a value one unit below their declared minimum verbatim. The
+        host's Attack knob reaches 0.0 s and a genome's att is typically
+        declared 0.0005..4, so this clamp is the difference between a short
+        attack and a divisor the genome's author never saw.
+    */
+    struct BoundSlider
+    {
+        int   byteOffset = -1;
+        float minimum = 0.0f, maximum = 1.0f, init = 0.0f;
+
+        bool  bound() const noexcept { return byteOffset >= 0; }
+        float clamped (float v) const noexcept { return juce::jlimit (minimum, maximum, v); }
+    };
+
+    /** How the four ADSR knobs reach the loaded genome.
+
+        ALL FOUR OR NONE. A genome publishing only `rel` would have its release
+        driven natively while attack and decay silently did nothing, which is a
+        control that works on some instruments and not others with nothing to
+        tell them apart. 16 of the 30 installed instruments publish all four and
+        2 publish `dec` alone, which is exactly the case this rule refuses.
+
+        When native, the multiplying envelope is switched off and these four
+        write the genome's own sliders every block. When not, none of this is
+        used and the multiplier behaves exactly as it did before.
+    */
+    struct AdsrBinding
+    {
+        bool native = false;
+        BoundSlider att, dec, sus, rel;
+    };
+
+    // Written on the message thread inside the suspend window, read on the
+    // audio thread. Same discipline and the same happens-before edge as active_.
+    AdsrBinding adsr_;
+
+    /** Reads the loaded genome's ADSR sliders and, when adopting, moves the
+        host's four knobs to the genome's declared inits.
+
+        ADOPTION, and the direction is the point: the knobs take the genome's
+        values rather than imposing their own. Without it a freshly loaded
+        instrument would be driven to the plugin's defaults, A = 0 s and S = 1,
+        which is neither what the site's preview rendered nor what measure()
+        measured, and the trim and the sweep table would be levelling an
+        instrument that is not the one sounding.
+
+        adoptValues is false on a sample-rate reload: the offsets are unchanged
+        and re-adopting would throw away whatever the player had dialled in. It
+        is also what makes that path safe from prepareToPlay, which carries no
+        message-thread guarantee and must not touch host parameters.
+    */
+    void resolveAdsrBinding (bool adoptValues);
+
 public:
     /** The loaded genome's spectrogram, or empty. See FaustEngine::Measured. */
     const std::vector<std::uint8_t>& faustSpectrogram() const noexcept { return faustSpectrogram_; }
