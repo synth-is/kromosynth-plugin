@@ -120,6 +120,25 @@ for 1.5 s. The second is more interesting and is new information: the grace
 period was sized against a decaying tail with no thought for how many voices
 were free.
 
+### The baseline, which did not exist until now
+
+Force-stops as a fraction of note-ons, on `#4PJBB` in GarageBand at 44.1 kHz:
+
+```
+520b122 (broken)     220 / 914  =  24.1%
+2e6aef6 (reverted)    17 / 176  =   9.7%
+```
+
+**Direction, not a measurement.** The two runs are different material, a
+two-note arpeggio against whatever produced 914 notes, so the ratio is not
+controlled. It is recorded because no figure of any kind existed before, and
+because it is the SHAPE of the number the missing gate has to produce.
+
+Also worth knowing for the retry: `#4PJBB` force-stops roughly one note in ten
+even on good code. It has a 16-voice cap, a 22.9 dB pitch spread, and it stops
+respecting its gate as the hold lengthens. An arpeggio on it will always
+generate force-stops, so a non-zero count is not by itself evidence of a fault.
+
 ### Practical note that cost time
 
 **The UI shows short codes, not UUIDs.** Instrument folders are UUIDs; the shell
@@ -202,6 +221,23 @@ What it has to measure is not sample-accuracy but VOICE AVAILABILITY: play a
 fast pattern, and report how many notes found an idle voice, how many stole one,
 and how many were force-stopped. `220 force-stopped` against 914 note-ons is the
 number that would have failed the change before it was ever installed.
+
+**Most of this already exists.** `tools/reaper-render/make_projects.py`
+generates paired AU and VST3 projects playing identical MIDI, documents the
+headless render flags, and reads the plugin identifiers out of Reaper's own scan
+caches so an unscanned plugin fails loudly. Crucially it goes through
+`PluginProcessor`, which `faust-probe` never does.
+
+So the gate is probably not new C++ at all: a fixed MIDI arpeggio, rendered
+headless on two builds, compared as a DIFF WAV with sample-level stats. Today's
+regression would have shown as an obvious divergence in the tail of every
+released note. Read `-splashlog` every time; a silent WAV and an FX slot that
+never loaded look identical otherwise. The script dates from 2026-08-28 and its
+identifiers may need re-reading after several rebuilds.
+
+Do NOT settle this class of question by playing it and comparing against memory.
+That is what cost today: independent renders can differ substantially while both
+sound plausible, and a remembered sound is not evidence.
 
 Secondary, and still true: pre-registered check 2 cannot fail on a fade-shape
 change. It samples the first 5 ms after an event; forcing engages at 1.5 s.
