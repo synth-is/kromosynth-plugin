@@ -443,6 +443,28 @@ public:
 
     int notesOn() const noexcept;
     int notesOff() const noexcept;
+
+    /** Which allocator branch supplied each note's voice, cumulative.
+
+        `idle` is a voice that had been through initVoice() and was silent and
+        zeroed. `reused` is one that had been released but was still ringing.
+        `stolen` is one that was still held, taken because every voice was busy.
+
+        THE SHAPE OF THESE THREE IS THE POLYPHONY MEASUREMENT. Rising steals
+        mean the pattern is asking for more voices than the cap provides, and a
+        rising ratio of reused-to-idle means released notes are not falling
+        silent before the next one needs a voice.
+
+        Counted inside the engine because from outside a reuse and a steal are
+        indistinguishable: both show a voice count that did not rise.
+
+        Added 2026-09-05, after a change that made released voices sound at full
+        level for 1.5 s shipped with the null test passing 33/33 and was caught
+        only by ear, on an arpeggio. Every gate compared samples; none could ask
+        whether a note found a free voice.
+    */
+    struct VoiceStarts { int idle = 0, reused = 0, stolen = 0; };
+    VoiceStarts voiceStarts() const noexcept;
     int activeVoices() const noexcept;
 
 private:

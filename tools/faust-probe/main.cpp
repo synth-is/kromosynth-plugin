@@ -634,12 +634,149 @@ static int runClickTest (const juce::File& wasmFile, const juce::File& jsonFile,
     return 0;
 }
 
+/** VOICE AVAILABILITY under a played pattern.
+
+    The gap this fills, stated plainly: every other mode in this file compares
+    SAMPLES. The null test compares them against a reference, --clicks compares
+    them across an event boundary, the articulation run reports their maxima per
+    phase. None of them can answer the question that mattered on 2026-09-05 --
+    when an arpeggio became audibly constrained because released voices had
+    stopped falling silent, the null test still passed 33/33 at maxAbsDiff 0.0,
+    correctly, because the DSP was untouched. What had changed was whether a
+    note could find a voice.
+
+    So this reports allocation, not audio:
+
+      idle    the note got a silent, zeroed voice. The good case, and the one
+              that sounds like the browser preview, which renders one note into
+              a fresh processor every time.
+      reused  the note got a voice that had been released but was still
+              ringing. Costs a 2 ms crossfade.
+      stolen  every voice was busy and one was taken from under a held note.
+
+    A rising `stolen` means the pattern wants more voices than the cap gives.
+    A rising ratio of `reused` to `idle` means notes are not falling silent
+    before the next one needs a voice -- which is the failure that shipped, and
+    it is invisible in every sample-level comparison.
+
+    NOT a pass/fail gate on its own. The right use is a BEFORE and AFTER on the
+    same instrument across a change, because the absolute numbers are a property
+    of the genome as much as of the engine: an instrument that ignores its gate
+    force-stops about one note in ten on good code.
+
+    READ THE RATE BEFORE READING THE SPLIT. Every voice starts idle, so with N
+    notes into a cap of C the first min(N, C) starts are idle by ARITHMETIC, not
+    by behaviour. At 8 notes/s into 16 voices two very different instruments
+    both reported exactly 16 idle and 16 reused, which says nothing about
+    either. Drop the rate until voices have time to recycle and the split starts
+    carrying information: the same instrument at 2 notes/s reported 100% idle.
+
+    At a saturating rate the informative figures are FORCED STOPS and PEAK
+    SIMULTANEOUS. At a recycling rate the split is informative too.
+*/
+static int runVoiceTest (const juce::File& wasmFile, const juce::File& jsonFile,
+                         int voices, double notesPerSecond, double holdSeconds)
+{
+    FaustEngine engine;
+
+    const auto load = engine.load (wasmFile, jsonFile, kSampleRate, kBlockSize, voices);
+
+    if (! load.ok)
+    {
+        std::printf ("load       FAILED  %s\n", load.detail.toRawUTF8());
+        return 1;
+    }
+
+    engine.panic();
+
+    // A cycling arpeggio rather than a scale, because the case that broke was
+    // an arpeggio: pitches revisited often enough that a voice released two
+    // notes ago is asked for again while it may still be sounding.
+    const int melody[] = { 60, 64, 67, 72, 67, 64 };
+    const int melodyLen = (int) (sizeof (melody) / sizeof (melody[0]));
+    constexpr int kNotes = 32;
+
+    const int blocksPerSecond = juce::jmax (1, (int) (kSampleRate / kBlockSize));
+    const double interval = notesPerSecond > 0.0 ? 1.0 / notesPerSecond : 0.125;
+
+    struct Event { int block; bool on; int note; };
+    std::vector<Event> events;
+    events.reserve ((size_t) kNotes * 2);
+
+    for (int i = 0; i < kNotes; ++i)
+    {
+        const int n = melody[i % melodyLen];
+        events.push_back ({ (int) std::llround (i * interval * blocksPerSecond), true, n });
+        events.push_back ({ (int) std::llround ((i * interval + holdSeconds) * blocksPerSecond), false, n });
+    }
+
+    std::stable_sort (events.begin(), events.end(),
+                      [] (const Event& a, const Event& b) { return a.block < b.block; });
+
+    // FOUR SECONDS of tail after the last event, so the 1.5 s grace period and
+    // the 0.2 s forced fade both have room to run. Cutting it short would
+    // under-report forced stops, which is the direction that hides a fault.
+    const int totalBlocks = (events.empty() ? 0 : events.back().block) + blocksPerSecond * 4;
+
+    juce::AudioBuffer<float> buffer { 2, kBlockSize };
+    size_t next = 0;
+    int peakActive = 0;
+
+    for (int b = 0; b < totalBlocks; ++b)
+    {
+        juce::MidiBuffer midi;
+
+        while (next < events.size() && events[next].block <= b)
+        {
+            const auto& e = events[next];
+            midi.addEvent (e.on ? juce::MidiMessage::noteOn (1, e.note, (juce::uint8) 100)
+                                : juce::MidiMessage::noteOff (1, e.note),
+                           0);
+            ++next;
+        }
+
+        engine.process (buffer, midi);
+        peakActive = juce::jmax (peakActive, engine.activeVoices());
+    }
+
+    const auto starts = engine.voiceStarts();
+    const int played = engine.notesOn();
+    const int forced = engine.forcedStops();
+
+    const auto pct = [played] (int n) { return played > 0 ? 100.0 * n / played : 0.0; };
+
+    std::printf ("voices     rate=%.0f block=%d cap=%d\n", kSampleRate, kBlockSize, voices);
+    std::printf ("           %d notes at %.1f/s, held %.2f s, then 4 s of tail\n\n",
+                 kNotes, notesPerSecond, holdSeconds);
+
+    std::printf ("  notes played           %6d\n", played);
+    std::printf ("  started on idle voice  %6d   %5.1f%%\n", starts.idle, pct (starts.idle));
+    std::printf ("  reused a ringing voice %6d   %5.1f%%\n", starts.reused, pct (starts.reused));
+    std::printf ("  stole a held voice     %6d   %5.1f%%\n", starts.stolen, pct (starts.stolen));
+    std::printf ("  forced stops           %6d   %5.1f%%\n", forced, pct (forced));
+    std::printf ("  peak simultaneous      %6d / %d\n\n", peakActive, voices);
+
+    // A READING, not a verdict. What it can say is whether the cap was reached;
+    // whether that is acceptable depends on the genome and on what it is being
+    // compared against.
+    if (starts.stolen > 0)
+        std::printf ("  the cap was exceeded: %d notes took a voice from a held note\n",
+                     starts.stolen);
+    else if (peakActive >= voices)
+        std::printf ("  the cap was reached but never exceeded\n");
+    else
+        std::printf ("  the cap was never reached\n");
+
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     if (argc < 3)
     {
         std::puts ("usage: faust-probe <module.wasm> <module.json> [note] [velocity] [voices]");
         std::puts ("       faust-probe <module.wasm> <module.json> --plan <x.plan> --ref <x.ref.f32>");
+        std::puts ("       faust-probe <module.wasm> <module.json> [note] [vel] [voices] --voices [rate/s] [hold s]");
         return 2;
     }
 
@@ -665,6 +802,18 @@ int main (int argc, char** argv)
     for (int i = 3; i < argc; ++i)
         if (juce::String (argv[i]) == "--clicks")
             return runClickTest (wasmFile, jsonFile, voices);
+
+    for (int i = 3; i < argc; ++i)
+    {
+        if (juce::String (argv[i]) != "--voices") continue;
+
+        const double rate = i + 1 < argc && argv[i + 1][0] != '-'
+                              ? std::atof (argv[i + 1]) : 8.0;
+        const double hold = i + 2 < argc && argv[i + 2][0] != '-'
+                              ? std::atof (argv[i + 2]) : 0.10;
+
+        return runVoiceTest (wasmFile, jsonFile, voices, rate, hold);
+    }
 
     for (int i = 3; i < argc; ++i)
         if (juce::String (argv[i]) == "--measure")

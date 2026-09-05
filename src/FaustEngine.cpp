@@ -449,6 +449,11 @@ struct FaustEngineImpl
     // fixes. Counting both ends answers which without a debugger.
     std::atomic<int> notesOn { 0 }, notesOff { 0 }, sustainEvents { 0 };
 
+    // Which allocator branch supplied each note's voice. See noteOn: from
+    // outside the engine a reuse and a steal look identical, so this is the
+    // only place the distinction exists.
+    std::atomic<int> startsIdle { 0 }, startsReused { 0 }, startsStolen { 0 };
+
     int graceFrames = 0, fadeFrames = 0;
     std::atomic<int> forcedStops { 0 };
 };
@@ -1162,6 +1167,22 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
     for (auto& v : impl_->voices)
         if (v.idle) { chosen = &v; break; }
 
+    // WHERE THE VOICE CAME FROM, counted.
+    //
+    // The three branches below are the allocator's whole policy, and until now
+    // nothing reported which one fired. That is the gap that let a polyphony
+    // regression ship on 2026-09-05 with the null test passing 33/33: the
+    // instrument became audibly constrained under an arpeggio because released
+    // voices stopped falling silent, and every tool available compared SAMPLES.
+    // None of them could answer "did this note find a free voice, or did it
+    // have to take one that was still sounding".
+    //
+    // Counted here rather than derived outside, because from outside a reuse
+    // and a steal are indistinguishable -- both show a voice count that did not
+    // rise.
+    enum class Source { idle, released, stolen };
+    Source source = Source::idle;
+
     // Then a released voice that has not yet fallen silent. Oldest first, so
     // the one that has had longest to decay is taken rather than whichever
     // happens to sit earliest in the array.
@@ -1170,6 +1191,8 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
         std::uint64_t oldest = ~0ull;
         for (auto& v : impl_->voices)
             if (v.note < 0 && v.startedAt < oldest) { oldest = v.startedAt; chosen = &v; }
+
+        if (chosen != nullptr) source = Source::released;
     }
 
     // Steal the oldest. Crude, and deliberately so until there is a reason to
@@ -1180,9 +1203,20 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
         std::uint64_t oldest = ~0ull;
         for (auto& v : impl_->voices)
             if (v.startedAt < oldest) { oldest = v.startedAt; chosen = &v; }
+
+        if (chosen != nullptr) source = Source::stolen;
     }
 
     if (chosen == nullptr) return;
+
+    // Counted at ALLOCATION, before the retrigger fade below defers the start.
+    // A note that has to wait for a fade still took the voice it took.
+    switch (source)
+    {
+        case Source::idle:     impl_->startsIdle.fetch_add (1, std::memory_order_relaxed); break;
+        case Source::released: impl_->startsReused.fetch_add (1, std::memory_order_relaxed); break;
+        case Source::stolen:   impl_->startsStolen.fetch_add (1, std::memory_order_relaxed); break;
+    }
 
     // A voice that is STILL SOUNDING is faded out before it is reused.
     //
@@ -1374,6 +1408,17 @@ void FaustEngine::setSustain (bool down) noexcept
 
 int FaustEngine::notesOn() const noexcept   { return impl_->notesOn.load (std::memory_order_relaxed); }
 int FaustEngine::notesOff() const noexcept  { return impl_->notesOff.load (std::memory_order_relaxed); }
+
+FaustEngine::VoiceStarts FaustEngine::voiceStarts() const noexcept
+{
+    VoiceStarts s;
+    if (impl_ == nullptr) return s;
+
+    s.idle   = impl_->startsIdle.load (std::memory_order_relaxed);
+    s.reused = impl_->startsReused.load (std::memory_order_relaxed);
+    s.stolen = impl_->startsStolen.load (std::memory_order_relaxed);
+    return s;
+}
 
 int FaustEngine::activeVoices() const noexcept
 {
