@@ -325,40 +325,56 @@ should not be committed).
 
 ## Outstanding, smaller
 
-- **Acquisition from inside the plugin DOES NOT WORK IN REAPER (VST3).** Found
-  2026-09-05. The site hands over by navigating to `synthis://acquire?...` and
-  the plugin catches it in `pageAboutToLoad`. In GarageBand that logs
-  `acquisition_sentinel` then `acquisition_queued` then
-  `acquisition_autoload`. In Reaper it logs **nothing** — not even a
-  `page_about_to_load` line for the sentinel URL, which a rejected navigation
-  would still produce. So WKWebView inside Reaper is dropping the custom-scheme
-  navigation before the delegate sees it. `interceptsSentinels` is set
-  unconditionally on the site browser, so it is not a flag.
+- **~~Acquisition from inside the plugin DOES NOT WORK IN REAPER (VST3).~~**
+  **SUPERSEDED the same evening. The claim was wrong; the reasoning is kept so
+  the mistake stays visible.**
 
-  `ArtifactAcquisition.h` already anticipated this and its parser accepts
-  `https://<anything>/__synthis_plugin/acquire?...` as a fallback. But
-  `pluginHost.js` deliberately refuses to emit that form: an https sentinel is
-  a real request that carries the ticket in a query string into Cloudflare's
-  edge logs, and it would do so **exactly when the plugin is not listening** —
-  which is now a case that happens. So the fallback as designed leaks in
-  precisely the failing case.
+  **What it actually was: NOT SIGNED IN.** `acquireIntoPlugin` Step 1 is an
+  authenticated POST to `/api/takeout/:id/download` with `getAuthHeaders()`. No
+  session means 401, which takes the `!recordResponse.ok` branch and returns
+  **before the sentinel is ever constructed**. No navigation, so no
+  `acquisition_sentinel`, so an empty log. Acquisition works in any host once
+  signed in.
 
-  Worth considering instead: keep an https path so WebKit reliably delivers the
-  navigation, but move the ticket into the FRAGMENT, which is never sent to a
-  server. `https://synth.is/__synthis_plugin/acquire?artifact=...&file=...#ticket=...`
-  A fragment-only change may not trigger the navigation delegate, so the path
-  has to change too. Not yet designed, not yet measured.
+  WKWebView storage is per-process, so a synth.is session in GarageBand's AU
+  host container does not exist in Reaper's. Users sign in once per DAW. A UX
+  fact to design for, not a bug.
 
-  NOT a blocker for the Reaper render loop, which never acquires. Instruments
-  already in `~/Music/Synth.is/Instruments` load and measure fine in Reaper.
+  **How the wrong conclusion was reached, because the shape repeats.** Two
+  hosts were compared while what was DONE in them also differed: signed in
+  versus not, and a card needing a render versus one not needing one. The same
+  uncontrolled comparison that produced the wrong ADSR judgement that morning.
+  A user-gesture theory was also built on top of it (WebKit drops navigations
+  to unregistered schemes without an active gesture, and there are three awaits
+  before the handover). Plausible, unnecessary, and it would have sent someone
+  into the plugin's scheme handling for no reason.
 
-- **The site's "Sent to plugin" toast is unconditional.** `pluginHost.js` fires
-  it on the line after `window.location.href = sentinel`, having checked
-  nothing. It cannot know whether the plugin caught the navigation, so it
-  claims success in a host where acquisition is silently broken. The plugin's
-  own acquisition bar is the only honest indicator, and its ABSENCE is what
-  exposed this. Either the toast should say what it actually knows, or the
-  handover should be confirmable.
+  The original claim was that WKWebView inside Reaper dropped the `synthis://`
+  navigation before `pageAboutToLoad` saw it, on the evidence that a rejected
+  navigation would still have produced a `page_about_to_load` line and none
+  appeared. The evidence was real. The inference skipped a variable.
+
+- **THE REAL DEFECT, and it is host-independent: every acquisition failure
+  looks like success.**
+
+  `FeedRenderJobIndicator.jsx` renders `'Added to plugin'` on
+  `phase === 'complete'`, which means THE COMPILE FINISHED. It never sees the
+  result of `acquireIntoPlugin`. So a 401, a missing ticket, a failed filename
+  lookup, and a 429 `extraction_quota_exceeded` all show the same green tick
+  saying the instrument was added.
+
+  The error toast does fire, but it is transient while the tick persists and
+  contradicts it. A paying user who hits their monthly extraction limit is told
+  the instrument was added. `acquireIntoPlugin` already returns `errorBody`
+  specifically so a caller can recognise that case and open UpgradeModal with
+  real figures, and this caller ignores it.
+
+  Fix: thread the result into the job state, gate the label on `ok: true`, and
+  show failures ON THE CARD rather than in a toast that vanishes.
+
+  This is why it stayed invisible until a missing toast in a different host was
+  noticed. Same pattern as `--clicks` reporting "identical" for a change that
+  had definitely run: a layer asserting an outcome it does not observe.
 
 - **`docs/VOICE_BEHAVIOUR.md` has four stale claims now.** It says the plugin's
   envelope cannot reach the genome's own sliders — disproved twice over, first
