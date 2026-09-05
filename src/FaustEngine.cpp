@@ -431,11 +431,6 @@ struct FaustEngineImpl
     std::atomic<float> envSustain { 1.0f };
     std::atomic<float> envReleaseCoef { 0.0f };
 
-    // Whether the multiplying envelope shapes notes at all. ON unless the
-    // processor is driving the genome's own att/dec/sus/rel, in which case the
-    // genome shapes itself and a second envelope on top would only subtract.
-    std::atomic<bool> envShaping { true };
-
     // Measured peaks at c3, a4, a5. All zero means compensation is off.
     float peakC3 = 0.0f, peakA4 = 0.0f, peakA5 = 0.0f;
 
@@ -1109,12 +1104,6 @@ void FaustEngine::setEnvelope (float attackS, float decayS,
         std::memory_order_relaxed);
 }
 
-void FaustEngine::setEnvelopeShaping (bool shouldShape) noexcept
-{
-    if (impl_ != nullptr)
-        impl_->envShaping.store (shouldShape, std::memory_order_relaxed);
-}
-
 void FaustEngine::setPitchCompensation (const std::vector<float>& pitchPeaks, float referencePeak)
 {
     if (impl_ == nullptr) return;
@@ -1511,13 +1500,7 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
             // noteOn, so its voices are not note-driven and are not shaped --
             // the same guard that keeps the pitch correction out of the
             // measurement.
-            //
-            // envShaping is the second condition, and it is OFF while the
-            // processor drives the genome's own att/dec/sus/rel. The two are
-            // alternatives rather than layers: running both applies the release
-            // twice and reaches -60 dB in half the time the knob claims.
-            const bool enveloped = v.noteDriven
-                                && impl_->envShaping.load (std::memory_order_relaxed);
+            const bool enveloped = v.noteDriven;
 
             const float aInc = impl_->envAttackInc.load (std::memory_order_relaxed);
             const float dInc = impl_->envDecayInc.load (std::memory_order_relaxed);
@@ -1571,54 +1554,22 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
 
             if (v.forcing)
             {
-                // TWO fades and TWO shapes through one mechanism.
-                //
-                // A retrigger has a note waiting behind it: 2 ms and LINEAR,
-                // unchanged. It is a crossfade into a voice that is about to be
-                // zeroed and restarted, --clicks measured its boundary at
-                // 0.0002, and there is no reason to disturb a measured result.
-                //
-                // A force-stop is ending a note that will not end itself: same
-                // 0.2 s, now EXPONENTIAL. A linear fade to zero has a corner at
-                // the end, and that corner is what the multiplying envelope's
-                // release was covering for these genomes -- which it no longer
-                // does once the genome's own ADSR is driven natively.
-                //
-                // The DURATION deliberately does not come from the Release
-                // knob. A release of 9 s would leave a drone sounding for nine
-                // seconds after the plugin decided to stop it, and stopping is
-                // the entire purpose of this path.
-                const bool linearFade = v.retriggering;
-
-                const int frames = linearFade
+                // TWO different fades through one mechanism. A force-stop is
+                // ending a note that will not end itself, so 0.2 s is gentle. A
+                // retrigger has a note waiting behind it, so 2 ms -- long
+                // enough not to click, short enough not to be heard as delay.
+                const int frames = v.retriggering
                     ? juce::jmax (1, (int) (0.002 * impl_->sampleRate))
                     : juce::jmax (1, impl_->fadeFrames);
 
                 const float step = 1.0f / (float) frames;
-
-                // -80 dB over the window where the linear ramp reached zero, so
-                // the two fades take the same time to become inaudible.
-                const float fadeCoef = std::exp (-9.2103f / (float) frames);
 
                 for (int i = 0; i < chunk; ++i)
                 {
                     v.compGain = rampToward (v.compGain, v.compTarget, impl_->compRampStep);
                     const float env = enveloped ? stepEnvelope (v) : 1.0f;
                     impl_->mix[(size_t) i] += src[i] * v.forceGain * v.compGain * env;
-
-                    if (linearFade)
-                    {
-                        v.forceGain = juce::jmax (0.0f, v.forceGain - step);
-                    }
-                    else
-                    {
-                        v.forceGain *= fadeCoef;
-
-                        // An exponential never reaches zero on its own, and the
-                        // test below is what ends the fade and re-initialises
-                        // the voice. Same -80 dB the envelope's release uses.
-                        if (v.forceGain < 1.0e-4f) v.forceGain = 0.0f;
-                    }
+                    v.forceGain = juce::jmax (0.0f, v.forceGain - step);
                 }
 
                 if (v.forceGain <= 0.0f)

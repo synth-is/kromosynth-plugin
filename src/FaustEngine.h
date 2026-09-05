@@ -434,35 +434,6 @@ public:
     */
     void setEnvelope (float attackS, float decayS, float sustain, float releaseS) noexcept;
 
-    /** Whether the multiplying envelope shapes notes at all.
-
-        ON by default, and for every genome that does not publish all four of
-        att, dec, sus and rel.
-
-        OFF while the processor drives those four sliders directly. Driving them
-        natively can SHORTEN an attack, which a multiplier can never do, so the
-        two are alternatives rather than layers. Running both would apply the
-        release twice and reach -60 dB in half the time the knob claims.
-
-        What this does NOT switch off is the forced release. That path reads the
-        genome's RAW output, before compGain and before the envelope, so it
-        fires at exactly the same moment either way -- verified by reading
-        process(), where peakRecent is taken from src[i]. What changes for a
-        genome that ignores its gate is only what is heard in the up to 1.5 s
-        before the fade begins.
-
-        Measured 2026-09-05 over the 30 installed instruments: 16 publish all
-        four. Of those, 2 ignore their gate at a 2 s hold and 4 at an 8 s hold,
-        against 3 and 6 of the other 14. The set this switches off for is
-        slightly BETTER articulated than the set it leaves alone.
-
-        Separately worth knowing, from the same measurement: the verdict is
-        monotone in hold length. Five instruments go from respecting their gate
-        to ignoring it between a 2 s hold and an 8 s one and none go back, so
-        5/30 becomes 10/30. measure() holds for 2 s.
-    */
-    void setEnvelopeShaping (bool shouldShape) noexcept;
-
     /** Applied to the summed output. 1.0 is off, and off is the default: the
         null test compares raw output against the platform reference and must
         not be silently scaled. Only the processor sets this.

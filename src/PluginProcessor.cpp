@@ -424,7 +424,6 @@ bool KromosynthAudioProcessor::removeInstrument (const juce::String& id)
         faustJson_ = juce::File{};
         faustDeclared_ = InstrumentLibrary::Metadata{};
         faustSpectrogram_.clear();
-        adsr_ = AdsrBinding{};
        #endif
 
         active_ = Active::none;
@@ -524,24 +523,6 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
 
         if (r.ok)
             active_ = Active::faust;
-
-        // BEFORE the measurement is dispatched.
-        //
-        // The ordering is not, as first supposed, protecting the measurement
-        // from the plugin's defaults. measure() calls panic() at the top of
-        // every pitch iteration and panic() calls init(), which restores every
-        // slider to its declared init -- 139 of 139 measured -- so no write
-        // before it survives into it and the measurement was always taking the
-        // genome's own values.
-        //
-        // What adoption fixes is the other end. Once the four knobs drive the
-        // genome, PLAYBACK uses whatever they hold, and if that is the plugin's
-        // A = 0 / S = 1 rather than the genome's evolved values then the trim
-        // and the 21-point sweep table are levelling an instrument nobody is
-        // hearing. Adopting first makes what is played the thing that was
-        // measured.
-        if (r.ok)
-            resolveAdsrBinding (true);
 
         // INSIDE the suspend window. applyFaustTrim renders through
         // FaustEngine::process, which is the same call the audio thread makes,
@@ -856,107 +837,7 @@ void KromosynthAudioProcessor::reloadFaustIfNeeded (double sampleRate, int sampl
         return;
     }
 
-    // Offsets only. The module is the same one, so they cannot have moved, and
-    // re-adopting on a sample-rate change would discard whatever the player had
-    // dialled in. Not adopting is also what makes this safe here: prepareToPlay
-    // carries no message-thread guarantee and must not write host parameters.
-    resolveAdsrBinding (false);
-
     applyFaustTrim();
-}
-
-void KromosynthAudioProcessor::resolveAdsrBinding (bool adoptValues)
-{
-    // The caller holds the suspend window, which is what makes writing adsr_
-    // safe against the audio thread reading it -- the same edge prepareToPlay
-    // relies on for engine_.
-    adsr_ = AdsrBinding{};
-
-    if (faust_ == nullptr || ! faust_->isLoaded())
-        return;
-
-    const auto find = [this] (juce::StringRef label) -> BoundSlider
-    {
-        for (const auto& p : faust_->parameters())
-        {
-            if (p.label != label) continue;
-
-            BoundSlider b;
-            b.byteOffset = p.byteOffset;
-            b.minimum = p.minimum;
-            b.maximum = p.maximum;
-            b.init = p.init;
-            return b;
-        }
-
-        return {};
-    };
-
-    const auto att = find ("att"), dec = find ("dec"),
-               sus = find ("sus"), rel = find ("rel");
-
-    if (! (att.bound() && dec.bound() && sus.bound() && rel.bound()))
-    {
-        // ALL FOUR OR NONE -- see the header. The partial case is real: two of
-        // the thirty installed instruments publish `dec` and nothing else.
-        faust_->setEnvelopeShaping (true);
-
-        logEvent ("adsr_binding native=0"
-                  " att=" + juce::String (att.bound() ? 1 : 0)
-                  + " dec=" + juce::String (dec.bound() ? 1 : 0)
-                  + " sus=" + juce::String (sus.bound() ? 1 : 0)
-                  + " rel=" + juce::String (rel.bound() ? 1 : 0)
-                  + " -- the multiplying envelope stays in charge");
-        return;
-    }
-
-    adsr_.native = true;
-    adsr_.att = att;
-    adsr_.dec = dec;
-    adsr_.sus = sus;
-    adsr_.rel = rel;
-
-    // The genome shapes itself from here. Running the multiplier as well would
-    // apply the release twice and reach -60 dB in half the time the knob says.
-    faust_->setEnvelopeShaping (false);
-
-    if (! adoptValues)
-    {
-        logEvent ("adsr_binding native=1 adopted=0 -- offsets only, values kept");
-        return;
-    }
-
-    // Clamped into the KNOB's range on the way in, as the genome's value is
-    // clamped into the SLIDER's range on the way out. The two ranges are close
-    // but not equal: att is declared 0.0005..4 on 15 of the 16 and 0.0005..1 on
-    // the sixteenth, against a knob that reads 0..5.
-    const auto adopt = [] (juce::AudioParameterFloat* p, float value)
-    {
-        if (p == nullptr) return 0.0f;
-
-        const auto& range = p->getNormalisableRange();
-        const float v = juce::jlimit (range.start, range.end, value);
-        p->setValueNotifyingHost (range.convertTo0to1 (v));
-        return v;
-    };
-
-    const float a = adopt (attackS_, att.init);
-    const float d = adopt (decayS_, dec.init);
-    const float s = adopt (sustain_, sus.init);
-    const float rl = adopt (releaseS_, rel.init);
-
-    // KNOWN COST, logged rather than hidden: this MOVES four host parameters on
-    // every instrument load, so a session reopening will have its restored ADSR
-    // overwritten by the genome's defaults and any automation on those lanes
-    // will fight the load. Whether that is worth a per-instrument "already
-    // adopted" flag in the plugin state is the first thing to find out by
-    // playing it.
-    logEvent ("adsr_binding native=1 adopted=1"
-              " att=" + juce::String (a, 4) + "/" + juce::String (att.init, 4)
-              + " dec=" + juce::String (d, 4) + "/" + juce::String (dec.init, 4)
-              + " sus=" + juce::String (s, 4) + "/" + juce::String (sus.init, 4)
-              + " rel=" + juce::String (rl, 4) + "/" + juce::String (rel.init, 4)
-              + " -- knob/genome; multiplying envelope off");
 }
 
 bool KromosynthAudioProcessor::runtimeMeasurementNeeded() const
@@ -1396,34 +1277,8 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // be the other.
    #if KROMOSYNTH_HAS_FAUST
     if (faust_ != nullptr && attackS_ != nullptr)
-    {
-        if (adsr_.native && active_ == Active::faust)
-        {
-            // NATIVE: the four knobs write the genome's own sliders, so an
-            // attack can be SHORTENED, which a multiplier could never do.
-            faust_->setEnvelopeShaping (false);
-
-            // EVERY BLOCK, not on change. init() restores every slider to its
-            // declared init and init() runs whenever a voice idles, is
-            // force-stopped, or the engine panics, so a write-on-change design
-            // would lose these at the next voice recycle and restore them only
-            // if the player happened to touch the knob again.
-            //
-            // writeParameter, not setParameter: the waking version would keep
-            // every voice out of idle forever and clear noteDriven, which is
-            // the flag both the pitch compensation and the envelope key off.
-            faust_->writeParameter (adsr_.att.byteOffset, adsr_.att.clamped (attackS_->get()));
-            faust_->writeParameter (adsr_.dec.byteOffset, adsr_.dec.clamped (decayS_->get()));
-            faust_->writeParameter (adsr_.sus.byteOffset, adsr_.sus.clamped (sustain_->get()));
-            faust_->writeParameter (adsr_.rel.byteOffset, adsr_.rel.clamped (releaseS_->get()));
-        }
-        else
-        {
-            faust_->setEnvelopeShaping (true);
-            faust_->setEnvelope (attackS_->get(), decayS_->get(),
-                                 sustain_->get(), releaseS_->get());
-        }
-    }
+        faust_->setEnvelope (attackS_->get(), decayS_->get(),
+                             sustain_->get(), releaseS_->get());
    #endif
 
    #if KROMOSYNTH_HAS_SAMPLER
