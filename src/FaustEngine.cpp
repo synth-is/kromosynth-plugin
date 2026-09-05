@@ -328,6 +328,12 @@ struct FaustVoice
     // and whether it was still audible.
     float compGain = 1.0f, compTarget = 1.0f;
 
+    // A note waiting for this voice to fade out before it starts. See noteOn:
+    // reusing a voice that is still sounding is a 1.0 to 1.2 boundary jump, and
+    // the fade is what removes it.
+    int pendingNote = -1, pendingVelocity = 0;
+    bool retriggering = false;
+
     // The plugin's own amplitude envelope, MULTIPLYING the genome's rather than
     // replacing it.
     //
@@ -1006,6 +1012,8 @@ void FaustEngine::panic() noexcept
         v.sustained = false;
         v.compGain = 1.0f;
         v.compTarget = 1.0f;
+        v.retriggering = false;
+        v.pendingNote = -1;
         v.envStage = FaustVoice::Env::off;
         v.envLevel = 0.0f;
 
@@ -1166,6 +1174,41 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
 
     if (chosen == nullptr) return;
 
+    // A voice that is STILL SOUNDING is faded out before it is reused.
+    //
+    // Retriggering one on top of itself is a discontinuity: the frequency jumps
+    // and the gate pulses while the previous note is still ringing. Measured
+    // with faust-probe --clicks that is a boundary jump of 1.0 to 1.2, against
+    // 0.0002 for a note starting from silence.
+    //
+    // It only happens under voice pressure -- the allocator prefers a silent
+    // voice, then the oldest released one, and steals only when every voice is
+    // busy -- but caps are often 4 to 8 and a drone never decays, so ordinary
+    // playing reaches it.
+    //
+    // peakRecent is the test rather than `idle`, because a released voice can
+    // be inaudible long before the idle machinery notices.
+    if (! chosen->idle && chosen->peakRecent > 1.0e-4f)
+    {
+        chosen->pendingNote = note;
+        chosen->pendingVelocity = velocity;
+        chosen->retriggering = true;
+
+        // The existing forced-release machinery does the fade; only its LENGTH
+        // differs. A force-stop takes 0.2 s because it is ending a note that
+        // will not end itself. This takes 2 ms, because a note is waiting.
+        chosen->forcing = true;
+        chosen->forceGain = 1.0f;
+        return;
+    }
+
+    startNote (*chosen, note, velocity);
+}
+
+void FaustEngine::startNote (FaustVoice& v, int note, int velocity) noexcept
+{
+    auto* chosen = &v;
+
     // Captured BEFORE idle is cleared. A silent voice can take its correction
     // immediately -- there is nothing to step -- and that leaves the genome's
     // own attack exactly as it renders. Only a voice that is still sounding
@@ -1242,6 +1285,27 @@ void FaustEngine::noteOn (int note, int velocity) noexcept
 void FaustEngine::noteOff (int note) noexcept
 {
     impl_->notesOff.fetch_add (1, std::memory_order_relaxed);
+
+    // A note released before it ever started.
+    //
+    // A stolen voice holds the OLD note number while it fades, with the new one
+    // waiting in pendingNote. A note-off arriving inside that window -- up to a
+    // block, 23 ms at 1024 -- matches nothing, and the note would start after
+    // the fade with no key still holding it: a voice sounding forever with no
+    // way to release it.
+    //
+    // Found by faust-probe --clicks flagging a click at note-OFF, on a change
+    // that only touched note-ON. The click was the symptom; a stuck note was
+    // the fault.
+    for (auto& v : impl_->voices)
+    {
+        if (v.retriggering && v.pendingNote == note)
+        {
+            v.retriggering = false;
+            v.pendingNote = -1;
+            return;
+        }
+    }
 
     for (auto& v : impl_->voices)
     {
@@ -1480,7 +1544,15 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
 
             if (v.forcing)
             {
-                const float step = 1.0f / (float) juce::jmax (1, impl_->fadeFrames);
+                // TWO different fades through one mechanism. A force-stop is
+                // ending a note that will not end itself, so 0.2 s is gentle. A
+                // retrigger has a note waiting behind it, so 2 ms -- long
+                // enough not to click, short enough not to be heard as delay.
+                const int frames = v.retriggering
+                    ? juce::jmax (1, (int) (0.002 * impl_->sampleRate))
+                    : juce::jmax (1, impl_->fadeFrames);
+
+                const float step = 1.0f / (float) frames;
 
                 for (int i = 0; i < chunk; ++i)
                 {
@@ -1501,6 +1573,26 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
                     v.idle = true;
 
                     initVoice (v, impl_->sampleRate);
+
+                    // A note was waiting for this fade. Start it now, from a
+                    // zeroed struct and silence -- which is exactly the state a
+                    // first note sees, and why this removes the click rather
+                    // than moving it.
+                    //
+                    // The note begins at the NEXT chunk, so it is late by
+                    // whatever remains of this one: up to a block, 23 ms at
+                    // 1024 and 44100. Only under voice pressure, and the
+                    // alternative was an audible click on every stolen voice.
+                    if (v.retriggering && v.pendingNote >= 0)
+                    {
+                        const int note = v.pendingNote;
+                        const int velocity = v.pendingVelocity;
+
+                        v.retriggering = false;
+                        v.pendingNote = -1;
+
+                        startNote (v, note, velocity);
+                    }
                 }
             }
             else

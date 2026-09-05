@@ -74,6 +74,10 @@
 struct FaustVoice;
 struct FaustEngineImpl;
 
+// Defined in FaustEngine.cpp at file scope. Declared here only so startNote can
+// take one by reference; nothing outside the .cpp needs its layout.
+struct FaustVoice;
+
 class FaustEngine
 {
 public:
@@ -412,6 +416,19 @@ public:
 
 private:
     void noteOn (int note, int velocity) noexcept;
+
+private:
+    /** Starts a note on a voice that is silent and zeroed.
+
+        Split out of noteOn because a stolen voice cannot start immediately: it
+        is faded over 2 ms first, and the note begins when that finishes. Both
+        routes must configure the voice identically, and duplicating that was
+        how the pitch correction and the envelope came to disagree about which
+        voices they applied to.
+    */
+    void startNote (FaustVoice& voice, int note, int velocity) noexcept;
+
+public:
     void noteOff (int note) noexcept;
     void setParam (FaustVoice& v, int byteOffset, float value) noexcept;
     bool instantiateVoices (int numVoices, juce::String& err);
