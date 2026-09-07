@@ -3,6 +3,25 @@
 # The juce_add_plugin call and its link/definition blocks are KEEPABLE.
 # The source files it lists are not — see their headers.
 
+# Formats are per-platform, and the iOS pair is not a subset of the macOS pair.
+#
+# On iOS, Standalone is not an optional extra: JUCE builds the AUv3 as an app
+# EXTENSION, and an extension needs a container app to live inside. The
+# standalone app is therefore the delivery vehicle for the plugin rather than a
+# separate product, which is why standalone-first is the cheapest route to a
+# working AUv3 rather than a detour away from one.
+#
+# AUv3 is deliberately NOT enabled yet. It brings its own sandbox: an extension
+# cannot read the container app's Documents directory, so InstrumentLibrary and
+# the acquisition session both have to move to an App Group container first.
+# Adding the format before that work exists would produce an AUv3 that loads
+# and then finds an empty instrument library.
+if(KROMOSYNTH_IOS)
+    set(_kromosynth_formats Standalone)
+else()
+    set(_kromosynth_formats AU VST3)
+endif()
+
 juce_add_plugin(KromosynthPlugin
     PRODUCT_NAME             "Synth.is"
     VERSION                  ${PROJECT_VERSION}
@@ -16,7 +35,7 @@ juce_add_plugin(KromosynthPlugin
     PLUGIN_MANUFACTURER_CODE Sthi
     PLUGIN_CODE              Krm0
 
-    FORMATS                  AU VST3
+    FORMATS                  ${_kromosynth_formats}
 
     # IS_SYNTH TRUE even at Stage 0 with no audio: the format wrappers expose
     # different capabilities to the host depending on this, and changing it
@@ -26,6 +45,39 @@ juce_add_plugin(KromosynthPlugin
     NEEDS_MIDI_INPUT         TRUE
     NEEDS_MIDI_OUTPUT        FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+
+    # iOS suspends an app's audio when it leaves the foreground unless the
+    # background-audio capability is declared. A synth that stops when the
+    # screen locks is not a synth. On a native target this is one Info.plist
+    # key, which is one of the concrete reasons the native route beat running
+    # the engine inside a WKWebView.
+    #
+    # The keyword is BACKGROUND_AUDIO_ENABLED. BACKGROUND_AUDIO is not a JUCE
+    # argument at all — it is absent from the one-value list in
+    # JUCEUtils.cmake around line 2072 — so juce_add_plugin silently ignored
+    # the shorter spelling and the first iOS build shipped with an empty
+    # UIBackgroundModes. Same class of mistake as JUCE_FORCE_LEGACY_PARAM_IDS
+    # below, and only findable by reading the BUILT Info.plist.
+    #
+    # WHICH BRINGS THE TRAP WORTH RECORDING: with the Xcode generator,
+    # `xcodebuild -target <name>` does NOT depend on ZERO_CHECK, so a changed
+    # CMakeLists is not picked up and the plist read back is the PREVIOUS
+    # build's. Two verifications of this very block were invalid for that
+    # reason and produced a confident, wrong diagnosis — that CMake's `ON` was
+    # not a plist boolean. Re-run `cmake -S . -B <dir>` before trusting any
+    # plist read after a build-file edit. `ON` is fine; measured.
+    #
+    # FILE_SHARING_ENABLED so instruments and logs can be pulled off the device
+    # without a debugger attached.
+    BACKGROUND_AUDIO_ENABLED ${KROMOSYNTH_IOS}
+    FILE_SHARING_ENABLED     ${KROMOSYNTH_IOS}
+    REQUIRES_FULL_SCREEN     ${KROMOSYNTH_IOS}
+
+    # No microphone anywhere in the signal path. Declared explicitly because
+    # leaving it unset makes JUCE emit the usage-description key on iOS, and an
+    # app that asks for a microphone it never opens is one App Review question
+    # nobody needs to answer.
+    MICROPHONE_PERMISSION_ENABLED FALSE
 
     COPY_PLUGIN_AFTER_BUILD  ${KROMOSYNTH_COPY_AFTER_BUILD}
 )

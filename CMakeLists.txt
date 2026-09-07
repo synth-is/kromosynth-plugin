@@ -93,12 +93,98 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# macOS only for Stage 0 (WP constraint: AU + VST3, no Windows/Linux/iOS/CLAP).
-# Fail loudly rather than producing a half-configured build on another host.
+# ── Platform: macOS, and iOS as a second backend ─────────────────────────────
+#
+# iOS is not a port of the macOS build. Three measured facts shape it, all from
+# GATE0_IOS_RESULT_2026-09-07 and INTERP_BACKEND_RESULT_2026-09-07 in
+# faust-genome-substrate:
+#
+#   1. wasmtime cannot ship. Its C API exposes Cranelift and Winch, both JIT,
+#      and iOS forbids JIT for third-party code. KROMOSYNTH_BUILD_FAUST is
+#      therefore refused on iOS until FaustEngine.cpp is re-backed onto wasm3 —
+#      which FaustEngine.h is already shaped for, since it names no runtime
+#      type anywhere in its 496 lines.
+#
+#   2. The sampler is the PRIMARY iOS engine, not a fallback. wasm3 on an A15
+#      gives one to two voices at the slow end of the catalogue, and the Faust
+#      interpreter measured half of wasm3's throughput, so there is no faster
+#      legal runtime to wait for. A sampled rendition has no realtime factor at
+#      all.
+#
+#   3. sfizz needs no new porting work. Building it for arm64-ios required
+#      exactly the two things cmake/Sfizz.cmake already does for macOS arm64:
+#      the PROJECT_SYSTEM_PROCESSOR override and the atomic_queue warning
+#      demotion.
+#
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(KROMOSYNTH_IOS ON)
+else()
+    set(KROMOSYNTH_IOS OFF)
+endif()
+
+# Feature probes have to stop trying to link executables.
+#
+# try_compile builds an EXECUTABLE by default, and an iOS executable cannot be
+# linked without a bundle and a signing identity. So every probe fails for a
+# reason that has nothing to do with what it was probing. FindThreads is the
+# first casualty and the most misleading one: it reports "Could NOT find
+# Threads" on a platform where pthreads is not optional and is in the SDK.
+#
+# Probing with a static library removes the link step, and the probes then
+# answer the question they were actually asked. Set after project() on purpose:
+# compiler detection has already run by here and does need to link.
+if(KROMOSYNTH_IOS)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+endif()
+
+# FindThreads has to be told the answer, and this is an ASSERTION rather than a
+# probe — which is why it is written down.
+#
+# sfizz does find_package(Threads REQUIRED) in cmake/SfizzDeps.cmake:4. Under
+# the Xcode generator targeting iOS, FindThreads' CMAKE_HAVE_LIBC_PTHREAD check
+# fails, and it then goes looking for a libpthread to link, which does not
+# exist — on iOS, exactly as on macOS, pthreads lives in libSystem and there is
+# no separate library. The result is "Could NOT find Threads" on a platform
+# where threads are not optional. CMAKE_TRY_COMPILE_TARGET_TYPE does not help;
+# the check fails inside xcodebuild for reasons unrelated to pthreads.
+#
+# CMAKE_HAVE_LIBC_PTHREAD is the ONE variable to set. Seeding the downstream
+# results instead does not work: FindThreads recomputes Threads_FOUND from
+# CMAKE_THREAD_LIBS_INIT or CMAKE_HAVE_LIBC_PTHREAD and overwrites anything
+# preset. This is the cached result of the check, so setting it both skips the
+# check and states the true fact — libc does have pthread here — rather than
+# faking a conclusion further down the chain.
+#
+# CMAKE_THREAD_LIBS_INIT stays EMPTY on purpose: there is genuinely nothing to
+# link, which is the same answer the probe reaches on macOS.
+#
+# If a future SDK makes the real probe pass, delete this block rather than
+# leaving it — a stale assertion is worse than none.
+if(KROMOSYNTH_IOS)
+    set(THREADS_PREFER_PTHREAD_FLAG ON)
+    set(CMAKE_HAVE_LIBC_PTHREAD 1 CACHE INTERNAL "" FORCE)
+    set(CMAKE_THREAD_LIBS_INIT "" CACHE STRING "" FORCE)
+endif()
+
+# Apple platforms only. Fail loudly rather than producing a half-configured
+# build on another host.
 if(NOT APPLE)
     message(FATAL_ERROR
-        "kromosynth-plugin is macOS-only at Stage 0 (AU + VST3). "
-        "Windows and Linux are Stage 3 — see WP_SYNTHIS_PLUGIN.md §7.")
+        "kromosynth-plugin targets Apple platforms only: macOS (AU + VST3) and "
+        "iOS (Standalone + AUv3). Windows and Linux are Stage 3 — see "
+        "WP_SYNTHIS_PLUGIN.md §7.")
+endif()
+
+# The Faust engine has no runtime on iOS yet. This is a hard error rather than
+# a silent downgrade: a build that quietly dropped the engine would produce an
+# app whose instrument library shows Faust artefacts it cannot play.
+if(KROMOSYNTH_IOS AND KROMOSYNTH_BUILD_FAUST)
+    message(FATAL_ERROR
+        "KROMOSYNTH_BUILD_FAUST is not available on iOS. wasmtime's C API "
+        "offers only Cranelift and Winch and both are JIT, which iOS forbids. "
+        "The replacement is a wasm3 backend for FaustEngine.cpp; the reference "
+        "host is faust-genome-substrate/probe/gate0/host_wasm3.c, already "
+        "measured on device. Configure with -DKROMOSYNTH_BUILD_FAUST=OFF.")
 endif()
 
 # Architecture. Default is NATIVE ONLY, deliberately.
@@ -113,9 +199,32 @@ endif()
 option(KROMOSYNTH_UNIVERSAL_BINARY "Build arm64 + x86_64 universal" OFF)
 
 if(KROMOSYNTH_UNIVERSAL_BINARY)
+    if(KROMOSYNTH_IOS)
+        message(FATAL_ERROR
+            "KROMOSYNTH_UNIVERSAL_BINARY is meaningless on iOS: every supported "
+            "device is arm64. Configure without it.")
+    endif()
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
 endif()
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)
+
+# Deployment target is per-platform, and the two number spaces are unrelated:
+# "11.0" means macOS Big Sur and iOS 11. The iOS floor is 16.0 — AUv3 audio
+# units and the App Group container work the extension will need are both
+# well-trodden there, and an iOS 11 device would not be worth aiming an audio
+# interpreter at.
+if(KROMOSYNTH_IOS)
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0" CACHE STRING "" FORCE)
+else()
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)
+endif()
+
+# There is no ~/Library/Audio/Plug-Ins on a phone. JUCE's copy step and the
+# signing re-copy that is guarded on it are both nonsense on iOS, where
+# installation happens through devicectl or Xcode.
+if(KROMOSYNTH_IOS)
+    set(KROMOSYNTH_COPY_AFTER_BUILD OFF CACHE BOOL "" FORCE)
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -157,7 +266,11 @@ add_subdirectory(src)
 # sfz-probe answers the Task 2 format questions without a plugin, a host or an
 # audio device. It is built with the sampler because it links sfizz; it is not
 # part of any deliverable. See tools/sfz-probe/main.cpp.
-if(KROMOSYNTH_BUILD_SAMPLER)
+#
+# All three probes are console executables. On iOS there is no console to run
+# them from, so they are skipped rather than turned into app bundles nobody
+# would launch. They are host-side tools and the host is still a Mac.
+if(KROMOSYNTH_BUILD_SAMPLER AND NOT KROMOSYNTH_IOS)
     add_subdirectory(tools/sfz-probe)
     add_subdirectory(tools/engine-probe)
 endif()
@@ -173,5 +286,8 @@ endif()
 # acquire-probe links juce_core only -- no sfizz, no webview, no audio device --
 # so it is not gated behind the sampler. It exists to exercise the acquisition
 # path without building the plugin, because a plugin rebuild re-signs and
-# un-notarises the installed bundle (STAGE0_FINDINGS L5, L7).
-add_subdirectory(tools/acquire-probe)
+# un-notarises the installed bundle (STAGE0_FINDINGS L5, L7). Host-side only,
+# for the same reason as the probes above.
+if(NOT KROMOSYNTH_IOS)
+    add_subdirectory(tools/acquire-probe)
+endif()
