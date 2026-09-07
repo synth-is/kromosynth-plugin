@@ -9,6 +9,16 @@
 #include <wasm.h>
 #include <wasmtime.h>
 
+#if KROMOSYNTH_WASM3
+// The interpreter backend, for platforms that forbid JIT. wasm3.h brings
+// m3ApiRawFunction and friends with it, as host_wasm3.c relies on.
+//
+// Both runtimes are declared even when only one is compiled in, because the
+// wasmtime types appear in FaustVoice's non-wasm3 branch and the file has to
+// parse either way.
+#include "wasm3.h"
+#endif
+
 #include <juce_dsp/juce_dsp.h>
 
 #include <algorithm>
@@ -104,6 +114,29 @@ FE_MATH_EXPRESSIONS (FE_DEFINE_U, FE_DEFINE_B)
 #undef FE_DEFINE_U
 #undef FE_DEFINE_B
 
+#if KROMOSYNTH_WASM3
+// The same expressions again, in wasm3's raw-function ABI. Transcribed from
+// probe/gate0/host_wasm3.c, which produced the reference numbers this backend
+// is null-tested against -- so the argument order, the return type and the
+// double-precision narrowing are copied rather than re-derived.
+#define FE3_U(NAME, WASMNAME, EXPR)                                            \
+    static m3ApiRawFunction (NAME##_m3) {                                      \
+        m3ApiReturnType (float);                                               \
+        m3ApiGetArg (float, x);                                                \
+        m3ApiReturn ((float) (EXPR));                                          \
+    }
+#define FE3_B(NAME, WASMNAME, EXPR)                                            \
+    static m3ApiRawFunction (NAME##_m3) {                                      \
+        m3ApiReturnType (float);                                               \
+        m3ApiGetArg (float, x);                                                \
+        m3ApiGetArg (float, y);                                                \
+        m3ApiReturn ((float) (EXPR));                                          \
+    }
+FE_MATH_EXPRESSIONS (FE3_U, FE3_B)
+#undef FE3_U
+#undef FE3_B
+#endif
+
 namespace
 {
 struct Link { const char* name; int arity; wasmtime_func_unchecked_callback_t fn; };
@@ -118,6 +151,25 @@ const Link kMathTable[] = {
 };
 #undef FE_LINK_U
 #undef FE_LINK_B
+
+#if KROMOSYNTH_WASM3
+struct Link3 { const char* name; const char* sig; M3RawCall fn; };
+
+// Signatures are wasm3's: "f(f)" is float(float). Every Faust math import is
+// f32 in, f32 out, which is why two shapes cover all 29.
+#define FE3_LINK_U(NAME, WASMNAME, EXPR) { WASMNAME, "f(f)",  NAME##_m3 },
+#define FE3_LINK_B(NAME, WASMNAME, EXPR) { WASMNAME, "f(ff)", NAME##_m3 },
+const Link3 kMathTable3[] = {
+    FE_MATH_EXPRESSIONS (FE3_LINK_U, FE3_LINK_B)
+};
+#undef FE3_LINK_U
+#undef FE3_LINK_B
+
+// Every voice gets its own runtime, so this is per voice rather than per
+// module. 64 KB matches host_wasm3.c's default; the archive's deepest genome
+// did not approach it.
+constexpr std::uint32_t kWasm3StackBytes = 64 * 1024;
+#endif
 
 wasm_functype_t* funcType (int arity)
 {
@@ -284,10 +336,22 @@ std::vector<std::uint8_t> buildSpectrogram (const std::vector<float>& capture, d
 
 struct FaustVoice
 {
+#if KROMOSYNTH_WASM3
+    // ONE RUNTIME PER VOICE, and that is forced rather than chosen.
+    // m3_LoadModule consumes the module and the runtime owns the instance's
+    // linear memory, so voices cannot share a parsed module the way they share
+    // a Cranelift-compiled one. The cost is a parse per voice at load, which
+    // host_wasm3.c measured at about 3 ms -- small, but it scales with voice
+    // count where wasmtime's instantiation does not.
+    IM3Runtime  rt  = nullptr;
+    IM3Module   mod = nullptr;      // owned by rt once loaded; do not free
+    IM3Function fInit = nullptr, fCompute = nullptr, fSetParam = nullptr;
+#else
     wasmtime_store_t*   store = nullptr;
     wasmtime_context_t* ctx   = nullptr;
     wasmtime_instance_t instance {};
     wasmtime_func_t     fInit {}, fCompute {}, fSetParam {};
+#endif
 
     std::uint8_t* memory = nullptr;
     std::size_t   memBytes = 0;
@@ -382,9 +446,14 @@ inline void initVoice (FaustVoice& v, double sampleRate) noexcept
     args[1].i32 = (std::int32_t) sampleRate;
 
     wasm_trap_t* trap = nullptr;
+#if KROMOSYNTH_WASM3
+    (void) trap;
+    m3_CallV (v.fInit, (std::int32_t) v.dspPtr, (std::int32_t) sampleRate);
+#else
     if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
         wasmtime_error_delete (err);
     if (trap != nullptr) wasm_trap_delete (trap);
+#endif
 }
 
 struct FaustEngineImpl
@@ -394,9 +463,15 @@ struct FaustEngineImpl
     // m3_LoadModule consumes the module and it owns the instance's memory.
     // Compilation happens in wasmtime_module_new and is the expensive step, so
     // sharing it is what keeps per-voice load cost at instantiation only.
+#if KROMOSYNTH_WASM3
+    // No shared module here: see FaustVoice. The environment is shared, the
+    // module is not.
+    IM3Environment env = nullptr;
+#else
     wasm_engine_t*      engine = nullptr;
     wasmtime_module_t*  module = nullptr;
     wasmtime_linker_t*  linker = nullptr;
+#endif
     std::vector<std::uint8_t> wasm;
     std::vector<FaustVoice> voices;
 
@@ -481,12 +556,21 @@ FaustEngine::~FaustEngine()
 {
     if (impl_ == nullptr) return;
 
+#if KROMOSYNTH_WASM3
+    // m3_FreeRuntime releases the runtime's module and its linear memory, so
+    // there is nothing else per voice to release. The environment goes last.
+    for (auto& v : impl_->voices)
+        if (v.rt != nullptr) m3_FreeRuntime (v.rt);
+
+    if (impl_->env != nullptr) m3_FreeEnvironment (impl_->env);
+#else
     for (auto& v : impl_->voices)
         if (v.store != nullptr) wasmtime_store_delete (v.store);
 
     if (impl_->linker != nullptr) wasmtime_linker_delete (impl_->linker);
     if (impl_->module != nullptr) wasmtime_module_delete (impl_->module);
     if (impl_->engine != nullptr) wasm_engine_delete (impl_->engine);
+#endif
 }
 
 // Creates N instances from the ALREADY-COMPILED module. Separated from load()
@@ -495,12 +579,60 @@ FaustEngine::~FaustEngine()
 // result affordable.
 bool FaustEngine::instantiateVoices (int numVoices, juce::String& errOut)
 {
+#if KROMOSYNTH_WASM3
+    for (auto& v : impl_->voices)
+        if (v.rt != nullptr) m3_FreeRuntime (v.rt);   // frees its module too
+#else
     for (auto& v : impl_->voices)
         if (v.store != nullptr) wasmtime_store_delete (v.store);
+#endif
 
     impl_->voices.clear();
     impl_->voices.resize ((size_t) numVoices);
 
+#if KROMOSYNTH_WASM3
+    for (auto& v : impl_->voices)
+    {
+        v.rt = m3_NewRuntime (impl_->env, kWasm3StackBytes, nullptr);
+        if (v.rt == nullptr) { errOut = "m3_NewRuntime failed"; return false; }
+
+        // Its OWN parse of the bytes. m3_LoadModule takes the module, so one
+        // parsed module cannot be loaded into two runtimes.
+        if (auto r = m3_ParseModule (impl_->env, &v.mod,
+                                     impl_->wasm.data(), (std::uint32_t) impl_->wasm.size()))
+        { errOut = juce::String ("m3_ParseModule: ") + r; return false; }
+
+        if (auto r = m3_LoadModule (v.rt, v.mod))
+        { errOut = juce::String ("m3_LoadModule: ") + r; return false; }
+
+        // AFTER load, not before. m3_LinkRawFunction on an unloaded module
+        // returns "attempting to use module that is not loaded" -- the module
+        // has to belong to a runtime before its imports can be bound. This is
+        // the order host_wasm3.c uses, and getting it backwards fails at the
+        // first import rather than subtly.
+        //
+        // Failures for names the module does not import are normal:
+        // m3_LinkRawFunction returns m3Err_functionLookupFailed for those, and
+        // an unused link costs nothing.
+        for (const auto& m : kMathTable3)
+        {
+            auto r = m3_LinkRawFunction (v.mod, "env", m.name, m.sig, m.fn);
+            if (r != nullptr && r != m3Err_functionLookupFailed)
+            { errOut = juce::String ("link ") + m.name + ": " + r; return false; }
+        }
+
+        if (m3_FindFunctionIn (&v.fInit,     v.mod, "init") != nullptr)
+        { errOut = "missing export: init"; return false; }
+        if (m3_FindFunctionIn (&v.fCompute,  v.mod, "compute") != nullptr)
+        { errOut = "missing export: compute"; return false; }
+        if (m3_FindFunctionIn (&v.fSetParam, v.mod, "setParamValue") != nullptr)
+        { errOut = "missing export: setParamValue"; return false; }
+
+        std::size_t memBytesSz = 0;
+        v.memory = m3_GetMemory (v.mod, &memBytesSz, 0);
+        if (v.memory == nullptr) { errOut = "module exports no memory"; return false; }
+        v.memBytes = memBytesSz;
+#else
     for (auto& v : impl_->voices)
     {
         v.store = wasmtime_store_new (impl_->engine, nullptr, nullptr);
@@ -533,6 +665,7 @@ bool FaustEngine::instantiateVoices (int numVoices, juce::String& errOut)
 
         v.memory = wasmtime_memory_data (v.ctx, &memItem.of.memory);
         v.memBytes = wasmtime_memory_data_size (v.ctx, &memItem.of.memory);
+#endif
 
         // Layout, identical to layoutMono() in host_wasmtime.c and to
         // FaustMonoWebAudioDsp.initMemory. -single only: §4.1 established
@@ -565,9 +698,16 @@ bool FaustEngine::instantiateVoices (int numVoices, juce::String& errOut)
         wasmtime_val_raw_t args[2];
         args[0].i32 = (std::int32_t) v.dspPtr;
         args[1].i32 = (std::int32_t) impl_->sampleRate;
+#if KROMOSYNTH_WASM3
+        (void) args;
+        if (auto res = m3_CallV (v.fInit, (std::int32_t) v.dspPtr,
+                                          (std::int32_t) impl_->sampleRate))
+        { errOut = juce::String ("init: ") + res; return false; }
+#else
         if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
         { wasmtime_error_delete (err); errOut = "init failed"; return false; }
         if (trap != nullptr) { wasm_trap_delete (trap); errOut = "init trapped"; return false; }
+#endif
     }
 
     return true;
@@ -671,6 +811,17 @@ FaustEngine::load (const juce::File& wasmFile,
     // grace period the forced release already used.
     setEnvelope (0.0f, 0.0f, 1.0f, 1.5f);
 
+#if KROMOSYNTH_WASM3
+    // No engine, no shared module, no linker. The environment is the only
+    // shared object; parsing, linking and memory all belong to the per-voice
+    // runtimes and happen in instantiateVoices.
+    if (impl_->env == nullptr) impl_->env = m3_NewEnvironment();
+    if (impl_->env == nullptr) { r.detail = "m3_NewEnvironment failed"; return r; }
+
+    for (auto& v : impl_->voices)
+        if (v.rt != nullptr) m3_FreeRuntime (v.rt);
+    impl_->voices.clear();
+#else
     if (impl_->engine == nullptr) impl_->engine = wasm_engine_new();
     if (impl_->engine == nullptr) { r.detail = "wasm_engine_new failed"; return r; }
 
@@ -709,6 +860,7 @@ FaustEngine::load (const juce::File& wasmFile,
             return r;
         }
     }
+#endif
 
     if (! instantiateVoices (numVoices, r.detail))
         return r;
@@ -747,9 +899,14 @@ void FaustEngine::setParam (FaustVoice& v, int byteOffset, float value) noexcept
     args[2].f32 = value;
 
     wasm_trap_t* trap = nullptr;
+#if KROMOSYNTH_WASM3
+    (void) trap;
+    m3_CallV (v.fSetParam, (std::int32_t) v.dspPtr, (std::int32_t) byteOffset, value);
+#else
     if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fSetParam, args, 3, &trap))
         wasmtime_error_delete (err);
     if (trap != nullptr) wasm_trap_delete (trap);
+#endif
 }
 
 void FaustEngine::setOutputGain (float g) noexcept
@@ -1047,9 +1204,14 @@ void FaustEngine::panic() noexcept
         args[1].i32 = (std::int32_t) impl_->sampleRate;
 
         wasm_trap_t* trap = nullptr;
+#if KROMOSYNTH_WASM3
+        (void) trap;
+        m3_CallV (v.fInit, (std::int32_t) v.dspPtr, (std::int32_t) impl_->sampleRate);
+#else
         if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
             wasmtime_error_delete (err);
         if (trap != nullptr) wasm_trap_delete (trap);
+#endif
     }
 
     peak_.store (0.0f, std::memory_order_relaxed);
@@ -1504,10 +1666,22 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
             args[3].i32 = (std::int32_t) v.outPtrArr;
 
             wasm_trap_t* trap = nullptr;
+#if KROMOSYNTH_WASM3
+            (void) trap;
+            // m3_CallV returns a message on trap and nullptr otherwise, so the
+            // two wasmtime failure paths collapse into one here. `continue`
+            // leaves this voice silent for the block rather than aborting the
+            // whole render, which is what the wasmtime branch does too.
+            if (m3_CallV (v.fCompute, (std::int32_t) v.dspPtr, chunk,
+                                      (std::int32_t) v.inPtrArr,
+                                      (std::int32_t) v.outPtrArr) != nullptr)
+                continue;
+#else
             auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fCompute, args, 4, &trap);
 
             if (err != nullptr) { wasmtime_error_delete (err); continue; }
             if (trap != nullptr) { wasm_trap_delete (trap); continue; }
+#endif
 
             const auto outBase = reinterpret_cast<std::uint32_t*> (v.memory)[v.outPtrArr >> 2];
             const auto* src = reinterpret_cast<const float*> (v.memory + outBase);
