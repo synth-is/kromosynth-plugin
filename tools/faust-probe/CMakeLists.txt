@@ -32,11 +32,11 @@ if(KROMOSYNTH_WASM3)
     target_link_libraries(faust_probe PRIVATE wasm3::wasm3)
     target_compile_definitions(faust_probe PRIVATE KROMOSYNTH_WASM3=1)
 else()
+    target_link_libraries(faust_probe PRIVATE wasmtime::wasmtime)
     target_compile_definitions(faust_probe PRIVATE KROMOSYNTH_WASM3=0)
 endif()
 
 target_link_libraries(faust_probe PRIVATE
-    wasmtime::wasmtime
     juce::juce_audio_basics
     # FaustEngine::measure builds a spectrogram with juce::dsp::FFT. The probe
     # got away without this while nothing here called measure() -- LTO simply

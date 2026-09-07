@@ -273,8 +273,14 @@ endif()
 
 # Before src/, so wasmtime::wasmtime exists when the plugin target links it.
 if(KROMOSYNTH_BUILD_FAUST)
-    include(Wasmtime)
-    include(Wasm3)
+    # Only the one in use. Wasmtime.cmake downloads a prebuilt MACOS tarball;
+    # fetching it for an iOS build would be wasted at best and linked by
+    # accident at worst.
+    if(KROMOSYNTH_WASM3)
+        include(Wasm3)
+    else()
+        include(Wasmtime)
+    endif()
 endif()
 
 add_subdirectory(src)

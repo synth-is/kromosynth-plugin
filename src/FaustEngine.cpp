@@ -6,9 +6,6 @@
 
 #include "FaustEngine.h"
 
-#include <wasm.h>
-#include <wasmtime.h>
-
 #if KROMOSYNTH_WASM3
 // The interpreter backend, for platforms that forbid JIT. wasm3.h brings
 // m3ApiRawFunction and friends with it, as host_wasm3.c relies on.
@@ -17,6 +14,9 @@
 // wasmtime types appear in FaustVoice's non-wasm3 branch and the file has to
 // parse either way.
 #include "wasm3.h"
+#else
+#include <wasm.h>
+#include <wasmtime.h>
 #endif
 
 #include <juce_dsp/juce_dsp.h>
@@ -108,11 +108,13 @@
     B (fe_min,      "_min_f",     (x < y ? x : y))                             \
     B (fe_copysign, "_copysignf", std::copysign (x, y))
 
+#if ! KROMOSYNTH_WASM3
 #define FE_DEFINE_U(NAME, WASMNAME, EXPR) UNARY  (NAME, EXPR)
 #define FE_DEFINE_B(NAME, WASMNAME, EXPR) BINARY (NAME, EXPR)
 FE_MATH_EXPRESSIONS (FE_DEFINE_U, FE_DEFINE_B)
 #undef FE_DEFINE_U
 #undef FE_DEFINE_B
+#endif
 
 #if KROMOSYNTH_WASM3
 // The same expressions again, in wasm3's raw-function ABI. Transcribed from
@@ -139,6 +141,7 @@ FE_MATH_EXPRESSIONS (FE3_U, FE3_B)
 
 namespace
 {
+#if ! KROMOSYNTH_WASM3
 struct Link { const char* name; int arity; wasmtime_func_unchecked_callback_t fn; };
 
 // Generated from FE_MATH_EXPRESSIONS, not maintained beside it. The hand-kept
@@ -151,6 +154,7 @@ const Link kMathTable[] = {
 };
 #undef FE_LINK_U
 #undef FE_LINK_B
+#endif
 
 #if KROMOSYNTH_WASM3
 struct Link3 { const char* name; const char* sig; M3RawCall fn; };
@@ -171,6 +175,7 @@ const Link3 kMathTable3[] = {
 constexpr std::uint32_t kWasm3StackBytes = 64 * 1024;
 #endif
 
+#if ! KROMOSYNTH_WASM3   // builds wasmtime functypes; wasm3 declares arity in a signature string
 wasm_functype_t* funcType (int arity)
 {
     wasm_valtype_vec_t params, results;
@@ -190,6 +195,7 @@ wasm_functype_t* funcType (int arity)
     wasm_valtype_vec_new (&results, 1, r);
     return wasm_functype_new (&params, &results);
 }
+#endif
 
 float mtof (int note) noexcept
 {
@@ -441,15 +447,14 @@ struct FaustVoice
 /** Zeroes a voice's DSP struct. The one thing a genome cannot decline. */
 inline void initVoice (FaustVoice& v, double sampleRate) noexcept
 {
+#if KROMOSYNTH_WASM3
+    m3_CallV (v.fInit, (std::int32_t) v.dspPtr, (std::int32_t) sampleRate);
+#else
     wasmtime_val_raw_t args[2];
     args[0].i32 = (std::int32_t) v.dspPtr;
     args[1].i32 = (std::int32_t) sampleRate;
 
     wasm_trap_t* trap = nullptr;
-#if KROMOSYNTH_WASM3
-    (void) trap;
-    m3_CallV (v.fInit, (std::int32_t) v.dspPtr, (std::int32_t) sampleRate);
-#else
     if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
         wasmtime_error_delete (err);
     if (trap != nullptr) wasm_trap_delete (trap);
@@ -695,15 +700,14 @@ bool FaustEngine::instantiateVoices (int numVoices, juce::String& errOut)
         for (int c = 0; c < impl_->outputs; ++c)
             h32[(v.outPtrArr >> 2) + c] = v.outBufs + (std::uint32_t) impl_->maxBlockSize * ss * (std::uint32_t) c;
 
-        wasmtime_val_raw_t args[2];
-        args[0].i32 = (std::int32_t) v.dspPtr;
-        args[1].i32 = (std::int32_t) impl_->sampleRate;
 #if KROMOSYNTH_WASM3
-        (void) args;
         if (auto res = m3_CallV (v.fInit, (std::int32_t) v.dspPtr,
                                           (std::int32_t) impl_->sampleRate))
         { errOut = juce::String ("init: ") + res; return false; }
 #else
+        wasmtime_val_raw_t args[2];
+        args[0].i32 = (std::int32_t) v.dspPtr;
+        args[1].i32 = (std::int32_t) impl_->sampleRate;
         if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
         { wasmtime_error_delete (err); errOut = "init failed"; return false; }
         if (trap != nullptr) { wasm_trap_delete (trap); errOut = "init trapped"; return false; }
@@ -893,16 +897,15 @@ void FaustEngine::reset() noexcept
 
 void FaustEngine::setParam (FaustVoice& v, int byteOffset, float value) noexcept
 {
+#if KROMOSYNTH_WASM3
+    m3_CallV (v.fSetParam, (std::int32_t) v.dspPtr, (std::int32_t) byteOffset, value);
+#else
     wasmtime_val_raw_t args[3];
     args[0].i32 = (std::int32_t) v.dspPtr;
     args[1].i32 = (std::int32_t) byteOffset;
     args[2].f32 = value;
 
     wasm_trap_t* trap = nullptr;
-#if KROMOSYNTH_WASM3
-    (void) trap;
-    m3_CallV (v.fSetParam, (std::int32_t) v.dspPtr, (std::int32_t) byteOffset, value);
-#else
     if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fSetParam, args, 3, &trap))
         wasmtime_error_delete (err);
     if (trap != nullptr) wasm_trap_delete (trap);
@@ -956,7 +959,26 @@ juce::String FaustEngine::runtimeId()
     const char* arch = "unknown";
    #endif
 
+#if KROMOSYNTH_WASM3
+    // The runtime identity MUST change with the runtime. ARTEFACT_CONTRACT §3.2
+    // gates an artefact's stored `rtf` on rtfPlatform matching this string, and
+    // an rtf measured under Cranelift means nothing under an interpreter --
+    // wasm3 runs 5.56x slower at the median, so a voice cap derived from a
+    // wasmtime figure would be roughly five times too generous.
+    //
+    // The PEAKS are a different matter: wasm3 is bit-identical to wasmtime on
+    // all 120 archive elites, so peak, trim and articulation transfer intact.
+    // Splitting those two trust rules is item B2 in NEXT_SESSION_PROMPT.md; the
+    // contract currently gates both on this one string because a single render
+    // produced both numbers.
+    return juce::String ("wasm3-")
+         + juce::String (M3_VERSION_MAJOR) + "."
+         + juce::String (M3_VERSION_MINOR) + "."
+         + juce::String (M3_VERSION_REV)
+         + "-" + os + "-" + arch;
+#else
     return juce::String ("wasmtime-") + WASMTIME_VERSION + "-" + os + "-" + arch;
+#endif
 }
 
 FaustEngine::Measured FaustEngine::measure()
@@ -1199,15 +1221,14 @@ void FaustEngine::panic() noexcept
         // init() rather than gate=0. A genome that ignores its gate ignores it
         // during a panic too, and 16 of 33 measured elites do exactly that.
         // Re-initialising zeroes the DSP struct, which no genome can decline.
+#if KROMOSYNTH_WASM3
+        m3_CallV (v.fInit, (std::int32_t) v.dspPtr, (std::int32_t) impl_->sampleRate);
+#else
         wasmtime_val_raw_t args[2];
         args[0].i32 = (std::int32_t) v.dspPtr;
         args[1].i32 = (std::int32_t) impl_->sampleRate;
 
         wasm_trap_t* trap = nullptr;
-#if KROMOSYNTH_WASM3
-        (void) trap;
-        m3_CallV (v.fInit, (std::int32_t) v.dspPtr, (std::int32_t) impl_->sampleRate);
-#else
         if (auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fInit, args, 2, &trap))
             wasmtime_error_delete (err);
         if (trap != nullptr) wasm_trap_delete (trap);
@@ -1659,15 +1680,7 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
         {
             if (v.idle) continue;
 
-            wasmtime_val_raw_t args[4];
-            args[0].i32 = (std::int32_t) v.dspPtr;
-            args[1].i32 = chunk;
-            args[2].i32 = (std::int32_t) v.inPtrArr;
-            args[3].i32 = (std::int32_t) v.outPtrArr;
-
-            wasm_trap_t* trap = nullptr;
 #if KROMOSYNTH_WASM3
-            (void) trap;
             // m3_CallV returns a message on trap and nullptr otherwise, so the
             // two wasmtime failure paths collapse into one here. `continue`
             // leaves this voice silent for the block rather than aborting the
@@ -1677,6 +1690,13 @@ void FaustEngine::process (juce::AudioBuffer<float>& buffer,
                                       (std::int32_t) v.outPtrArr) != nullptr)
                 continue;
 #else
+            wasmtime_val_raw_t args[4];
+            args[0].i32 = (std::int32_t) v.dspPtr;
+            args[1].i32 = chunk;
+            args[2].i32 = (std::int32_t) v.inPtrArr;
+            args[3].i32 = (std::int32_t) v.outPtrArr;
+
+            wasm_trap_t* trap = nullptr;
             auto* err = wasmtime_func_call_unchecked (v.ctx, &v.fCompute, args, 4, &trap);
 
             if (err != nullptr) { wasmtime_error_delete (err); continue; }

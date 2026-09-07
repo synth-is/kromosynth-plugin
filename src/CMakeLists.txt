@@ -223,16 +223,19 @@ endif()
 # `#if` on an undefined identifier is silently 0, which is correct C++ and a bad
 # place to rely on silence.
 if(KROMOSYNTH_BUILD_FAUST)
-    target_link_libraries(KromosynthPlugin PRIVATE wasmtime::wasmtime)
     target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_FAUST=1)
 
-    # Linked ALONGSIDE wasmtime rather than instead of it. FaustEngine.cpp still
-    # names wasmtime types in the branch the preprocessor drops, so the
-    # translation unit has to see those headers either way.
+    # EXACTLY ONE runtime is linked. An earlier version linked wasmtime always,
+    # on the theory that FaustEngine.cpp still names its types in the branch the
+    # preprocessor drops. It does not -- every wasmtime reference now lives
+    # inside `#if ! KROMOSYNTH_WASM3`, including the headers -- and linking both
+    # put a MACOS libwasmtime.a into an iOS link, which failed for a reason
+    # entirely unrelated to what was being tested.
     if(KROMOSYNTH_WASM3)
         target_link_libraries(KromosynthPlugin PRIVATE wasm3::wasm3)
         target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_WASM3=1)
     else()
+        target_link_libraries(KromosynthPlugin PRIVATE wasmtime::wasmtime)
         target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_WASM3=0)
     endif()
 else()
