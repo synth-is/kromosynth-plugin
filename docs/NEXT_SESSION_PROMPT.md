@@ -304,14 +304,14 @@ wasmtime across the archive, so load cost is the binding constraint.
 
 ---
 
-## Deployment state (2026-09-05)
+## Deployment state (2026-09-07)
 
 | repo | state |
 |---|---|
-| kromosynth-plugin | `520b122` local, **not pushed** |
+| kromosynth-plugin | `81f51f1` local, **12 commits ahead of origin, not pushed** |
 | kromosynth-render | `f601eff` deployed both machines, verified |
 | kromosynth-vi | deployed |
-| kromosynth-recommend | unchanged |
+| kromosynth-recommend | `character.labelThresholds` + soundType gate committed, **not deployed** — needs a hub restart, and the thresholds block is absent for the first 45 s after one |
 
 **Uncommitted and not mine:** `cleanupService.js` in `kromosynth-vi` — finished
 work fixing a SQLite string-comparison bug where `created_at` is ISO and
@@ -392,16 +392,39 @@ should not be committed).
 - **Spectrogram backfill** wants re-running now that Faust rendering works —
   `spectrogramBackfill.js` renders through the path that was failing, which is
   why live-instrument cards read "Play to view".
-- **The P33/P67 relabelling decision.** Feature extraction is draining ~208
-  sounds. Descriptor labels are corpus-relative, so new arrivals move the
-  thresholds and relabel existing sounds — including labels already stamped into
-  installed artefacts. `labelsAreCorpusRelative: true` is in the sidecar and
-  nothing consumes it. Decide before coverage completes.
+- ~~**The P33/P67 relabelling decision.**~~ **Decided and implemented
+  2026-09-07**, see `daw-plugin/DESCRIPTOR_LABEL_DRIFT_2026-09-07.md`. The
+  sidecar now carries `character.labelThresholds` (method, computedAt,
+  corpusSize, per-dimension p33/p67/n) and `character.labelledAt`, which
+  ARTEFACT_CONTRACT §3.3 had named since 2026-09-02 without anything producing
+  it. With `descriptors` already stamped, a reader can re-derive the seven words
+  exactly — using strict `<`/`>`, verified 7/7 including exact equality on both
+  thresholds. Freezing the thresholds and shipping numbers-only were both
+  considered and left open; the record says why. Blast radius when decided was
+  1 of 52 installed instruments carrying labels, so the earlier framing of this
+  as time-critical was wrong — it was cheap, not urgent.
+  **Still open for the plugin:** nothing reads `labelThresholds` or the
+  already-plumbed `labelsAreCorpusRelative` (`InstrumentLibrary.cpp:113` →
+  `InstrumentLibrary.h:80` → `PluginEditor.cpp:342`). Showing stamped labels as
+  provisional, or refusing to sort across artefacts, is a shell-side change.
 - **Descriptor labels are not seven independent axes.** Over 889 labelled
   sounds, brightness/noisiness/rolloff/width correlate 0.81–0.92 — one spectral
   axis read four ways. Only energy (−0.27) and richness (−0.09) add information.
   The plugin shows those three. 217 distinct tuples against 5 `sound_type`
   values, of which "textural" is 76%.
+
+  **Measured 2026-09-07, and the 76% is worse than it looks.** Of 1589 sounds,
+  586 have no descriptor labels at all and **all 586 read `textural`** — against
+  587 that measured as textural. So half that bucket is placeholder, and the two
+  halves are indistinguishable in the column. `extractSoundType()`'s keyword
+  ladder cannot help: `class` is null for 407 of them, `"Unknown"` for 14, and
+  grid coordinates or breeding names (`"30_16_oneShot"`, `"86_22"`, `"Gen 3
+  Offspring 2"`) for the rest, so every one takes the `return 'textural'`
+  fall-through. `/sound-metadata` now gates `character.soundType` on the labels
+  that derive it, so artefacts no longer carry the guess. Clearing the column
+  itself is proposed as D6 in the record and **not done** — it rewrites 586 rows
+  and changes creation semantics. The genome pool needs no default: a null
+  sound_type already draws no ring and offers no pill.
 - **CLAP zero-shot tags** remain the way to get *orthogonal* information —
   material and gestural claims like metallic, breathy, plucked, which spectral
   descriptors cannot express. Not a granularity fix. Circular on prompt-seeded
