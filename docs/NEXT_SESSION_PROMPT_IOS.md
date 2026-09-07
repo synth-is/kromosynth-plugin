@@ -45,108 +45,106 @@ fails to sustain a voice. That is what makes the wasm3 backend worth writing.
 
 See `IOS_VOICE_CAP_DISTRIBUTION_2026-09-07.md`.
 
-## 2. The job in progress: a wasm3 backend for FaustEngine
+## 2. The wasm3 backend: DONE, and playing on the phone
 
-**Two commits in, both verified, both individually revertable.**
+**An evolved Faust genome plays live on an iPhone 13 Pro Max.** Verified on
+device, not inferred:
 
-- `a827d39` — the baseline and `scripts/null-test.sh`. No source touched.
-- `fa51149` — math imports generated from one `FE_MATH_EXPRESSIONS` list.
-  120/120 bit-identical.
+```
+instrument_load kind=faust ok=1 dsp="faustgenome_mtrbviv5_4" voices=1 gate=1
+faust_measure   rtf=16.0 voices=2 raw_peak=4.221519
+                c3=4.2215 a4=1.0027 a5=1.1262 spread_db=12.5
+test_note       active=faust blocks_so_far=79520
+```
 
-### The rule this work runs under
+Everything upstream worked unchanged: the engine measured the genome on the
+phone and sized its own polyphony, and the three-pitch sweep ran — the levelling
+that exists because single-pitch measurement once produced 38 dB errors. None of
+that code knows which interpreter is underneath.
 
-**`./scripts/null-test.sh` after every step.** It links `FaustEngine.cpp`
-directly and diffs a per-elite record against the committed baseline —
-`PASS 120 FAIL 0`, `maxAbsDiff 0.000000e+00` throughout. It *diffs* rather than
-counts, because 120/120 with a different maxAbsDiff has still changed the audio.
+### Acceptance, and it is the strong kind
 
-It covers anything that changes a sample. It does **not** cover voice stealing
-under real MIDI, host threading, the editor or acquisition. A green run means
-the audio path is unchanged, not that the plugin is fine.
+**wasm3 is BIT-IDENTICAL to wasmtime on all 120 elites.** `maxAbsDiff
+0.000000e+00` throughout, and the per-elite record diffs clean against the
+wasmtime baseline. Not "close enough" — the same samples. So nothing in
+`ARTEFACT_CONTRACT` had to be relaxed for iOS: peak, trim, articulation and
+`hasGate` carry over intact.
 
-### The approach, and why it is additive rather than a refactor
+The desktop is provably untouched: its own null test still matches `a827d39`.
 
-The wasm3 path goes in behind `#if KROMOSYNTH_WASM3`, leaving every existing
-wasmtime line **textually unchanged**, so the desktop compiles the same tokens
-it compiles today — unchanged by construction rather than by belief.
+**Run `./scripts/null-test.sh` after any change to `FaustEngine.cpp`.** It
+diffs a per-elite record rather than counting passes, because 120/120 with a
+different maxAbsDiff has still changed the audio. It covers anything that
+changes a sample; it does not cover voice stealing under real MIDI, host
+threading, the editor or acquisition.
 
-The tidy abstraction comes *after* wasm3 works, as a separate optional commit.
-That is also what `cmake/Wasmtime.cmake` asks for: the abstraction gets built
-"when there is a second real consumer rather than an imagined one", and until
-wasm3 runs it is still imagined. Refactoring first would have been abstracting
-on a guess.
+### What the commits are
 
-### The seam is six operations
+- `a827d39` baseline + `scripts/null-test.sh`, no source touched
+- `fa51149` math imports generated from one `FE_MATH_EXPRESSIONS` list
+- `3fad670` the wasm3 backend itself
+- `dde5235` `cmake/Wasm3.cmake`, and iOS now REQUIRES `KROMOSYNTH_WASM3`
+- `c96c372` exactly one runtime linked, and `runtimeId()` reports which
 
-Only three exports are used — `init`, `compute`, `memory` — plus the 21-name
-math import table.
+### Three things worth carrying forward
 
-| operation | wasmtime | wasm3 |
-|---|---|---|
-| create N voices from bytes | 1 module → N instances | N runtimes, each parsing its own |
-| link math imports | `linker_define_func_unchecked` | `m3_LinkRawFunction` |
-| find `init` / `compute` | `instance_export_get` | `m3_FindFunction` |
-| memory base + size | `memory_data` / `_size` | `m3_GetMemory` |
-| call | `func_call_unchecked` | `m3_CallV` |
-| destroy | `store_delete` | `m3_FreeRuntime` |
+**`runtimeId()` now returns `wasm3-0.9.1-<os>-<arch>`.** §3.2 gates an
+artefact's stored `rtf` on that string, and an rtf measured under Cranelift is
+meaningless under an interpreter — 5.56× out, so a cap taken from it would be
+five times too generous. **This sharpens B2:** peaks *do* transfer
+(bit-identical), so only `rtf` needs runtime identity. The contract gates both
+on one string because one render produced both numbers.
 
-**The first row is the one that cannot be papered over.** `FaustEngine.cpp`'s
-impl comment already records it: wasmtime compiles one module and shares it
-across every voice, while `m3_LoadModule` **consumes** the module and the
-runtime owns the instance's memory, so each voice must parse its own copy. A
-seam shaped as "module, then instances" fits wasmtime and lies about wasm3.
+**Link order.** wasm3 wants `m3_LinkRawFunction` AFTER `m3_LoadModule`; an
+unloaded module returns "attempting to use module that is not loaded".
+`probe/gate0/host_wasm3.c` had it right, and checking the working reference
+settled in one look what reasoning about the API had not.
 
-So shape it **per voice**: create N voices from these bytes / memory for voice i
-/ call compute on voice i. That is also exactly how `host_wasm3.c` is written,
-which makes it a working reference for the wasm3 half rather than a sketch.
+**Per-voice load cost is a non-issue.** wasm3 parses per voice where wasmtime
+compiled once, so `setVoiceCount` was expected to get expensive. Measured on the
+Mac: 0.60–2.55 ms per voice, **20 ms worst case for a full eight-voice reload**.
+Imperceptible. Cost tracks module complexity rather than size — a 31 KB
+`cppnwave` parses faster than a 21 KB `deep_pad`. wasmtime's per-voice cost
+FALLS with voice count (0.54 → 0.25 ms) while wasm3's stays flat (2.67 → 2.55),
+which is exactly the shape the impl comment predicted.
 
-Consequence to expect: per-voice load cost scales with voice count on wasm3
-where it does not on wasmtime. `host_wasm3.c` measured ~3 ms, so it is small,
-but `setVoiceCount` becomes a more expensive operation.
+### The measurement deliberately NOT done at the end of a long session
 
-### What does NOT move
+**The voice cap under real load, with a pre-registered rule.** The 60%-clear-four
+figure is derived from single-voice RTF in an isolated harness. What is unknown
+is whether it holds with the plugin doing everything else it does — editor,
+webview, acquisition, MIDI. That needs the rule written before the measurement,
+not after: three of today's numbers had to be retracted (a truncated 64-of-120
+histogram, a biased ten-elite sample over-read as the catalogue, a scaling model
+9% wrong), and each came from moving fast on something that looked routine.
 
-Voice allocation and stealing, the 2 ms fade, per-pitch levelling, the trim
-table, the multiplying envelope, the forced release. All runtime-agnostic. Do
-not duplicate any of it — `FaustEngine.h` records that duplicating the two
-note-start routes is how pitch correction and the envelope came to disagree.
+Worth adding to the same session: the load-cost check above repeated **on
+device**, and against `FaustEngine` rather than the gate0 host.
 
-### Vendoring
+## 3. What to pick up next
 
-wasm3 is dependency-free C and already on disk at
-`faust-genome-substrate/probe/out/wasm-runtime/wasm3`. `probe/gate0/build.sh`
-shows the exact source list and the four files to exclude
-(`m3_api_uvwasi.c`, `m3_api_meta_wasi.c`, `m3_api_tracer.c`, `m3_api_wasi.c`).
-Verified to cross-compile clean for `arm64-apple-ios15.0`, with a build
-configuration that resolves **identically** to the macOS build the reference
-numbers came from.
+In rough order of value:
 
-### Acceptance
-
-Null-test wasm3 against the same 120 references **on the Mac**. Both runtimes
-execute the same module bytes, and the math imports are now shared, so
-bit-identical is the expected result. Anything else is a bug worth finding, not
-a tolerance to widen. The phone is the last step, not the first.
-
-## 3. After the backend
-
-- **Device calibration.** Everything predicted is calibrated to one A15, warm.
-  A short calibration render on first launch gives the device's factor, after
-  which `cap = rtf1 / 4 × factor` is honest on hardware nobody has measured.
-  This is also what **B3** was reaching for: no per-instrument load-time render.
-- **Acquisition-time prediction.** Show the predicted voice count for *this
-  device* before someone commits. Not a verdict — nothing "cannot run" — a
-  number. And offer the sampled format alongside, as an alternative rather than
-  a failure path.
+- **AUv3**, and the App Group container work it forces: an extension cannot read
+  the container app's Documents, so `InstrumentLibrary::root()` and the
+  acquisition session both have to move. `root()` is deliberately the only place
+  that resolves the path, so that is one edit.
+- **Device calibration.** Every predicted cap is calibrated to one A15, warm. A
+  short calibration render on first launch gives a device factor, after which
+  `cap = rtf1 / 4 × factor` is honest on hardware nobody has measured. This is
+  also what **B3** was reaching for: no per-instrument load-time render.
+- **Acquisition-time prediction.** Show the predicted voice count for *this*
+  device before someone commits. Not a verdict — nothing "cannot run", 0 of 120
+  elites fail to sustain a voice — a number. Offer the sampled format alongside
+  as an alternative rather than a failure path.
 - **The vi panel override.** `VirtualInstrumentPanel.jsx:110`,
   `const isLive = allLive && !tooManyLive`, decides for the user: a Faust
   substrate sound can only ever be rendered live. `ARTEFACT_CONTRACT` §6 already
   argued for on-demand sampling and noted the quota is keyed on the *entry*, so
   a second format is already free. What was never built is the way to ask.
-- **AUv3**, and it brings the App Group container work: an extension cannot read
-  the container app's Documents, so `InstrumentLibrary::root()` and the
-  acquisition session both have to move. `root()` is deliberately the only place
-  that resolves the path, so that is one edit.
+- **The optional tidy-up.** Now that two runtimes work, the seam could be
+  extracted properly — `cmake/Wasmtime.cmake`'s "second real consumer" exists.
+  Entirely optional, and it must be its own commit with a null test either side.
 
 ## 4. Open findings not on the critical path
 
