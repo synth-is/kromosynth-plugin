@@ -32,6 +32,20 @@
 // calls are cheap, and produce a slower-looking JIT for a reason that has
 // nothing to do with code quality. §2.5 measured that boundary crossing as the
 // dominant cost on math-heavy elites, so it is not a micro-optimisation.
+//
+// TWO SETS OF WRAPPERS, ONE SET OF EXPRESSIONS.
+//
+// wasm3's raw-function ABI is not wasmtime's, so the wrappers cannot be shared.
+// The EXPRESSIONS are, via the FE_MATH_EXPRESSIONS list below, because they are
+// the part that must not drift: every one computes in DOUBLE and narrows on the
+// way out, because the reference these renders are null-tested against reaches
+// libm through JavaScript -- faustwasm's createWasmImport binds `_powf` to
+// Math.pow, which is double precision. A host that calls powf() in float lands
+// somewhere else. host_wasm3.c measured -50.5 dB on a math-heavy elite from
+// exactly that mistake.
+//
+// So the rule is: add a function to FE_MATH_EXPRESSIONS, never to one wrapper
+// set alone.
 #define UNARY(NAME, EXPR)                                                     \
     static wasm_trap_t* NAME (void*, wasmtime_caller_t*,                      \
                               wasmtime_val_raw_t* a, size_t) {                \
@@ -42,65 +56,68 @@
         const float x = a[0].f32, y = a[1].f32;                               \
         a[0].f32 = (float) (EXPR); return nullptr; }
 
-UNARY (fe_abs,   std::fabs ((double) x))
-UNARY (fe_acos,  std::acos ((double) x))
-UNARY (fe_asin,  std::asin ((double) x))
-UNARY (fe_atan,  std::atan ((double) x))
-UNARY (fe_ceil,  std::ceil ((double) x))
-UNARY (fe_cos,   std::cos ((double) x))
-UNARY (fe_exp,   std::exp ((double) x))
-UNARY (fe_floor, std::floor ((double) x))
-UNARY (fe_log,   std::log ((double) x))
-UNARY (fe_log10, std::log10 ((double) x))
-UNARY (fe_round, std::round ((double) x))
-UNARY (fe_sin,   std::sin ((double) x))
-UNARY (fe_sqrt,  std::sqrt ((double) x))
-UNARY (fe_tan,   std::tan ((double) x))
-UNARY (fe_acosh, std::acosh ((double) x))
-UNARY (fe_asinh, std::asinh ((double) x))
-UNARY (fe_atanh, std::atanh ((double) x))
-UNARY (fe_cosh,  std::cosh ((double) x))
-UNARY (fe_sinh,  std::sinh ((double) x))
-UNARY (fe_tanh,  std::tanh ((double) x))
+// The expressions, once. Both wrapper sets and both link tables are generated
+// from this list, so a function cannot exist on one runtime and not the other,
+// and cannot compute differently on each.
+//
+// U(name, wasmName, expr) / B(name, wasmName, expr)
+#define FE_MATH_EXPRESSIONS(U, B)                                              \
+    U (fe_abs,   "_abs",     std::fabs   ((double) x))                         \
+    U (fe_acos,  "_acosf",   std::acos   ((double) x))                         \
+    U (fe_asin,  "_asinf",   std::asin   ((double) x))                         \
+    U (fe_atan,  "_atanf",   std::atan   ((double) x))                         \
+    U (fe_ceil,  "_ceilf",   std::ceil   ((double) x))                         \
+    U (fe_cos,   "_cosf",    std::cos    ((double) x))                         \
+    U (fe_exp,   "_expf",    std::exp    ((double) x))                         \
+    U (fe_floor, "_floorf",  std::floor  ((double) x))                         \
+    U (fe_log,   "_logf",    std::log    ((double) x))                         \
+    U (fe_log10, "_log10f",  std::log10  ((double) x))                         \
+    U (fe_round, "_roundf",  std::round  ((double) x))                         \
+    U (fe_sin,   "_sinf",    std::sin    ((double) x))                         \
+    U (fe_sqrt,  "_sqrtf",   std::sqrt   ((double) x))                         \
+    U (fe_tan,   "_tanf",    std::tan    ((double) x))                         \
+    U (fe_acosh, "_acoshf",  std::acosh  ((double) x))                         \
+    U (fe_asinh, "_asinhf",  std::asinh  ((double) x))                         \
+    U (fe_atanh, "_atanhf",  std::atanh  ((double) x))                         \
+    U (fe_cosh,  "_coshf",   std::cosh   ((double) x))                         \
+    U (fe_sinh,  "_sinhf",   std::sinh   ((double) x))                         \
+    U (fe_tanh,  "_tanhf",   std::tanh   ((double) x))                         \
+    B (fe_atan2, "_atan2f",  std::atan2  ((double) x, (double) y))             \
+    B (fe_fmod,  "_fmodf",   std::fmod   ((double) x, (double) y))             \
+    B (fe_pow,   "_powf",    std::pow    ((double) x, (double) y))             \
+    /* NOT std::remainder: the JS table defines _remainderf as                 \
+       x - Math.round(x/y)*y, and Math.round rounds halves upward where        \
+       remainder() rounds half to even. Transcribed from the thing being       \
+       matched rather than substituted for it. */                              \
+    B (fe_remainder, "_remainderf",                                            \
+       (double) x - std::round ((double) x / (double) y) * (double) y)         \
+    /* Precision-independent: exact for f32 inputs under either scheme. */     \
+    U (fe_isnan,    "_isnanf",    std::isnan (x) ? 1.0f : 0.0f)                \
+    U (fe_isinf,    "_isinff",    std::isinf (x) ? 1.0f : 0.0f)                \
+    B (fe_max,      "_max_f",     (x > y ? x : y))                             \
+    B (fe_min,      "_min_f",     (x < y ? x : y))                             \
+    B (fe_copysign, "_copysignf", std::copysign (x, y))
 
-BINARY (fe_atan2, std::atan2 ((double) x, (double) y))
-BINARY (fe_fmod,  std::fmod ((double) x, (double) y))
-BINARY (fe_pow,   std::pow ((double) x, (double) y))
-
-// NOT std::remainder: the JS table defines _remainderf as x - Math.round(x/y)*y,
-// and Math.round rounds halves upward where remainder() rounds half to even.
-// Transcribed from the thing being matched rather than substituted for it.
-BINARY (fe_remainder, (double) x - std::round ((double) x / (double) y) * (double) y)
-
-// Precision-independent: exact for f32 inputs under either scheme.
-UNARY  (fe_isnan,    std::isnan (x) ? 1.0f : 0.0f)
-UNARY  (fe_isinf,    std::isinf (x) ? 1.0f : 0.0f)
-BINARY (fe_max,      (x > y ? x : y))
-BINARY (fe_min,      (x < y ? x : y))
-BINARY (fe_copysign, std::copysign (x, y))
+#define FE_DEFINE_U(NAME, WASMNAME, EXPR) UNARY  (NAME, EXPR)
+#define FE_DEFINE_B(NAME, WASMNAME, EXPR) BINARY (NAME, EXPR)
+FE_MATH_EXPRESSIONS (FE_DEFINE_U, FE_DEFINE_B)
+#undef FE_DEFINE_U
+#undef FE_DEFINE_B
 
 namespace
 {
 struct Link { const char* name; int arity; wasmtime_func_unchecked_callback_t fn; };
 
+// Generated from FE_MATH_EXPRESSIONS, not maintained beside it. The hand-kept
+// version and the expression list were two places to add a function to, and
+// only one of them would fail loudly if you forgot.
+#define FE_LINK_U(NAME, WASMNAME, EXPR) { WASMNAME, 1, NAME },
+#define FE_LINK_B(NAME, WASMNAME, EXPR) { WASMNAME, 2, NAME },
 const Link kMathTable[] = {
-    { "_abs", 1, fe_abs },
-    { "_acosf", 1, fe_acos },   { "_asinf", 1, fe_asin },
-    { "_atanf", 1, fe_atan },   { "_ceilf", 1, fe_ceil },
-    { "_cosf", 1, fe_cos },     { "_expf", 1, fe_exp },
-    { "_floorf", 1, fe_floor }, { "_logf", 1, fe_log },
-    { "_log10f", 1, fe_log10 }, { "_roundf", 1, fe_round },
-    { "_sinf", 1, fe_sin },     { "_sqrtf", 1, fe_sqrt },
-    { "_tanf", 1, fe_tan },     { "_acoshf", 1, fe_acosh },
-    { "_asinhf", 1, fe_asinh }, { "_atanhf", 1, fe_atanh },
-    { "_coshf", 1, fe_cosh },   { "_sinhf", 1, fe_sinh },
-    { "_tanhf", 1, fe_tanh },
-    { "_isnanf", 1, fe_isnan }, { "_isinff", 1, fe_isinf },
-    { "_atan2f", 2, fe_atan2 }, { "_fmodf", 2, fe_fmod },
-    { "_powf", 2, fe_pow },     { "_remainderf", 2, fe_remainder },
-    { "_max_f", 2, fe_max },    { "_min_f", 2, fe_min },
-    { "_copysignf", 2, fe_copysign },
+    FE_MATH_EXPRESSIONS (FE_LINK_U, FE_LINK_B)
 };
+#undef FE_LINK_U
+#undef FE_LINK_B
 
 wasm_functype_t* funcType (int arity)
 {
