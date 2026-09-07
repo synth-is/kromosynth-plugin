@@ -2,9 +2,35 @@
 
 juce::File InstrumentLibrary::root()
 {
+   #if JUCE_IOS
+    // ~/Music does not exist on iOS, and the app container's root is not
+    // writable, so the macOS path failed at createDirectory and surfaced as
+    // "Could not create the instrument library directory" -- ArtifactAcquisition
+    // .cpp:566. JUCE maps userMusicDirectory to "~/Music" on BOTH platforms
+    // (juce_Files_mac.mm:207), which is why the wrong answer came back silently
+    // rather than as a compile error.
+    //
+    // Documents is the right home here: writable, and with FILE_SHARING_ENABLED
+    // it is reachable over Finder and the Files app, so an instrument can be
+    // inspected or removed without attaching a debugger to a phone.
+    //
+    // No "Synth.is" segment, unlike macOS. There the directory sits in a shared
+    // ~/Music alongside other vendors' folders and needs a name to own; here the
+    // container is already private to this app and the extra level would only
+    // deepen every path.
+    //
+    // THIS HAS TO MOVE WHEN THE AUv3 ARRIVES. An app extension gets its own
+    // container and cannot read this one, so both sides will have to go through
+    // containerURLForSecurityApplicationGroupIdentifier. This function is
+    // deliberately the only place that resolves the root, so that change lands
+    // in one edit.
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+               .getChildFile ("Instruments");
+   #else
     return juce::File::getSpecialLocation (juce::File::userMusicDirectory)
                .getChildFile ("Synth.is")
                .getChildFile ("Instruments");
+   #endif
 }
 
 namespace

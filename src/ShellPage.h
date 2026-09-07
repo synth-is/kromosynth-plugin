@@ -59,14 +59,23 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   header {
     padding: 14px 18px; border-bottom: 1px solid #21262d;
     display: flex; align-items: baseline; gap: 12px; flex: 0 0 auto;
+    /* Wraps, because four controls plus a title do not fit across a phone
+       even once the editor is the right width. Without this the row simply
+       overflowed and the last button was unreachable -- which is how "Test
+       note" was visible only in landscape. */
+    flex-wrap: wrap;
   }
   header h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
   header .count { color: #7d8590; font-size: 12px; }
   header button {
-    margin-left: auto; background: #21262d; color: #e6edf3;
+    background: #21262d; color: #e6edf3;
     border: 1px solid #30363d; border-radius: 6px;
     padding: 5px 12px; font-size: 12px; cursor: pointer;
   }
+  /* Only the FIRST button takes the free space, so the group still sits right
+     on a desktop width. It was on every button, which happened to work only
+     because nothing wrapped. */
+  header button:first-of-type { margin-left: auto; }
   header button:hover { background: #30363d; }
   main { flex: 1 1 auto; overflow-y: auto; padding: 8px; position: relative; }
   /* The spectrogram sits BEHIND the list, not beside it. It is context for the
@@ -189,6 +198,7 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   <span class="count" id="count"></span>
   <button id="browse">Browse synth.is</button>
   <button id="refresh">Refresh</button>
+  <button id="testnote">Test note</button>
   <button id="panic">Panic</button>
 </header>
 <div class="toolbar">
@@ -955,6 +965,21 @@ try {
 document.getElementById('panic').addEventListener('click', async () => {
   await call('panic');
   setStatus('Panicked \u2014 all voices reinitialised.');
+});
+
+// Diagnostic, and the status line is the whole point of it.
+//
+// Silence has three causes and they need telling apart: the OS never called
+// processBlock, it did but no instrument is loaded, or both happened and the
+// engine rendered nothing. `blocks` answers the first, and it is reported here
+// rather than logged because on a phone the log is not where anyone is looking.
+document.getElementById('testnote').addEventListener('click', async () => {
+  const r = await call('testNote', 69, 1.0, 800);
+  const blocks = (r && r.blocks) || 0;
+  setStatus(blocks > 0
+    ? 'Note sent (a4, 0.8 s) \u2014 ' + blocks + ' audio blocks rendered so far.'
+    : 'Note sent, but the audio callback has NEVER run (0 blocks). '
+      + 'Nothing can be audible until it does.');
 });
 
 // Polled only while a Faust instrument is loaded. notesOn far ahead of

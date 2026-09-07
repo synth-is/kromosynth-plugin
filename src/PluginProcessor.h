@@ -38,7 +38,8 @@ class SamplerEngine;
 #include "InstrumentLibrary.h"
 #include "AcquisitionRunner.h"
 
-class KromosynthAudioProcessor : public juce::AudioProcessor
+class KromosynthAudioProcessor : public juce::AudioProcessor,
+                                 private juce::Timer
 {
 public:
     KromosynthAudioProcessor();
@@ -133,7 +134,19 @@ public:
     // the probe's editor-destroyed path needs.
     const juce::File& getLogFile() const noexcept { return logFile_; }
 
-   #if KROMOSYNTH_HAS_SAMPLER
+    // ── Shell vocabulary: declared unconditionally ──────────────────────────
+    //
+    // These two types belong to the shell, not to an engine. They were
+    // declared inside the sampler guard back when the sampler was the only
+    // engine, and that is how three of the four engine-option combinations
+    // stopped compiling: `current_` in the SAMPLER||FAUST block needs
+    // LoadOutcome, and PluginProcessor.cpp defines engineState() with no
+    // guard, so any build without the sampler referenced types that were no
+    // longer declared.
+    //
+    // Neither type mentions sfizz or Faust. Declaring them here is what stops
+    // the option matrix rotting this way again.
+
     /** What a load attempt did. `ok` and `numRegions` are separate on purpose:
         F11 established that loadSfzFile returns true for an instrument whose
         every region was culled, so "it loaded" and "there is an instrument"
@@ -148,6 +161,15 @@ public:
         juce::String detail;
     };
 
+    /** Live engine state for the shell: notes in, notes out, voices sounding.
+        Exists so "the note is stuck" can be told apart from "no note-off
+        arrived" without attaching a debugger to a DAW.
+    */
+    struct EngineState { int notesOn = 0, notesOff = 0, activeVoices = 0, forcedStops = 0;
+                         float trimDb = 0.0f, rawPeak = 0.0f, rtf = 0.0f;
+                         int voiceCap = 0; bool faust = false; };
+
+   #if KROMOSYNTH_HAS_SAMPLER
     /** Loads an instrument from the local library by id.
 
         Called on the MESSAGE thread, from a native function invoked by the
@@ -180,6 +202,25 @@ public:
     */
     void panic();
 
+    /** Plays one note, from the message thread, without any MIDI hardware.
+
+        DIAGNOSTIC, and the reason it exists is specific: on iOS the standalone
+        app has no on-screen keyboard and no MIDI source unless one is attached,
+        so there was no way to answer "does this make sound" at all. Loading an
+        instrument proves the engine accepted it; only a note proves the audio
+        path reaches the speaker.
+
+        Engine-agnostic on purpose. The message is merged into the host's own
+        MidiBuffer at the top of processBlock, so whichever engine is active
+        receives it by exactly the route a host note takes -- rather than
+        through a second path that could work when the real one does not.
+
+        Not gated behind an engine macro: with no engine compiled in it queues a
+        message that nothing consumes, which is harmless and still increments
+        the block counter.
+    */
+    void triggerTestNote (int midiNote, float velocity, int durationMs);
+
     /** Moves an instrument to the Trash, unloading it first if it is the one
         currently playing.
 
@@ -190,13 +231,6 @@ public:
     */
     bool removeInstrument (const juce::String& id);
 
-    /** Live engine state for the shell: notes in, notes out, voices sounding.
-        Exists so "the note is stuck" can be told apart from "no note-off
-        arrived" without attaching a debugger to a DAW.
-    */
-    struct EngineState { int notesOn = 0, notesOff = 0, activeVoices = 0, forcedStops = 0;
-                         float trimDb = 0.0f, rawPeak = 0.0f, rtf = 0.0f;
-                         int voiceCap = 0; bool faust = false; };
     EngineState engineState() const;
 
     /** What is loaded now. An empty id means the compiled-in default. */
@@ -319,14 +353,6 @@ private:
     juce::File cacheFileForCurrentFaust() const;
    #endif
 
-    // Set while a measurement runs on measurePool_. Read by the editor.
-    std::atomic<bool> measuring_ { false };
-
-    // Guarded by the message thread: written when a load finishes, read by
-    // lastLoadOutcome() which the shell polls.
-    LoadOutcome lastOutcome_;
-    mutable juce::CriticalSection outcomeLock_;
-
     float faustTrim_ = 1.0f, faustRawPeak_ = 0.0f;
 
     // Log-frequency spectrogram of the loaded genome, from the measurement
@@ -336,6 +362,81 @@ private:
     double faustRtf_ = 0.0;
     int faustVoices_ = 1;
    #endif
+
+    // ── Shell state: declared unconditionally ───────────────────────────────
+    //
+    // Read by the editor on every poll, whichever engine is active and whether
+    // or not one is at all. measuring_ and the outcome pair used to sit inside
+    // the FAUST guard while their accessors -- isMeasuring() and
+    // lastLoadOutcome() -- sat inside the SAMPLER guard, so a sampler-only
+    // build declared the readers and not the members. That is the error the
+    // first iOS build hit.
+    //
+    // lifetime_ is here for the same reason: PluginProcessor.cpp captures a
+    // weak_ptr to it in four callbacks and none of them is guarded.
+
+    // Set while a measurement runs on measurePool_. Read by the editor. Stays
+    // false when no engine that measures is compiled in.
+    std::atomic<bool> measuring_ { false };
+
+    // Blocks processBlock has been called with, since construction. Engine
+    // independent on purpose -- see the increment for why the engine's own
+    // counter cannot answer "is this host pulling audio at all".
+    std::atomic<std::uint64_t> blocksSeen_ { 0 };
+
+    // Notes injected by triggerTestNote, drained on the audio thread.
+    //
+    // A plain MidiBuffer under a lock rather than juce::MidiMessageCollector,
+    // which would have been the obvious choice: it lives in juce_audio_devices
+    // and this target links juce_audio_processors, so using it meant adding a
+    // whole module to the shared code for one diagnostic. The queue it replaces
+    // is four lines.
+    //
+    // The audio thread takes this with a TRY lock, so a note waits one block
+    // rather than the render thread ever waiting on the message thread.
+    juce::MidiBuffer pendingTestNotes_;
+    juce::CriticalSection testNoteLock_;
+
+    // ── MIDI arrival diagnostics ────────────────────────────────────────────
+    //
+    // Written on the audio thread, read and logged on the message thread by
+    // timerCallback, and logged ONLY when a counter moves so an idle plugin
+    // writes nothing.
+    //
+    // These exist because "notes arrive 1-2 s late and every other one is
+    // silent" has several possible causes that are indistinguishable by ear:
+    // the messages arriving late, arriving on time but placed at the wrong
+    // offset within the block, or a note-on and its note-off landing in the
+    // SAME block -- which is a note of zero length, and silent however good
+    // the engine is. zeroLength_ is the one that tells those apart.
+    std::atomic<std::uint64_t> midiEvents_    { 0 };
+    std::atomic<std::uint64_t> midiNoteOns_   { 0 };
+    std::atomic<std::uint64_t> midiNoteOffs_  { 0 };
+    std::atomic<std::uint64_t> midiZeroLength_ { 0 };
+    std::atomic<int> midiLastNote_   { -1 };
+    std::atomic<int> midiLastOffset_ { -1 };
+    std::atomic<int> midiMaxPerBlock_ { 0 };
+    std::uint64_t midiLoggedAt_ { 0 };
+
+    void timerCallback() override;
+
+public:
+    /** How many blocks the host has asked for. 0 means no audio callback has
+        ever run, whatever is or is not loaded. */
+    std::uint64_t blocksSeen() const noexcept
+    { return blocksSeen_.load (std::memory_order_relaxed); }
+
+private:
+
+    // Guarded by the message thread: written when a load finishes, read by
+    // lastLoadOutcome() which the shell polls.
+    LoadOutcome lastOutcome_;
+    mutable juce::CriticalSection outcomeLock_;
+
+    // A host can close a plugin between setStateInformation posting the load
+    // and the message thread running it. AudioProcessor has no weak reference,
+    // so the lambda holds a weak_ptr to this and does nothing if it expired.
+    std::shared_ptr<int> lifetime_ { std::make_shared<int> (0) };
 
    #if KROMOSYNTH_HAS_SAMPLER || KROMOSYNTH_HAS_FAUST
     // Which engine processBlock should call. Message-thread writes happen only
@@ -356,10 +457,6 @@ private:
 
     void loadPendingInstrument();
 
-    // A host can close a plugin between setStateInformation posting the load
-    // and the message thread running it. AudioProcessor has no weak reference,
-    // so the lambda holds a weak_ptr to this and does nothing if it expired.
-    std::shared_ptr<int> lifetime_ { std::make_shared<int> (0) };
    #endif
 
     AcquisitionRunner acquisitions_;

@@ -202,6 +202,26 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             proc_.panic();
             done (juce::var (true));
         })
+        // Diagnostic. Plays one note with no MIDI hardware, which on iOS is the
+        // only way to find out whether the audio path reaches the speaker: the
+        // standalone app has no on-screen keyboard and no MIDI source unless one
+        // is attached. Returns the block counter so the caller can tell "no
+        // audio callback" from "callback running, engine silent".
+        .withNativeFunction ("testNote",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            const int   note = args.size() > 0 ? (int) args[0] : 69;    // a4
+            const float vel  = args.size() > 1 ? (float) (double) args[1] : 1.0f;
+            const int   ms   = args.size() > 2 ? (int) args[2] : 800;
+
+            proc_.triggerTestNote (note, vel, ms);
+
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("note", note);
+            o->setProperty ("blocks", (juce::int64) proc_.blocksSeen());
+            done (juce::var (o));
+        })
         .withNativeFunction ("removeInstrument",
                              [this] (const juce::Array<juce::var>& args,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
@@ -570,9 +590,34 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     // question and a fixed-size editor cannot answer it. Lower bound is
     // small enough to catch layout collapse; upper bound is large enough
     // that a 4K panel is not artificially clamped.
+#if JUCE_IOS
+    // A PHONE IS NARROWER THAN THE DESKTOP MINIMUM, and the minimum wins.
+    //
+    // The standalone wrapper sizes the editor to the window, but setResizeLimits
+    // clamps it afterwards. An iPhone 13 Pro Max is 428 x 926 points in
+    // portrait, so a 640 lower bound left 212 points off the right of the
+    // screen -- which is exactly how the shell's own buttons and the right edge
+    // of the site both vanished in portrait and reappeared in landscape, where
+    // the 926-point width has room for 640. The log said so all along:
+    // "editor_resized w=640 h=926" on a 428-point display.
+    //
+    // Sized to the display's userArea rather than to a guess, because that is
+    // the safe area after the status bar and home indicator, and it is right on
+    // every device rather than on the one being tested.
+    setResizable (true, true);
+
+    const auto safeArea = juce::Desktop::getInstance().getDisplays()
+                              .getPrimaryDisplay()->userArea;
+
+    // 320 is the narrowest iPhone in points. The lower bound still exists so a
+    // layout collapse would be visible rather than absorbed.
+    setResizeLimits (320, 400, 3840, 2400);
+    setSize (safeArea.getWidth(), safeArea.getHeight());
+#else
     setResizable (true, true);
     setResizeLimits (640, 400, 3840, 2400);
     setSize (1280, 800);
+#endif
 
 #if ! KROMOSYNTH_EDITOR_STUB
     // The shell, not the site. The site is a second component with native

@@ -180,6 +180,11 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
     logEvent ("processor_constructed host=" + hostName
               + " wrapper=" + juce::AudioProcessor::getWrapperTypeDescription (wrapperType));
 
+    // Two per second, and it writes nothing unless a MIDI counter moved. Slow
+    // enough to be free, fast enough that a burst of notes is not averaged
+    // into one line.
+    startTimer (500);
+
     // A freshly acquired instrument becomes the ACTIVE one.
     //
     // The point of pressing "Add to plugin" from the site is to play the thing.
@@ -235,6 +240,17 @@ void KromosynthAudioProcessor::logEvent (const juce::String& event)
 
 KromosynthAudioProcessor::~KromosynthAudioProcessor()
 {
+    // FIRST. juce::Timer's own destructor would stop it, but that runs after
+    // this class's members are gone -- and timerCallback reads logFile_ and the
+    // MIDI atomics. Stopping here closes the window rather than relying on
+    // base-class destruction order.
+    stopTimer();
+
+    // Unconditional, and before the engine-specific stats: this is the line
+    // that says whether the OS ever pulled audio, which is a different question
+    // from whether an engine rendered any.
+    logEvent ("audio_callback blocks=" + juce::String (blocksSeen()) + " reason=destructor");
+
    #if KROMOSYNTH_HAS_SAMPLER
     logRenderStats ("destructor");
    #endif
@@ -455,6 +471,67 @@ void KromosynthAudioProcessor::panic()
     logEvent ("panic");
 }
 
+void KromosynthAudioProcessor::triggerTestNote (int midiNote, float velocity, int durationMs)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    midiNote   = juce::jlimit (0, 127, midiNote);
+    velocity   = juce::jlimit (0.0f, 1.0f, velocity);
+    durationMs = juce::jlimit (10, 10000, durationMs);
+
+    // Queued for the next block. The note-off follows on a delay through the
+    // message thread rather than being queued now with an offset: a MidiBuffer
+    // event offset has to fall inside the block it is drained into, and a test
+    // note that never releases is a stuck note -- the exact failure panic()
+    // exists to clean up after.
+    {
+        const juce::ScopedLock sl (testNoteLock_);
+        pendingTestNotes_.addEvent (juce::MidiMessage::noteOn (1, midiNote, velocity), 0);
+    }
+
+    juce::Timer::callAfterDelay (durationMs,
+                                 [this, weak = std::weak_ptr<int> (lifetime_), midiNote]
+    {
+        if (weak.expired()) return;
+
+        const juce::ScopedLock sl (testNoteLock_);
+        pendingTestNotes_.addEvent (juce::MidiMessage::noteOff (1, midiNote), 0);
+    });
+
+    logEvent ("test_note note=" + juce::String (midiNote)
+              + " vel=" + juce::String (velocity, 2)
+              + " ms=" + juce::String (durationMs)
+              + " active=" + juce::String (active_ == Active::none ? "none"
+                                           : (active_ == Active::sampler ? "sampler" : "faust"))
+              + " blocks_so_far=" + juce::String (blocksSeen()));
+}
+
+void KromosynthAudioProcessor::timerCallback()
+{
+    const auto events = midiEvents_.load (std::memory_order_relaxed);
+
+    // Nothing new since the last line. An idle plugin must not fill the log,
+    // because the log is the only diagnostic surface on a phone.
+    if (events == midiLoggedAt_)
+        return;
+
+    midiLoggedAt_ = events;
+
+    logEvent ("midi_in events=" + juce::String (events)
+              + " on=" + juce::String (midiNoteOns_.load (std::memory_order_relaxed))
+              + " off=" + juce::String (midiNoteOffs_.load (std::memory_order_relaxed))
+              // Non-zero here means note-on and its note-off arrived in ONE
+              // block: a zero-length note, silent whatever the engine does.
+              + " zero_length=" + juce::String (midiZeroLength_.load (std::memory_order_relaxed))
+              + " last_note=" + juce::String (midiLastNote_.load (std::memory_order_relaxed))
+              // Offset of that note within its block. A value far from 0 with a
+              // 64-frame block would mean the messages are being placed wrong
+              // rather than delivered late.
+              + " last_offset=" + juce::String (midiLastOffset_.load (std::memory_order_relaxed))
+              + " max_per_block=" + juce::String (midiMaxPerBlock_.load (std::memory_order_relaxed))
+              + " blocks=" + juce::String (blocksSeen()));
+}
+
 KromosynthAudioProcessor::LoadOutcome
 KromosynthAudioProcessor::loadInstrument (const juce::String& id)
 {
@@ -638,6 +715,29 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         updateHostDisplay();
         return outcome;
     }
+   #else
+    if (resolved.kind == InstrumentLibrary::Kind::faust)
+    {
+        // No Faust engine in this build, and the sampler must NOT be handed a
+        // .wasm. Falling through did exactly that: sfizz parsed
+        // instrument.wasm as SFZ and reported "loadSfzFile returned false;
+        // parse errors go to stderr" for an artefact that was never an SFZ.
+        // The error named the wrong subsystem and pointed a reader at the wrong
+        // file -- which is how the first instrument acquired on iOS looked like
+        // a corrupt sample set rather than an unsupported engine.
+        //
+        // iOS is the configuration that arrives here. wasmtime cannot ship on
+        // it -- its C API offers only Cranelift and Winch and both are JIT --
+        // so KROMOSYNTH_BUILD_FAUST stays off until FaustEngine.cpp has a wasm3
+        // backend. See the platform block in the top-level CMakeLists.
+        outcome.detail = "this is a live Faust instrument, and this build has no "
+                         "Faust engine";
+
+        logEvent ("instrument_load_unsupported id=" + id + " kind=faust"
+                  + " -- built without KROMOSYNTH_BUILD_FAUST, nothing was loaded");
+
+        return outcome;
+    }
    #endif
 
     const auto file = resolved.primary;
@@ -694,6 +794,14 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
 {
     logEvent ("prepareToPlay sampleRate=" + juce::String (sampleRate)
               + " blockSize=" + juce::String (samplesPerBlock));
+
+    // Any diagnostic note still queued belongs to the previous configuration.
+    // Dropped rather than carried across: a note-on whose note-off was queued
+    // before a rate change would be delivered without its release.
+    {
+        const juce::ScopedLock sl (testNoteLock_);
+        pendingTestNotes_.clear();
+    }
 
    #if KROMOSYNTH_HAS_SAMPLER
     // ── The OFF-thread barrier ───────────────────────────────────────────
@@ -797,6 +905,17 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     loadPendingInstrument();
 }
 
+// Outside the Faust guard, matching where the members it reads are now
+// declared. It was stranded inside it, so a sampler-only build declared the
+// accessor in the header and then left it undefined at LINK time -- the one
+// error remaining after the header moves, and the only one of the set that a
+// compile could not have caught.
+KromosynthAudioProcessor::LoadOutcome KromosynthAudioProcessor::lastLoadOutcome() const
+{
+    const juce::ScopedLock sl (outcomeLock_);
+    return lastOutcome_;
+}
+
 #if KROMOSYNTH_HAS_FAUST
 
 void KromosynthAudioProcessor::reloadFaustIfNeeded (double sampleRate, int samplesPerBlock)
@@ -855,12 +974,6 @@ bool KromosynthAudioProcessor::runtimeMeasurementNeeded() const
               && faustDeclared_.rtfPlatform.isNotEmpty()
               && faustDeclared_.rtfPlatform == FaustEngine::runtimeId()
               && ! faustDeclared_.pitchPeaks.empty());
-}
-
-KromosynthAudioProcessor::LoadOutcome KromosynthAudioProcessor::lastLoadOutcome() const
-{
-    const juce::ScopedLock sl (outcomeLock_);
-    return lastOutcome_;
 }
 
 juce::File KromosynthAudioProcessor::cacheFileForCurrentFaust() const
@@ -1250,6 +1363,9 @@ void KromosynthAudioProcessor::applyFaustMeasurement (const FaustEngine::Measure
 
 void KromosynthAudioProcessor::releaseResources()
 {
+    logEvent ("audio_callback blocks=" + juce::String (blocksSeen())
+              + " reason=releaseResources");
+
    #if KROMOSYNTH_HAS_SAMPLER
     logRenderStats ("releaseResources");
    #endif
@@ -1259,6 +1375,76 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                              juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
+
+    // Counted BEFORE any routing, and deliberately not inside an engine.
+    //
+    // sampler_render_stats reports engine_->stats(), whose counters only move
+    // inside engine_->process() -- which this function skips whenever
+    // active_ == Active::none. So "blocks=0" from that line means EITHER the
+    // host never pulled audio OR nothing was loaded, and those are the two
+    // possibilities anyone debugging silence needs to tell apart. On the first
+    // iOS run it read blocks=0 and could not answer whether the phone was
+    // rendering at all.
+    //
+    // Relaxed, and on the audio thread on purpose: one increment per block on a
+    // counter nobody reads in the same breath is free, and a fetch_add on an
+    // uncontended atomic is not a syscall.
+    blocksSeen_.fetch_add (1, std::memory_order_relaxed);
+
+    // Diagnostic notes merged into the HOST's buffer, before any routing, so
+    // they reach whichever engine is active by the same path a real note takes.
+    //
+    // TRY lock: the audio thread must never wait on the message thread, and a
+    // diagnostic note arriving one block later is not a defect worth a priority
+    // inversion. Empty on every block in normal use.
+    {
+        const juce::ScopedTryLock sl (testNoteLock_);
+
+        if (sl.isLocked() && ! pendingTestNotes_.isEmpty())
+        {
+            midiMessages.addEvents (pendingTestNotes_, 0, buffer.getNumSamples(), 0);
+            pendingTestNotes_.clear();
+        }
+    }
+
+    // ── MIDI arrival, counted before any engine sees it ─────────────────────
+    //
+    // Skipped entirely on the empty buffer, which is every block when nobody is
+    // playing, so the scan costs nothing in the normal case.
+    if (! midiMessages.isEmpty())
+    {
+        int inThisBlock = 0;
+        bool onSeen[128] = {};
+
+        for (const auto meta : midiMessages)
+        {
+            const auto m = meta.getMessage();
+            ++inThisBlock;
+
+            if (m.isNoteOn())
+            {
+                midiNoteOns_.fetch_add (1, std::memory_order_relaxed);
+                midiLastNote_.store (m.getNoteNumber(), std::memory_order_relaxed);
+                midiLastOffset_.store (meta.samplePosition, std::memory_order_relaxed);
+                onSeen[m.getNoteNumber() & 127] = true;
+            }
+            else if (m.isNoteOff())
+            {
+                midiNoteOffs_.fetch_add (1, std::memory_order_relaxed);
+
+                // Its own note-on was in this same block, so the note has zero
+                // length and cannot sound. THE signature to look for: it would
+                // explain silence on notes that were definitely pressed.
+                if (onSeen[m.getNoteNumber() & 127])
+                    midiZeroLength_.fetch_add (1, std::memory_order_relaxed);
+            }
+        }
+
+        midiEvents_.fetch_add ((std::uint64_t) inThisBlock, std::memory_order_relaxed);
+
+        if (inThisBlock > midiMaxPerBlock_.load (std::memory_order_relaxed))
+            midiMaxPerBlock_.store (inThisBlock, std::memory_order_relaxed);
+    }
 
     // Read once per block. Faust takes it as an engine setting so that it lands
     // BEFORE the limiter -- turning the level down has to move the signal out
