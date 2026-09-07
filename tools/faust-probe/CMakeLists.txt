@@ -23,6 +23,18 @@ target_compile_definitions(faust_probe PRIVATE
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0)
 
+# The probe follows the plugin's runtime choice, because it IS the acceptance
+# test for that choice: scripts/null-test.sh drives faust_probe over 120 elites
+# and compares samples against the platform reference. A probe pinned to
+# wasmtime while the plugin used wasm3 would report on the wrong engine and
+# pass while the shipped one diverged.
+if(KROMOSYNTH_WASM3)
+    target_link_libraries(faust_probe PRIVATE wasm3::wasm3)
+    target_compile_definitions(faust_probe PRIVATE KROMOSYNTH_WASM3=1)
+else()
+    target_compile_definitions(faust_probe PRIVATE KROMOSYNTH_WASM3=0)
+endif()
+
 target_link_libraries(faust_probe PRIVATE
     wasmtime::wasmtime
     juce::juce_audio_basics

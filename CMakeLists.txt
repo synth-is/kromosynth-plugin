@@ -18,6 +18,18 @@ project(KromosynthPlugin VERSION 0.0.1 LANGUAGES C CXX)
 # ── Options ──────────────────────────────────────────────────────────────────
 option(KROMOSYNTH_BUILD_SAMPLER  "Build the sfizz sampler engine (Task 2)" OFF)
 option(KROMOSYNTH_BUILD_FAUST    "Build the wasmtime Faust engine (Stage 2)" OFF)
+
+# The interpreter backend. OFF on macOS, where Cranelift is legal and 5.56x
+# faster; REQUIRED on iOS, where JIT is not permitted at all. Selecting it swaps
+# the runtime inside FaustEngine.cpp and changes nothing else -- voice logic,
+# levelling, trim and envelope are shared, deliberately: duplicating the
+# note-start path is how pitch correction and the envelope came to disagree once
+# already (FaustEngine.h).
+#
+# Acceptance is scripts/null-test.sh. Both runtimes execute the same module
+# bytes and share the math expressions, so bit-identical output is the
+# expectation rather than the hope.
+option(KROMOSYNTH_WASM3          "Use the wasm3 interpreter for the Faust engine" OFF)
 option(KROMOSYNTH_WEBVIEW_PROBE  "Inject the Stage 0 environment probe JS"  ON)
 
 # How long after page load the probe fires. Default 3000 ms is enough for React
@@ -175,16 +187,20 @@ if(NOT APPLE)
         "WP_SYNTHIS_PLUGIN.md §7.")
 endif()
 
-# The Faust engine has no runtime on iOS yet. This is a hard error rather than
-# a silent downgrade: a build that quietly dropped the engine would produce an
-# app whose instrument library shows Faust artefacts it cannot play.
-if(KROMOSYNTH_IOS AND KROMOSYNTH_BUILD_FAUST)
+# The Faust engine needs an interpreter on iOS. wasmtime's C API offers only
+# Cranelift and Winch, both JIT, which iOS forbids -- so the engine is available
+# there only with KROMOSYNTH_WASM3. A hard error rather than a silent downgrade:
+# a build that quietly dropped the engine would produce an app whose instrument
+# library shows Faust artefacts it cannot play.
+#
+# Worth the wasm3 build: measured across all 120 archive elites on an A15, 60%
+# carry four voices or more and 43% carry eight
+# (IOS_VOICE_CAP_DISTRIBUTION_2026-09-07.md).
+if(KROMOSYNTH_IOS AND KROMOSYNTH_BUILD_FAUST AND NOT KROMOSYNTH_WASM3)
     message(FATAL_ERROR
-        "KROMOSYNTH_BUILD_FAUST is not available on iOS. wasmtime's C API "
-        "offers only Cranelift and Winch and both are JIT, which iOS forbids. "
-        "The replacement is a wasm3 backend for FaustEngine.cpp; the reference "
-        "host is faust-genome-substrate/probe/gate0/host_wasm3.c, already "
-        "measured on device. Configure with -DKROMOSYNTH_BUILD_FAUST=OFF.")
+        "On iOS the Faust engine requires -DKROMOSYNTH_WASM3=ON. wasmtime's C "
+        "API offers only Cranelift and Winch and both are JIT, which iOS does "
+        "not permit. wasm3 interprets the same module bytes and is legal there.")
 endif()
 
 # Architecture. Default is NATIVE ONLY, deliberately.
@@ -258,6 +274,7 @@ endif()
 # Before src/, so wasmtime::wasmtime exists when the plugin target links it.
 if(KROMOSYNTH_BUILD_FAUST)
     include(Wasmtime)
+    include(Wasm3)
 endif()
 
 add_subdirectory(src)

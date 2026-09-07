@@ -225,8 +225,19 @@ endif()
 if(KROMOSYNTH_BUILD_FAUST)
     target_link_libraries(KromosynthPlugin PRIVATE wasmtime::wasmtime)
     target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_FAUST=1)
+
+    # Linked ALONGSIDE wasmtime rather than instead of it. FaustEngine.cpp still
+    # names wasmtime types in the branch the preprocessor drops, so the
+    # translation unit has to see those headers either way.
+    if(KROMOSYNTH_WASM3)
+        target_link_libraries(KromosynthPlugin PRIVATE wasm3::wasm3)
+        target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_WASM3=1)
+    else()
+        target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_WASM3=0)
+    endif()
 else()
     target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_FAUST=0)
+    target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_WASM3=0)
 endif()
 
 # Must come AFTER juce_add_plugin, because it appends POST_BUILD steps that
