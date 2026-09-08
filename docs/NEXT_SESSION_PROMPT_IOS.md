@@ -129,10 +129,8 @@ device**, and against `FaustEngine` rather than the gate0 host.
 
 In rough order of value:
 
-- **AUv3**, and the App Group container work it forces: an extension cannot read
-  the container app's Documents, so `InstrumentLibrary::root()` and the
-  acquisition session both have to move. `root()` is deliberately the only place
-  that resolves the path, so that is one edit.
+- **AUv3**, and the App Group container work it forces. See §3a — it starts in
+  the Apple developer portal, not in the code.
 - **The unified chrome — decide it WITH AUv3, not before.** The plugin shows two
   visibly different surfaces: the local shell (`ShellPage.h`) and synth.is under
   a `< Library` strip. The proposal is one navigation strip across both, so the
@@ -192,6 +190,69 @@ In rough order of value:
 - **The optional tidy-up.** Now that two runtimes work, the seam could be
   extracted properly — `cmake/Wasmtime.cmake`'s "second real consumer" exists.
   Entirely optional, and it must be its own commit with a null test either side.
+
+## 3a. AUv3: what is known before starting
+
+**The first blocker is not code.** Today's Standalone build signs against
+`iOS Team Provisioning Profile: *`, a wildcard App ID. **App Groups cannot be
+attached to a wildcard App ID.** So before anything builds:
+
+1. Register an explicit App ID for the container app (`is.synth.plugin`) in the
+   Apple developer portal, team `ATA8MQ4L7K`.
+2. Register an explicit App ID for the AUv3 extension. JUCE derives the
+   extension's bundle ID from the app's; check what it actually emits rather
+   than guessing, because a mismatch fails at install with a provisioning error
+   that names neither cause.
+3. Register an App Group, conventionally `group.is.synth.plugin`, and enable it
+   on both App IDs.
+4. Regenerate profiles. `-allowProvisioningUpdates` handles the fetch once the
+   portal side exists; it cannot create the App Group.
+
+Doing this first is the point. Writing the container-sharing code and then
+discovering the entitlement cannot be signed wastes the code.
+
+### What is already in place
+
+- `FORMATS` is per-platform in `src/CMakeLists.txt` and currently `Standalone`
+  on iOS. AUv3 is added there, and JUCE builds the extension INSIDE the
+  Standalone target — which is why standalone-first was not a detour.
+- JUCE has `APP_GROUPS_ENABLED` and `APP_GROUP_IDS` as `juce_add_plugin`
+  arguments. Both are one-value args; see the list around
+  `JUCEUtils.cmake:2072`. **Read the built `Info.plist` and the `.entitlements`
+  to confirm they took** — `BACKGROUND_AUDIO` was silently ignored today
+  because the real keyword is `BACKGROUND_AUDIO_ENABLED`, and a wrong keyword
+  produces no error at all.
+- **Memory does not bind.** 51.5 MB total process RSS at four Faust voices,
+  ~4.3 MB per voice. `EXPERIMENT_01_4.1` §1.4's worry that an extension's
+  budget would bite before throughput is answered: it does not.
+- **Editor sizing is already fixed.** iOS sizes to the display's `userArea`;
+  an AUv3 gets whatever the host gives it, so the 320-point lower bound matters
+  more here than in the standalone app.
+
+### The code change, and it is smaller than it looks
+
+`InstrumentLibrary::root()` is deliberately the **only** place that resolves the
+library path. On iOS it currently returns `Documents/Instruments`; for an
+extension it becomes
+`containerURLForSecurityApplicationGroupIdentifier("group.is.synth.plugin")`.
+One function, and its comment already says so.
+
+The harder half is the acquisition session. **WKWebView storage is
+per-process** — a GarageBand AU context and a Reaper context do not share it —
+so sign-in state has to be treated as host-scoped, and an instrument acquired
+in the standalone app must be visible to the extension without a second
+sign-in. The App Group container is where that lands.
+
+### Two traps specific to extensions
+
+- **An AUv3 runs in its own process, with its own log file.** The per-host log
+  naming already keys on `hostApplicationPath`, so this should work — but check
+  that the extension can WRITE where it thinks it can. A log that silently goes
+  nowhere would remove the only diagnostic surface, which on iOS is already
+  thin: acquisition outcomes are still not logged (§4).
+- **`--terminate-existing` does not run the destructor.** Anything logged only
+  at teardown will not appear. The `midi_in` line and `blocksSeen` were built
+  around that once already.
 
 ## 4. Open findings not on the critical path
 
