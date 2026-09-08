@@ -6,6 +6,10 @@ what that document predicted turned out to be wrong in the optimistic direction
 on one point and the pessimistic direction on another; both corrections are
 below and both are measured.
 
+**Amended 2026-09-08** with the interface item in §3 and the sign-in finding in
+§4. Neither came from a measurement; both are constraints the AUv3 session
+should know about before it decides where the editor's chrome lives.
+
 ---
 
 ## 1. What is true now, on hardware
@@ -129,6 +133,49 @@ In rough order of value:
   the container app's Documents, so `InstrumentLibrary::root()` and the
   acquisition session both have to move. `root()` is deliberately the only place
   that resolves the path, so that is one edit.
+- **The unified chrome — decide it WITH AUv3, not before.** The plugin shows two
+  visibly different surfaces: the local shell (`ShellPage.h`) and synth.is under
+  a `< Library` strip. The proposal is one navigation strip across both, so the
+  instrument library becomes the home tab of the same chrome that carries Sound
+  Feed, Sound Garden, Instruments and Biomes — the seam between "plugin view"
+  and "website" goes away without the two-component split going away.
+
+  **The web half is done and is INERT until this repo opts in**
+  (`kromosynth-desktop` `efe5386`, 2026-09-08). `NavigationBar` takes a
+  `hideNav` prop, and `App.jsx`'s seventeen byte-identical inline header
+  wrappers are now one `NavigationChrome`.
+
+  It is gated on **`?chrome=host`**, read by a new `hostDrawsChrome()` beside
+  `isPluginHost()` — deliberately not the existing client marker. Being inside
+  the plugin says nothing about whether the plugin has chrome, and the build
+  shipping today has none: keying off `client=synthis-plugin` would have
+  stripped the site surface of any way between Sound Feed, Sound Garden,
+  Instruments and Biomes, leaving only `< Library`. So **the plugin opts in when
+  its strip exists**, and until `showSite()` and `navigateSiteTo()` append that
+  parameter nothing changes in any host. Skew resolves safely in both
+  directions: an old plugin against a new deploy keeps its header, a new plugin
+  against an old deploy shows two, which is ugly rather than broken.
+
+  Appending the parameter is therefore the LAST step of the plugin half, not
+  the first. Both call sites already append `?client=synthis-plugin`, so it is
+  the same two edits.
+
+  **AUv3 decides whether the strip can exist at all.** An AUv3 view is often a
+  short band rather than a full screen, and the shell header already carries
+  `flex-wrap` because four controls plus a title do not fit across a phone. A
+  permanent strip spends vertical space that is already contested, so on iOS it
+  is probably icon-only or collapsible — and that follows from the extension's
+  real bounds, not from a desktop editor.
+
+  **Two things the chrome must not evict.** §6's **Test note** is how "does iOS
+  make sound" got answered at all, since the standalone app has no keyboard and
+  no MIDI source unless one is attached; and **Panic** exists because 16 of 33
+  measured genomes ignore their own gate while GarageBand offers none. Both
+  live in the shell header a strip would replace.
+
+  No webview is added by any of this: `site_` is already constructed with
+  `withKeepPageLoadedWhenBrowserIsHidden()`, so both are resident today and the
+  change is only which one is visible.
 - **Device calibration.** Every predicted cap is calibrated to one A15, warm. A
   short calibration render on first launch gives a device factor, after which
   `cap = rtf1 / 4 × factor` is honest on hardware nobody has measured. This is
@@ -161,6 +208,17 @@ In rough order of value:
 - **Acquisition outcomes are not logged.** The failure that produced "Could not
   create the instrument library directory" left `acquisition_queued` and then
   nothing. On a phone the log is the only diagnostic surface.
+- **Sign-in may not cross the AUv3 process boundary — unmeasured.** WKWebView
+  storage is per-process, already recorded on the desktop track as "users sign
+  in once per DAW". An AUv3 extension and its container app are separate
+  processes with separate `WKWebsiteDataStore`s, so a session established in the
+  standalone app probably does not reach the extension — and acquisition needs
+  one, since `PLUGIN_ACQUISITION_AUTH_DECISION.md` requires an account. The
+  phone has only run the standalone app so far, so this is a prediction rather
+  than a finding. Settle it in the same session as the App Group work, which is
+  already reasoning about the container/extension split. The unified chrome does
+  not cause this, but it puts it on screen: the strip reads signed-out in one
+  host and signed-in in another.
 
 ## 5. Traps, each of which cost time once
 
