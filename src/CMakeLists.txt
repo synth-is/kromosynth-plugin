@@ -11,16 +11,55 @@
 # separate product, which is why standalone-first is the cheapest route to a
 # working AUv3 rather than a detour away from one.
 #
-# AUv3 is deliberately NOT enabled yet. It brings its own sandbox: an extension
-# cannot read the container app's Documents directory, so InstrumentLibrary and
-# the acquisition session both have to move to an App Group container first.
-# Adding the format before that work exists would produce an AUv3 that loads
-# and then finds an empty instrument library.
+# AUv3 IS enabled now. This paragraph used to say it deliberately was not, and
+# the old reasoning is kept rather than deleted because it was sound -- only its
+# scope was wrong:
+#
+#   "An extension cannot read the container app's Documents directory, so
+#    InstrumentLibrary and the acquisition session both have to move to an App
+#    Group container first. Adding the format before that work exists would
+#    produce an AUv3 that loads and then finds an empty instrument library."
+#
+# Still true, and still exactly what this build does. The correction is that App
+# Groups cannot be attached to a wildcard App ID, so whether the entitlement can
+# be signed AT ALL is a fact about the Apple developer portal that no amount of
+# C++ discovers. juceaide runs at CONFIGURE time (execute_process,
+# JUCEUtils.cmake:617), so enabling the format and reading the generated
+# .entitlements and Info.plist asks the question for the price of a configure --
+# no build, no signing, no device. The empty instrument library is therefore the
+# EXPECTED state of this build rather than a regression, and the container work
+# is gated on what the artefacts say rather than the other way round.
+#
+# XCODE GENERATOR ONLY, and permanently. JUCE embeds the appex into the
+# standalone app through XCODE_EMBED_APP_EXTENSIONS (JUCEUtils.cmake:1686-1690),
+# which is an Xcode-generator property. A Ninja or Makefiles iOS build would
+# produce an appex that is never embedded and so never registered with the
+# system -- an AUv3 that no host can see, with nothing in the log to say why.
 if(KROMOSYNTH_IOS)
-    set(_kromosynth_formats Standalone)
+    set(_kromosynth_formats Standalone AUv3)
 else()
     set(_kromosynth_formats AU VST3)
 endif()
+
+# ONE string, two consumers, and they must not be able to disagree.
+#
+# It goes into the .entitlements that gets signed, and into the C++ that will
+# call File::getContainerForSecurityApplicationGroupIdentifier. A mismatch
+# between the two produces no error anywhere: that function returns a
+# NON-EXISTENT File on failure (juce_File.h says so explicitly),
+# InstrumentLibrary::scan() then hits `if (! base.isDirectory()) return
+# entries;` and the plugin shows an empty instrument list -- which is
+# indistinguishable from a user who has downloaded nothing. Same shape of silent
+# failure as the BACKGROUND_AUDIO spelling below, and the reason the string is
+# defined once here instead of twice in two languages.
+#
+# NOT a cache variable, unlike KROMOSYNTH_SFZ_PATH. That one exists to be
+# switched between artefacts; this one has to match an identifier registered in
+# the Apple developer portal, and a -D override would silently sign an
+# entitlement for a group that does not exist. Deliberately not derived from
+# BUNDLE_ID either -- Apple requires no relationship between the two, so
+# deriving it would assert a coupling nothing enforces.
+set(KROMOSYNTH_APP_GROUP_ID "group.is.synth.plugin")
 
 juce_add_plugin(KromosynthPlugin
     PRODUCT_NAME             "Synth.is"
@@ -72,6 +111,30 @@ juce_add_plugin(KromosynthPlugin
     BACKGROUND_AUDIO_ENABLED ${KROMOSYNTH_IOS}
     FILE_SHARING_ENABLED     ${KROMOSYNTH_IOS}
     REQUIRES_FULL_SCREEN     ${KROMOSYNTH_IOS}
+
+    # The shared container the AUv3 and its container app both read the
+    # instrument library out of.
+    #
+    # iOS-only on purpose. On macOS this entitlement would land in the AU and
+    # VST3 bundles that cmake/Signing.cmake signs with --options runtime,
+    # against a Developer ID profile that does not carry it -- turning a
+    # working desktop signature into a failure for an iOS feature.
+    #
+    # ONE pair covers BOTH iOS targets, which is not obvious and is worth
+    # writing down: entitlements are generated per format target but from the
+    # SHARED-CODE target's info file (_juce_add_xcode_entitlements,
+    # JUCEUtils.cmake:753-770), and juce_Entitlements.cpp's app-groups block is
+    # not gated on target kind. So Standalone and AUv3 each get the array
+    # without a per-target line.
+    #
+    # APP_GROUP_IDS is a MULTI-value argument (JUCEUtils.cmake:2144), not a
+    # one-value one; docs/NEXT_SESSION_PROMPT_IOS.md §3a claimed both were
+    # one-value and that is wrong. It happens not to matter for a single group,
+    # because CMake joins lists with ';' and juce_Entitlements.cpp tokenises
+    # appGroupIdString on ';' -- so the two spellings coincide here and would
+    # diverge the moment a second group is added.
+    APP_GROUPS_ENABLED       ${KROMOSYNTH_IOS}
+    APP_GROUP_IDS            "${KROMOSYNTH_APP_GROUP_ID}"
 
     # No microphone anywhere in the signal path. Declared explicitly because
     # leaving it unset makes JUCE emit the usage-description key on iOS, and an
@@ -165,6 +228,13 @@ target_compile_definitions(KromosynthPlugin PRIVATE
     # See WP_SYNTHIS_PLUGIN.md §12.
     KROMOSYNTH_WEB_APP_URL="${KROMOSYNTH_WEB_APP_URL}"
     KROMOSYNTH_VI_SERVICE_URL="${KROMOSYNTH_VI_SERVICE_URL}"
+
+    # Defined on EVERY platform, not only iOS, for the same reason
+    # KROMOSYNTH_HAS_SAMPLER is defined as 1-or-0 rather than defined-or-absent:
+    # an #ifdef on a name that is only sometimes there is a bad place to rely on
+    # silence. It is the ENTITLEMENT above and not this string that makes the
+    # container resolvable, so on macOS this is a constant nothing looks up.
+    KROMOSYNTH_APP_GROUP_ID="${KROMOSYNTH_APP_GROUP_ID}"
     KROMOSYNTH_WEBVIEW_PROBE=$<BOOL:${KROMOSYNTH_WEBVIEW_PROBE}>
     KROMOSYNTH_PROBE_DELAY_MS=${KROMOSYNTH_PROBE_DELAY_MS}
     KROMOSYNTH_EDITOR_STUB=$<BOOL:${KROMOSYNTH_EDITOR_STUB}>
