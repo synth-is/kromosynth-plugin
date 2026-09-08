@@ -10,7 +10,7 @@ the correction next to them rather than edited away.
 deployment target 16.0, JUCE 9.0.1, team ATA8MQ4L7K. Build dir
 `build/ios-auv3`, Xcode generator, Release, wasm3 backend.
 
-**Host tested:** GarageBand for iOS. **Not tested:** AUM, Cubasis, Loopy,
+**Hosts tested:** GarageBand for iOS, AUM. **Not tested:** Cubasis, Loopy,
 Drambo, Logic for iPad.
 
 ---
@@ -45,6 +45,98 @@ changed, so iOS treats it as an update. Verified: the app's
 (`/tmp/auv3-stage-a/container-{before,after}.txt` at the time; re-derive rather
 than trust that path). Worth keeping because a wiped container would have cost
 re-downloads against extraction quota, not just time.
+
+---
+
+# C13. FINDING — the view size is host-specific, and the shell already shows the library root
+
+AUM gives the AUv3 a **tall, near-full-width view**. C4's `736x242` is a
+GarageBand constraint, not an AUv3 one. Both matter, but they are different
+problems: GarageBand needs a letterbox layout, AUM does not.
+
+Two things visible in AUM's shell surface that are worth more than the null
+result they came with:
+
+    /var/mobile/Containers/Data/PluginKitPlugin/24971780-.../Documents/Instruments
+    Note sent (a4, 0.8 s) — 3697 audio blocks rendered so far.
+
+**`PluginKitPlugin`, not `Containers/Data/Application`.** That is the extension
+container, so this is direct confirmation of the MECHANISM behind C1 rather
+than its symptom: `InstrumentLibrary::root()` is resolving to the appex's own
+private `Documents`.
+
+**The shell already displays that path** through the `getLibraryRoot` native
+function (`PluginEditor.cpp:406`). So Stage B has a free on-device acceptance
+check: the displayed path must change to the shared container. No devicectl
+needed, and the check is visible to a user rather than only to a debugger.
+
+And the audio path is live in an extension — 3697 blocks rendered, silence
+because nothing is loaded, but `prepareToPlay` and `processBlock` are running.
+
+---
+
+# C12. C3 ESCALATED — the appex log is shared across HOSTS, so the collision is live now
+
+C3 said the filename collision was harmless today because the containers
+differ, and would bite once the log moved to the shared container. That
+understated it. The GarageBand session (16:56–17:03) and the AUM session
+(18:37–18:39) are in the **same** `stage0-Synth.log`, because the container is
+per-extension, not per-host.
+
+Each AUv3 instance runs in its own process. Two instances in two hosts, or two
+in one host, are already two processes appending to one file with no locking.
+The interleaving risk is **present now**, not after Stage B.
+
+---
+
+# C11. CORRECTION to C6 — the attempt IS instrumented, and the fault is not in the plugin
+
+C6 says "the log cannot say why". That over-corrected, and the sequence is worth
+recording as it happened:
+
+1. I inferred from the absence of an acquisition log line that nothing was
+   handed over. Right in substance, but I had not established the premise.
+2. I retracted it on finding zero `logEvent` calls in `ArtifactAcquisition.cpp`
+   and `AcquisitionRunner.cpp`, and on §3a saying outcomes are not logged.
+3. Reading `PluginEditor.cpp:923-952` settled it. The retraction was wrong in
+   SCOPE. The *outcome* is uninstrumented; the *attempt* is not.
+
+The sentinel branch logs on every path — `acquisition_sentinel` with the ticket
+redacted, then `acquisition_queued`, `acquisition_already_running`, or
+`acquisition_sentinel_malformed`. §3a's "acquisition outcomes are still not
+logged" was precise; I collapsed "outcome" into "attempt".
+
+**So the silence is positive evidence.** Across two hosts and three site
+sessions there is no `acquisition_sentinel`, no `page_about_to_load synthis://`
+and no `navigation_blocked`. Nothing was ever offered to the intercept.
+
+The plugin side is correct and can be excluded:
+
+- `site_->interceptsSentinels = true` (`PluginEditor.cpp:582`) — the site
+  surface does intercept.
+- The intercept runs BEFORE the `page_about_to_load` log line and before the
+  origin check, both deliberately: an unconditional log would have written the
+  ticket to disk in plaintext, and the origin check would have handed the
+  sentinel to `launchInDefaultBrowser`.
+- `InstrumentLibrary::root()` is passed at the intercept site, so Stage B flows
+  through with no change here.
+
+The fault is web-app side. `SoundCard.jsx` — the component on screen — does use
+`useObtainInstrument` → `watchAndAcquire` → `acquireIntoPlugin`, and that
+function toasts on the signed-out 401 from the download-recording POST. So
+"nothing at all" means either the purple piano is not the obtain affordance
+(`TakeoutView.jsx:1005` is another call site, and the package icon in the top
+nav looks like Takeout), or the handler dies before reaching any toast.
+
+**NOT established which.** Pre-registered next test, which needs no phone: press
+the same button in the DESKTOP plugin while signed out.
+
+- Desktop also silent → the signed-out path is broken everywhere and this is
+  not an AUv3 issue at all. That is the bigger finding, because it would mean
+  the amber state the `FeedRenderJobIndicator` work was meant to produce is
+  unreachable.
+- Desktop toasts → AUv3-specific, and the fixed-position toast or the host
+  viewport becomes the suspect.
 
 ---
 
@@ -276,8 +368,14 @@ Not fixed; recorded so the next person does not find it the hard way.
 
 1. **Stage B** — `root()` to the group container, `rootOrigin()` logged.
    Migration of the four existing instruments deliberately NOT bundled with it.
-2. **Stage C** — the log filename (C3). Small.
-3. **Instrument the acquisition path** (C6). Prerequisite, not optional.
-4. **Stage D** — the ticket across the boundary (C2).
-5. **Re-measure voice caps at 256 frames** (C5), pre-registered.
-6. Unified chrome against 736x242 (C4).
+   Acceptance is now visible in the shell itself (C13), not only via devicectl.
+2. **The desktop signed-out test** (C11). No phone, no build, and it decides
+   whether the acquisition fault is AUv3-specific or global.
+3. **Stage C** — the log filename (C3), now escalated by C12 to a live
+   multi-writer problem rather than a latent one.
+4. **Instrument the acquisition OUTCOME** (C6, C11). The attempt is already
+   logged; `fetchAndInstall` is not.
+5. **Stage D** — the ticket across the boundary (C2).
+6. **Re-measure voice caps at 256 frames** (C5), pre-registered.
+7. Unified chrome, against 736x242 in GarageBand and a tall view in AUM (C4,
+   C13).
