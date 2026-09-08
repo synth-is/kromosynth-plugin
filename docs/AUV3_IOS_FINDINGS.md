@@ -48,6 +48,95 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C17. STAGE B VERIFIED — an instrument acquired in the AUv3 appears in the standalone app
+
+Acquired inside AUM, then Refresh in the standalone app revealed it there.
+
+The test is unambiguous because of what the standalone app is NOT doing: it has
+acquired nothing today, and after Stage B it no longer reads its own private
+`Documents`. Its own four instruments are invisible to it. So anything it lists
+can only have come out of the shared container, written by a DIFFERENT PROCESS.
+
+    19:12:03  wrapper=AUv3        library=appGroup   <- wrote it
+    19:12:40  wrapper=Standalone  library=appGroup   <- reads it
+
+This is the requirement §3a is actually about. Refresh was needed because
+`scan()` runs on demand rather than watching the directory — a list rendered
+before the download landed is stale, not empty.
+
+**Not migrating was the right call.** Because both surfaces started at 0, a
+single acquisition appearing in both proves SHARING. Had the four been migrated
+first, the same observation would only have proved that a copy happened.
+
+---
+
+# C16. RETRACTION of C8 — devicectl's App Group container view is frozen at install time, and lies plausibly
+
+C8 claimed `devicectl --domain-type appGroupDataContainer` can read the shared
+container. **It cannot be trusted.** Across the entire session it reported the
+same three entries, all dated 15:20 — the install moment — and never changed:
+not when both processes began resolving `library=appGroup`, not after six
+acquisitions, not while the instrument was visibly listed in the app.
+`--username mobile` returns the identical frozen answer.
+
+**A plausible-looking wrong answer is worse than an error**, and this is the
+second-order version of the pattern already catalogued in C6 and C11: not a
+layer that fails to report, but an OBSERVER that reports confidently about
+something it is not seeing. It cost real damage:
+
+- I asserted that instrument `70f23e40` existed in none of the three
+  containers, and treated that as a contradiction with `acquisition_autoload`
+  and `instrument_load ok=1`.
+- I proposed instrumenting `fetchAndInstall` as the way to resolve it. The
+  gap is real (C6) but the urgency was manufactured to explain a phantom.
+- I trusted the tool over the running system, having spent the session
+  insisting on the opposite.
+
+**Ground truth for the shared container is the plugin itself**: the count and
+the path the shell displays via the `getLibraryRoot` native function, plus
+`library=` in the log. Those agreed with each other and with reality throughout.
+
+**REOPENED as a result:** the Stage B trade-off C8 claimed to close. Moving the
+library into the group container does lose Finder and Files.app visibility
+(`FILE_SHARING_ENABLED` covers only the app's own `Documents`), and there is now
+NO established way to read it from a Mac. `InstrumentLibrary.cpp`'s comment
+currently cites the devicectl command as the answer; that citation is wrong.
+
+---
+
+# C15. FINDING — AUM died in AudioComponentCopyIcon after a reinstall under a live host
+
+    exception   EXC_BAD_ACCESS / SIGSEGV
+    subtype     KERN_INVALID_ADDRESS at 0x3eebc86a03a8eeec
+                (possible pointer authentication failure)
+    thread 0    com.apple.main-thread
+      0  AudioToolboxCore  AudioComponentMgr_NSExtension::requestIcon(...)
+      1  AudioToolboxCore  AudioComponentCopyIcon
+      2  AUM               ...
+      6  CoreFoundation    __CFNOTIFICATIONCENTER_IS_CALLING_OUT_TO_AN_OBSERVER__
+     10  Foundation        -[NSNotificationCenter postNotificationName:...]
+
+Report `AUM-2026-09-08-191128.ips`, two seconds after `acquisition_autoload`.
+Not our code, and nothing to do with the library path — but caused by our
+procedure: a new build was installed at 19:00 while AUM had been running since
+18:37, so it held `AudioComponent` references into a bundle that was replaced
+underneath it, and asked the system for the icon of a stale component on the
+next registration-changed notification.
+
+The appex log stopping at `measuring=true` was a CONSEQUENCE, not a cause: the
+extension was torn down with its host before the measurement could log.
+
+**Rule:** do not install under a live AU host on iOS. Quit the host first.
+`scripts/build.sh` already guards the desktop equivalent by warning when a
+running host predates the installed binary; iOS has no such check, and adding
+one is cheap.
+
+Also worth keeping: the PAC-failure signature reads like a use-after-free in
+our own code, and the first instinct was to suspect the change made minutes
+earlier. The backtrace cost one command and pointed somewhere else entirely.
+
+---
+
 # C14. RESOLVED — C11's cause was auth, and the whole acquisition chain works inside an app extension
 
 Signed in inside the AUv3's site view, the same button worked. Full trace from
@@ -431,16 +520,26 @@ Not fixed; recorded so the next person does not find it the hard way.
 
 # Open, in order
 
-1. **Stage B** — `root()` to the group container, `rootOrigin()` logged.
-   Migration of the four existing instruments deliberately NOT bundled with it.
-   Acceptance is now visible in the shell itself (C13), not only via devicectl.
-2. **The desktop signed-out test** (C11, C14). No phone, no build. Now scoped
-   to error-path legibility rather than to whether acquisition works at all.
-3. **Stage C** — the log filename (C3), now escalated by C12 to a live
-   multi-writer problem rather than a latent one.
-4. **Instrument the acquisition OUTCOME** (C6, C11). The attempt is already
-   logged; `fetchAndInstall` is not.
-5. **Stage D** — the ticket across the boundary (C2).
-6. **Re-measure voice caps at 256 frames** (C5), pre-registered.
-7. Unified chrome, against 736x242 in GarageBand and a tall view in AUM (C4,
+1. **Fix `InstrumentLibrary.cpp`'s comment**, which cites the devicectl
+   `appGroupDataContainer` command as the way to inspect the shared library.
+   C16 retracts that. One-line correction, and it should not sit wrong.
+2. **Find a reliable way to read the group container from a Mac**, or accept
+   that there isn't one and say so. C16 reopened this; the plugin's own display
+   is currently the only trustworthy view.
+3. **An iOS stale-host guard** (C15), mirroring what `scripts/build.sh` already
+   does on desktop.
+4. **Stage C** — the log filename (C3), escalated by C12 to a live multi-writer
+   problem rather than a latent one.
+5. **The desktop signed-out test** (C11, C14). No phone, no build. Scoped to
+   error-path legibility, and the user hit it as a dead button with no
+   feedback, which is a sharper framing than the one C14 gave it.
+6. **Instrument the acquisition OUTCOME** (C6, C11). Still a real gap — the
+   attempt is logged and `fetchAndInstall` is not — but demoted, because the
+   urgency C16 describes was manufactured to explain a phantom.
+7. **Stage D** — the ticket across the boundary (C2).
+8. **Re-measure voice caps at 256 frames** (C5), pre-registered.
+9. Unified chrome, against 736x242 in GarageBand and a tall view in AUM (C4,
    C13).
+10. **Migration**, if wanted: the app's four instruments and the extension's
+    five are still in their private containers, untouched and unlisted.
+    Deliberately its own decision.

@@ -68,10 +68,18 @@ ResolvedRoot resolveRoot()
     //
     // What the move to the group container COSTS is Finder and Files.app
     // visibility -- FILE_SHARING_ENABLED exposes only this app's own Documents.
-    // It is still reachable from a Mac with
+    //
+    // AND THERE IS CURRENTLY NO KNOWN SUBSTITUTE. An earlier version of this
+    // comment claimed the container could be read from a Mac with
     //   xcrun devicectl device info files --domain-type appGroupDataContainer
-    // so an instrument can still be inspected or pulled without attaching a
-    // debugger to a phone. See AUV3_IOS_FINDINGS.md C8.
+    // That was wrong in the worst way: the command SUCCEEDS and returns a view
+    // frozen at install time, so it reports a stale directory listing with no
+    // indication that it is stale. It was believed over the running system for
+    // most of a session. See AUV3_IOS_FINDINGS.md C16, which retracts C8.
+    //
+    // The only trustworthy view of the shared library is the plugin's own: the
+    // count and path the shell shows through the getLibraryRoot native
+    // function, and library= in the log.
     //
     // No "Synth.is" segment on either iOS branch, unlike macOS. There the
     // directory sits in a shared ~/Music alongside other vendors' folders and
