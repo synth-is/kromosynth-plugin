@@ -177,8 +177,17 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
                    .getChildFile ("stage0-" + hostName + ".log");
 
     logFile_.getParentDirectory().createDirectory();
+
+    // library= says which branch InstrumentLibrary::root() resolved through.
+    // On iOS "appGroup" is the shared container the app and the AUv3 both read;
+    // "privateContainer" means the App Group entitlement did NOT resolve and
+    // this process is looking at its own Documents -- which presents as an
+    // empty instrument list and is otherwise indistinguishable from a user who
+    // has downloaded nothing. Logged once here so the two are never the same
+    // silence.
     logEvent ("processor_constructed host=" + hostName
-              + " wrapper=" + juce::AudioProcessor::getWrapperTypeDescription (wrapperType));
+              + " wrapper=" + juce::AudioProcessor::getWrapperTypeDescription (wrapperType)
+              + " library=" + InstrumentLibrary::rootOriginName());
 
     // Two per second, and it writes nothing unless a MIDI counter moved. Slow
     // enough to be free, fast enough that a burst of notes is not averaged

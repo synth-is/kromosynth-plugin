@@ -136,11 +136,44 @@ public:
         Metadata meta;         // everything the sidecar said; mostly empty today
     };
 
+    /** Which branch root() resolved through.
+
+        Exists because the iOS App Group lookup FAILS SOFT.
+        File::getContainerForSecurityApplicationGroupIdentifier returns a
+        NON-EXISTENT File rather than throwing when the entitlement did not
+        resolve; scan() then returns early on `! base.isDirectory()`; and the
+        user sees an empty instrument list, which is indistinguishable from
+        having downloaded nothing.
+
+        Reported once at construction so that "the library is empty" and "the
+        entitlement did not resolve" are two different lines in the log rather
+        than the same silence.
+    */
+    enum class RootOrigin
+    {
+        appGroup,          // iOS, shared between the app and the AUv3
+        privateContainer,  // iOS fallback: this process's own Documents
+        userMusic          // macOS
+    };
+
     /** The root the scan walks. Created on demand, not at construction:
         making a directory as a side effect of asking where it is would be
         surprising.
     */
     static juce::File root();
+
+    /** Which branch root() took, for the same inputs.
+
+        root() and rootOrigin() share ONE resolver, so they cannot disagree. A
+        log line naming a path the scan is not actually using would be worse
+        than no log line at all.
+    */
+    static RootOrigin rootOrigin();
+
+    /** rootOrigin() as a log token. Kept next to the enum so the strings
+        cannot drift from the cases; a switch at the call site would.
+    */
+    static const char* rootOriginName();
 
     /** Rescans. Cheap, and called rather than cached so that an instrument
         dropped in by hand -- or by a download that finished a second ago --

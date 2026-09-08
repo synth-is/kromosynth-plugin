@@ -1,36 +1,119 @@
 #include "InstrumentLibrary.h"
 
-juce::File InstrumentLibrary::root()
+namespace
+{
+
+/** Resolves the library root and the REASON for it together.
+
+    One function rather than two, because root() and rootOrigin() must never
+    describe different things. A log line naming a path the scan is not using
+    would be worse than no log line at all -- the same failure as a probe
+    reporting "identical" for code that ran.
+*/
+struct ResolvedRoot
+{
+    juce::File dir;
+    InstrumentLibrary::RootOrigin origin;
+};
+
+ResolvedRoot resolveRoot()
 {
    #if JUCE_IOS
-    // ~/Music does not exist on iOS, and the app container's root is not
-    // writable, so the macOS path failed at createDirectory and surfaced as
-    // "Could not create the instrument library directory" -- ArtifactAcquisition
-    // .cpp:566. JUCE maps userMusicDirectory to "~/Music" on BOTH platforms
-    // (juce_Files_mac.mm:207), which is why the wrong answer came back silently
-    // rather than as a compile error.
+    // NOT userMusicDirectory, and this is the trap that produced a wrong answer
+    // silently once already: ~/Music does not exist on iOS and the app
+    // container's root is not writable, so the macOS path failed at
+    // createDirectory and surfaced as "Could not create the instrument library
+    // directory" -- ArtifactAcquisition.cpp:566. JUCE maps userMusicDirectory to
+    // "~/Music" on BOTH platforms (juce_Files_mac.mm:207), which is why it came
+    // back as a runtime failure rather than a compile error.
     //
-    // Documents is the right home here: writable, and with FILE_SHARING_ENABLED
-    // it is reachable over Finder and the Files app, so an instrument can be
-    // inspected or removed without attaching a debugger to a phone.
+    // THE APP GROUP CONTAINER, shared by the standalone app and the AUv3.
     //
-    // No "Synth.is" segment, unlike macOS. There the directory sits in a shared
-    // ~/Music alongside other vendors' folders and needs a name to own; here the
-    // container is already private to this app and the extra level would only
-    // deepen every path.
+    // An app extension gets its own container and cannot read the container
+    // app's Documents. Measured, not assumed: the AUv3 reported 0 instruments
+    // against the app's 4, and the shell displayed
+    // .../Containers/Data/PluginKitPlugin/<uuid>/Documents/Instruments --
+    // PluginKitPlugin, not Application. See docs/AUV3_IOS_FINDINGS.md C1 and C13.
     //
-    // THIS HAS TO MOVE WHEN THE AUv3 ARRIVES. An app extension gets its own
-    // container and cannot read this one, so both sides will have to go through
-    // containerURLForSecurityApplicationGroupIdentifier. This function is
-    // deliberately the only place that resolves the root, so that change lands
-    // in one edit.
-    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-               .getChildFile ("Instruments");
+    // No .mm translation unit needed: juce_core already wraps
+    // containerURLForSecurityApplicationGroupIdentifier. An earlier plan assumed
+    // this file would have to become Objective-C++ for this.
+    //
+    // KROMOSYNTH_APP_GROUP_ID comes from src/CMakeLists.txt, which is also what
+    // feeds APP_GROUP_IDS into the signed entitlement. ONE string with two
+    // consumers, so the entitlement and the lookup cannot drift apart. A
+    // mismatch would produce no error anywhere -- just an empty library.
+    const auto group = juce::File::getContainerForSecurityApplicationGroupIdentifier (
+                           KROMOSYNTH_APP_GROUP_ID);
+
+    // isDirectory(), not exists() and not a test for an empty path. JUCE returns
+    // a NON-EXISTENT File on failure rather than throwing, and iOS creates this
+    // container at INSTALL time whenever the entitlement resolves at all -- so
+    // "is it a directory" is exactly the question, and a false answer means the
+    // entitlement did not take.
+    if (group.isDirectory())
+        return { group.getChildFile ("Instruments"),
+                 InstrumentLibrary::RootOrigin::appGroup };
+
+    // FALLBACK, and deliberately a working one rather than the broken group
+    // path. Documents is where the library lived before the App Group:
+    // writable, and with FILE_SHARING_ENABLED reachable over Finder and the
+    // Files app.
+    //
+    // Returning the invalid group path instead would degrade to
+    // working-but-EMPTY, which reads to a user as "you have downloaded
+    // nothing". This degrades to working-but-PRIVATE, and the difference is
+    // visible two ways: rootOriginName() in the log, and the path the shell
+    // already displays through the getLibraryRoot native function.
+    //
+    // What the move to the group container COSTS is Finder and Files.app
+    // visibility -- FILE_SHARING_ENABLED exposes only this app's own Documents.
+    // It is still reachable from a Mac with
+    //   xcrun devicectl device info files --domain-type appGroupDataContainer
+    // so an instrument can still be inspected or pulled without attaching a
+    // debugger to a phone. See AUV3_IOS_FINDINGS.md C8.
+    //
+    // No "Synth.is" segment on either iOS branch, unlike macOS. There the
+    // directory sits in a shared ~/Music alongside other vendors' folders and
+    // needs a name to own; here the container is already private to this app or
+    // this app group, and the extra level would only deepen every path.
+    return { juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                 .getChildFile ("Instruments"),
+             InstrumentLibrary::RootOrigin::privateContainer };
    #else
-    return juce::File::getSpecialLocation (juce::File::userMusicDirectory)
-               .getChildFile ("Synth.is")
-               .getChildFile ("Instruments");
+    return { juce::File::getSpecialLocation (juce::File::userMusicDirectory)
+                 .getChildFile ("Synth.is")
+                 .getChildFile ("Instruments"),
+             InstrumentLibrary::RootOrigin::userMusic };
    #endif
+}
+
+} // namespace
+
+juce::File InstrumentLibrary::root()
+{
+    // NOT CACHED, and deliberately not a function-level static. That would
+    // freeze an early failure into every later call, which is how a wrong
+    // answer survives the fix for it. This is a container lookup, not a network
+    // round trip.
+    return resolveRoot().dir;
+}
+
+InstrumentLibrary::RootOrigin InstrumentLibrary::rootOrigin()
+{
+    return resolveRoot().origin;
+}
+
+const char* InstrumentLibrary::rootOriginName()
+{
+    switch (rootOrigin())
+    {
+        case RootOrigin::appGroup:         return "appGroup";
+        case RootOrigin::privateContainer: return "privateContainer";
+        case RootOrigin::userMusic:        return "userMusic";
+    }
+
+    return "unknown";
 }
 
 namespace
