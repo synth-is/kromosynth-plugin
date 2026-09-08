@@ -48,6 +48,71 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C14. RESOLVED — C11's cause was auth, and the whole acquisition chain works inside an app extension
+
+Signed in inside the AUv3's site view, the same button worked. Full trace from
+the appex log:
+
+    18:40:28.393  acquisition_sentinel synthis://acquire artifact=a3abb066-...
+                    name="Virtual Instrument #MBDZW" ticket=present
+    18:40:28.394  acquisition_queued a3abb066-...
+    18:40:28.561  acquisition_autoload id=a3abb066-...
+    18:40:28.566  instrument_load kind=faust ok=1 dsp="faustgenome_mtt0lnag_4"
+                    voices=1 gate=1 detail="loaded"
+    18:41:02.081  instrument_load kind=faust ok=1 dsp="faustgenome_mtt0lnag_4"
+                    voices=4 gate=1 detail="loaded"
+
+168 ms from sentinel to autoload. The container holds the full bundle:
+`instrument.json`, `instrument.wasm`, `measured.local.json`, `metadata.json`,
+`synthis.json`.
+
+**What this establishes, all of it inside an extension process:** ticket
+minting, sentinel navigation, the intercept, `fetchAndInstall`, directory
+creation in an appex container, the sidecar merge, wasm3 compilation, voice
+allocation, and autoload. None of it needed changing for AUv3.
+
+**The ticket redaction works live.** `ticket=present`, not the value. That is
+the property the intercept's ordering was built for — logged before the origin
+check and with the ticket stripped — and it is now confirmed on a device rather
+than argued from the code.
+
+**Noted, not chased:** the reload at 18:41:02 reports `voices=4` where the
+first load reported `voices=1`. Unexplained.
+
+## What remains, and it is much smaller than C11 implied
+
+Acquisition is not broken. The **signed-out path produces no visible
+feedback**. `acquireIntoPlugin` toasts on the 401 from the download-recording
+POST, and no toast was seen in AUM's tall view, so clipping is unlikely.
+
+One hypothesis excluded, and worth recording because the code had already
+guarded it: I expected the `show-login-modal` listener to be unmounted in the
+plugin, since the plugin suppresses the web app's chrome. It is not.
+`App.jsx:1450` is `if (hostDrawsChrome()) return <NavigationBar hideNav />;`
+with a comment stating that NavigationBar still mounts without its `<nav>`
+SO THAT those listeners survive. Someone anticipated this exact failure.
+`RegisterPromptModal`, `useRequireRegistered` and the event wiring all exist.
+
+So the fault is inside `SoundCard`'s handler, or in toast visibility. The
+desktop signed-out test (C11) remains the discriminator and still costs nothing.
+Priority drops: this is legibility on an error path, not a broken feature.
+
+## Stage B's acceptance improves because of this
+
+The AUv3 is now signed in, and its session persists in the appex's own
+WKWebView store. So after Stage B the test can be the **product requirement
+itself** rather than a proxy: acquire one instrument in the AUv3, and it must
+appear in the standalone app with no second sign-in and no acquisition of its
+own. Planting a directory with `devicectl device copy to` stays as the fallback
+if acquisition regresses.
+
+Revised container counts for that test: the app holds 4 in its private
+`Documents`, the extension now holds 1 in its own. Both are private, so both
+surfaces should read 0 immediately after Stage B, then 1 after a single
+acquisition. Nothing is deleted either way.
+
+---
+
 # C13. FINDING — the view size is host-specific, and the shell already shows the library root
 
 AUM gives the AUv3 a **tall, near-full-width view**. C4's `736x242` is a
@@ -369,8 +434,8 @@ Not fixed; recorded so the next person does not find it the hard way.
 1. **Stage B** — `root()` to the group container, `rootOrigin()` logged.
    Migration of the four existing instruments deliberately NOT bundled with it.
    Acceptance is now visible in the shell itself (C13), not only via devicectl.
-2. **The desktop signed-out test** (C11). No phone, no build, and it decides
-   whether the acquisition fault is AUv3-specific or global.
+2. **The desktop signed-out test** (C11, C14). No phone, no build. Now scoped
+   to error-path legibility rather than to whether acquisition works at all.
 3. **Stage C** — the log filename (C3), now escalated by C12 to a live
    multi-writer problem rather than a latent one.
 4. **Instrument the acquisition OUTCOME** (C6, C11). The attempt is already
