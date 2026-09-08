@@ -136,6 +136,29 @@ juce_add_plugin(KromosynthPlugin
     APP_GROUPS_ENABLED       ${KROMOSYNTH_IOS}
     APP_GROUP_IDS            "${KROMOSYNTH_APP_GROUP_ID}"
 
+    # BRANDING, and it is not only cosmetic on iOS: AudioComponentCopyIcon
+    # resolves an AUv3's icon to the CONTAINING APP's icon, so this one keyword
+    # supplies both the home-screen icon and our entry in AUM's and
+    # GarageBand's plug-in browsers -- which until now was blank while
+    # AudioTune and Drambo showed theirs.
+    #
+    # ONE keyword covers BOTH targets, exactly like the entitlement above:
+    # _juce_generate_icon (JUCEUtils.cmake:773) runs per format target but
+    # reads the SHARED-CODE target's properties, and on iOS invokes juceaide at
+    # CONFIGURE time to build an Images.xcassets containing an AppIcon set.
+    #
+    # A COMMITTED DERIVED FILE, not a path into the branding folder. Two
+    # reasons, and resources/make-appicon.py records both: the branding source
+    # lives under one developer's home directory and configure would fail on
+    # the hub and the Studio, and the source asset is a DISC with transparent
+    # corners while an iOS app icon must be an OPAQUE SQUARE -- alpha is
+    # rejected at submission, and iOS applies its own rounded mask, so a disc
+    # would have a circle cut out of a circle.
+    #
+    # juce_add_plugin runs _juce_make_absolute_and_check on this, so a missing
+    # or moved file fails at configure rather than silently producing no icon.
+    ICON_BIG "${CMAKE_CURRENT_LIST_DIR}/../resources/AppIcon-1024.png"
+
     # No microphone anywhere in the signal path. Declared explicitly because
     # leaving it unset makes JUCE emit the usage-description key on iOS, and an
     # app that asks for a microphone it never opens is one App Review question
