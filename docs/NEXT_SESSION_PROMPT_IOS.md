@@ -193,6 +193,16 @@ In rough order of value:
 
 ## 3a. AUv3: what is known before starting
 
+> **Stage A is DONE and this section is partly superseded — see
+> `AUV3_IOS_FINDINGS.md` (2026-09-08).** The App Group entitlement is live on
+> device, the AUv3 instantiates in GarageBand and receives MIDI, and the
+> extension bundle ID is `is.synth.plugin.pluginAUv3`. Three claims below were
+> measured; two were wrong. `APP_GROUP_IDS` is multi-value, not one-value (see
+> commit 58629e9). The `hostApplicationPath` log claim is false on iOS
+> (finding C3). "The App Group container is where that lands" does not hold for
+> the sign-in session (finding C2). The claims are left as written; the
+> corrections live in the findings document.
+
 **The first blocker is not code.** Today's Standalone build signs against
 `iOS Team Provisioning Profile: *`, a wildcard App ID. **App Groups cannot be
 attached to a wildcard App ID.** So before anything builds:
