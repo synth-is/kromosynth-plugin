@@ -39,12 +39,43 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ART="${KROMOSYNTH_GATE0_ARTEFACTS:-$HERE/../kromosynth-projects/Evolutionary Sound Discovery Platform/faust-genome-substrate/probe/out/gate0}"
 BASELINE="$HERE/docs/BASELINE_FAUSTENGINE_2026-09-07.txt"
 
-PROBE="$(find "$HERE/build" -name faust_probe -type f -perm +111 2>/dev/null | head -1)"
+# NEWEST, not first-found, and overridable with KROMOSYNTH_FAUST_PROBE.
+#
+# `head -1` picked whichever build directory find happened to reach first. On
+# 2026-09-09 that was build/wasm3, whose faust_probe can no longer even be
+# rebuilt -- tools/faust-probe/main.cpp wants wasmtime.h and that configuration
+# does not provide it -- so the build failed, the script ran the months-old
+# binary sitting next to it, and reported IDENTICAL for a source change it had
+# never compiled. A harness that cannot fail is worse than no harness.
+if [ -n "${KROMOSYNTH_FAUST_PROBE:-}" ]; then
+  PROBE="$KROMOSYNTH_FAUST_PROBE"
+else
+  PROBE=""
+  _found="$(find "$HERE/build" -name faust_probe -type f -perm +111 2>/dev/null)"
+  [ -n "$_found" ] && PROBE="$(ls -t $_found | head -1)"
+fi
 if [ -z "$PROBE" ]; then
   echo "faust_probe not built. Configure with -DKROMOSYNTH_BUILD_FAUST=ON and:" >&2
   echo "    cmake --build <builddir> --target faust_probe" >&2
   exit 1
 fi
+
+# REFUSE on a stale binary rather than silently testing the wrong code. Same
+# guard scripts/build.sh applies when a running host predates the installed
+# plug-in: a byte comparison only means something if the probe was built from
+# the source it claims to be testing.
+ENGINE="$HERE/src/FaustEngine.cpp"
+if [ -f "$ENGINE" ] && [ "$ENGINE" -nt "$PROBE" ]; then
+  echo "faust_probe is OLDER than src/FaustEngine.cpp -- refusing to compare." >&2
+  echo "    probe: $PROBE" >&2
+  echo "Rebuild it first:" >&2
+  echo "    cmake --build <builddir> --target faust_probe" >&2
+  exit 1
+fi
+
+# Printed, because which of several probes ran is part of the result. They differ
+# by wasm runtime as well as by vintage.
+echo "probe: $PROBE"
 if [ ! -d "$ART" ]; then
   echo "artefacts not found at: $ART" >&2
   echo "set KROMOSYNTH_GATE0_ARTEFACTS to the directory holding" >&2
