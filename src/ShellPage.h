@@ -419,17 +419,48 @@ function describe (e) {
 
   // A drone is a fine pad and a poor MIDI instrument, and it is worth knowing
   // before playing one rather than after.
+  //
+  // ALL THREE spelled out, not just drone. This used to expand 'drone' and
+  // print the other two as raw enum values, and 'silent' reads to a user as
+  // "this instrument makes no sound" when it means very nearly the opposite:
+  // the voice stops CLEANLY when the key is released, which is the
+  // best-behaved of the three. On 2026-09-09 three perfectly good instruments
+  // were reported as not responding to notes for exactly that reason, and
+  // their measurements showed healthy output at all three probe pitches.
+  //
+  // The wording is faustArtefact.js's, verbatim. That file's text summary
+  // already said all three correctly; only this badge did not. Two vocabularies
+  // for one classification is how they drift apart.
+  //
+  // The values are set in kromosynth-render/render-socket/src/faust-artefact.js
+  // from the tail level after note-off: tailRel < 0.001 is silent, < 0.032 is
+  // quiet, anything more is a drone. The final fallback prints an unrecognised
+  // value as-is rather than guessing a meaning for it.
   if (msd.articulation) {
-    bits.push(msd.articulation === 'drone'
-      ? { text: 'drone \u2014 sustains after note-off', warn: true }
-      : { text: msd.articulation });
+    bits.push(
+      msd.articulation === 'drone'  ? { text: 'drone \u2014 sustains after note-off', warn: true }
+    : msd.articulation === 'silent' ? { text: 'stops cleanly on note-off' }
+    : msd.articulation === 'quiet'  ? { text: 'decays quickly after note-off' }
+    : { text: msd.articulation });
   }
 
   // Only when the artefact says so. hasGate is a tri-state here: true, false,
   // and "the artefact never said", and the third must not read as the second.
   if (msd.hasGate === false) bits.push({ text: 'no gate', warn: true });
 
-  if (msd.capAt4x > 0) bits.push({ text: msd.capAt4x + ' voices' });
+  // "est." because this is NOT this device's number and must not read as one.
+  // capAt4x here comes from the artefact's sidecar, derived from an rtf measured
+  // on the render server's V8. faustArtefact.js states the problem exactly: "the
+  // V8/wasmtime ratio ranges 0.48-0.99 depending on the genome, so there is no
+  // factor to convert it", and its own text summary calls the figure
+  // "Indicative polyphony" and adds "Your machine will differ; the plugin
+  // measures its own."
+  //
+  // This badge said "8 voices" for a genome the phone measured at 2, with
+  // nothing to say the two numbers came from different machines. The live cap
+  // is shown in the status line under the list, where it belongs -- it exists
+  // only for the loaded instrument, so it cannot be shown per row.
+  if (msd.capAt4x > 0) bits.push({ text: 'est. ' + msd.capAt4x + ' voices' });
 
   // Regions, for sampled instruments only. It used to sit in the kind column,
   // which is now the one place both engines say something comparable, so the
