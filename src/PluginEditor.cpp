@@ -200,6 +200,14 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             // and "was never asked to render".
             o->setProperty ("renderPeak", st.renderPeak);
             o->setProperty ("renderBlocks", (juce::int64) st.renderBlocks);
+
+            // The deadline reading. Sent even when no Faust engine is loaded,
+            // because processBlock is timed regardless and "nothing loaded and
+            // still at 40%" is worth being able to see.
+            o->setProperty ("loadRecent", st.loadRecent);
+            o->setProperty ("loadMax", st.loadMax);
+            o->setProperty ("blocksOver", (juce::int64) st.blocksOver);
+            o->setProperty ("budgetMs", st.budgetMs);
             done (juce::var (o));
         })
         .withNativeFunction ("panic",

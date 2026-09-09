@@ -1020,7 +1020,32 @@ document.getElementById('testnote').addEventListener('click', async () => {
 setInterval(async () => {
   try {
     const st = await call('engineState');
-    if (!st || !st.faust) return;
+    if (!st) return;
+
+    // DEADLINE LOAD, built first and shown whether or not an engine is loaded,
+    // because processBlock is timed regardless and "nothing loaded and still at
+    // 40%" is a reading worth being able to see.
+    //
+    // Percent of the block period: 100% means the deadline was exactly
+    // consumed. This is the number every voice-cap decision has been a PROXY
+    // for, and the only one measured in the host at the block size the host
+    // actually chose -- capForRtf works from a free-running RTF whose own
+    // comment says it "is not a headroom claim about a busy DAW".
+    //
+    // OVER BUDGET counts blocks that used the whole period. It does not claim a
+    // dropout was heard: whether one is audible depends on the host's own
+    // buffering. It does mean we were the reason it could be.
+    const load = st.budgetMs > 0
+      ? 'load ' + Math.round(st.loadRecent * 100) + '% of ' + st.budgetMs.toFixed(2) + ' ms'
+        + (st.loadMax > 0 ? ' (peak ' + Math.round(st.loadMax * 100) + '%)' : '')
+        + (st.blocksOver > 0 ? ' \u00b7 ' + st.blocksOver + ' OVER BUDGET' : '')
+      : '';
+
+    if (!st.faust) {
+      document.getElementById('voices').textContent = load;
+      return;
+    }
+
     const stuck = st.notesOn - st.notesOff;
     document.getElementById('voices').textContent =
       st.activeVoices + ' voices \u00b7 on ' + st.notesOn + ' / off ' + st.notesOff
@@ -1040,6 +1065,7 @@ setInterval(async () => {
            ? ' \u00b7 rendered ' + st.renderPeak.toFixed(3)
              + ' peak over ' + st.renderBlocks + ' blocks'
            : ' \u00b7 not yet rendered')
+      + (load ? ' \u00b7 ' + load : '')
       + (stuck > 0 ? ' \u00b7 ' + stuck + ' UNRELEASED' : '')
       + (st.forcedStops > 0 ? ' \u00b7 ' + st.forcedStops + ' force-stopped' : '');
   } catch (e) { /* editor closing */ }

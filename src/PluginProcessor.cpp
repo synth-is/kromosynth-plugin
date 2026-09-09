@@ -419,6 +419,22 @@ double KromosynthAudioProcessor::getTailLengthSeconds() const
 KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() const
 {
     EngineState st;
+
+    // Engine independent, because a load figure is meaningful whatever is or is
+    // not loaded -- "nothing loaded and still at 40%" is worth seeing.
+    //
+    // exchange, not load: blockLoadRecent_ is a METER. Reading it clears it, so
+    // each poll reports the worst block since the previous poll rather than the
+    // worst since the plugin opened. const_cast because engineState() is const
+    // and this is the one field it deliberately mutates.
+    st.loadRecent = const_cast<std::atomic<float>&> (blockLoadRecent_)
+                        .exchange (0.0f, std::memory_order_relaxed);
+    st.loadMax    = blockLoadMax_.load (std::memory_order_relaxed);
+    st.blocksOver = blocksOverBudget_.load (std::memory_order_relaxed);
+
+    if (const auto rate = getSampleRate(); rate > 0.0)
+        st.budgetMs = (float) (1000.0 * getBlockSize() / rate);
+
    #if KROMOSYNTH_HAS_FAUST
     if (faust_ != nullptr && faust_->isLoaded())
     {
@@ -650,7 +666,48 @@ void KromosynthAudioProcessor::timerCallback()
               // the Faust path never had. Logged here rather than on teardown
               // because it fires when MIDI moves, which is when the question
               // "I played and heard nothing" actually gets asked.
-              + faustRenderStatsForLog());
+              + faustRenderStatsForLog()
+              // The deadline reading, alongside the MIDI that provoked it. load
+              // is a fraction of the block period: 0.08 is eight per cent of
+              // the time available, 1.0 is all of it. over= counts blocks that
+              // consumed the whole budget, and is only meaningful against
+              // blocks= above.
+              + " load_max=" + juce::String (blockLoadMax_.load (std::memory_order_relaxed), 3)
+              + " over=" + juce::String (blocksOverBudget_.load (std::memory_order_relaxed))
+              + " budget_ms=" + juce::String (getSampleRate() > 0.0
+                                              ? 1000.0 * getBlockSize() / getSampleRate()
+                                              : 0.0, 2));
+}
+
+void KromosynthAudioProcessor::recordBlockLoad (int frames, std::int64_t ticks) noexcept
+{
+    const auto rate = getSampleRate();
+
+    // Before prepareToPlay there is no deadline to be a fraction of. Silently
+    // skipping is right: a made-up denominator would produce a plausible number.
+    if (frames <= 0 || rate <= 0.0 || ticks < 0)
+        return;
+
+    const double elapsed = (double) ticks
+                         / (double) juce::Time::getHighResolutionTicksPerSecond();
+    const double budget  = (double) frames / rate;
+    const auto   load    = (float) (elapsed / budget);
+
+    // Single writer, so load-then-store rather than a compare-exchange loop.
+    // blockLoadRecent_ has a second writer -- engineState() clears it on read --
+    // and the race there can only lose one sample of a meter that refreshes
+    // twice a second. Worth stating rather than pretending it is airtight.
+    if (load > blockLoadRecent_.load (std::memory_order_relaxed))
+        blockLoadRecent_.store (load, std::memory_order_relaxed);
+
+    if (load > blockLoadMax_.load (std::memory_order_relaxed))
+        blockLoadMax_.store (load, std::memory_order_relaxed);
+
+    // >= 1.0 is the deadline consumed entirely. Whether the host actually
+    // glitched depends on its own buffering, so this counts OUR overruns and
+    // does not claim a dropout was heard.
+    if (load >= 1.0f)
+        blocksOverBudget_.fetch_add (1, std::memory_order_relaxed);
 }
 
 juce::String KromosynthAudioProcessor::faustRenderStatsForLog() const
@@ -1536,6 +1593,26 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // counter nobody reads in the same breath is free, and a fetch_add on an
     // uncontended atomic is not a syscall.
     blocksSeen_.fetch_add (1, std::memory_order_relaxed);
+
+    // RAII, because processBlock has THREE exits: the sampler path returns, the
+    // Faust path returns, and the no-engine path falls through to
+    // buffer.clear(). Timing at any one of them would silently omit the others,
+    // and the omitted case would be indistinguishable from a block that cost
+    // nothing.
+    //
+    // A local class inside a member function has the enclosing function's access
+    // rights, so this can call the private recorder without widening it.
+    struct BlockLoadTimer
+    {
+        KromosynthAudioProcessor& proc;
+        int frames;
+        std::int64_t startedAt = juce::Time::getHighResolutionTicks();
+
+        ~BlockLoadTimer()
+        {
+            proc.recordBlockLoad (frames, juce::Time::getHighResolutionTicks() - startedAt);
+        }
+    } blockLoadTimer { *this, buffer.getNumSamples() };
 
     // Diagnostic notes merged into the HOST's buffer, before any routing, so
     // they reach whichever engine is active by the same path a real note takes.

@@ -178,6 +178,15 @@ public:
                          // them.
                          float renderPeak = 0.0f;
                          std::uint64_t renderBlocks = 0;
+                         // Block cost as a fraction of the deadline. loadRecent
+                         // is a rolling maximum, cleared each time it is read,
+                         // so it behaves as a meter; loadMax and blocksOver are
+                         // cumulative. blocksOver is only interpretable next to
+                         // renderBlocks -- a count without a denominator says
+                         // nothing about frequency.
+                         float loadRecent = 0.0f, loadMax = 0.0f;
+                         std::uint64_t blocksOver = 0;
+                         float budgetMs = 0.0f;
                          int voiceCap = 0; bool faust = false; };
 
    #if KROMOSYNTH_HAS_SAMPLER
@@ -394,6 +403,37 @@ private:
     // independent on purpose -- see the increment for why the engine's own
     // counter cannot answer "is this host pulling audio at all".
     std::atomic<std::uint64_t> blocksSeen_ { 0 };
+
+    // BLOCK LOAD: wall time spent in processBlock as a fraction of the time the
+    // block represents. 1.0 means the deadline was exactly consumed.
+    //
+    // This is the quantity the whole voice-cap policy is a PROXY for, measured
+    // directly. capForRtf derives a cap from a free-running RTF and then divides
+    // by four, and the comment on that measurement says plainly that free
+    // running is not a headroom claim about a busy DAW -- d3321de measured a
+    // real block cadence costing 2.3-2.9x more, and that penalty varies BY
+    // GENOME, so the proxy misallocates in both directions and nothing
+    // distinguishes which genomes it under-serves.
+    //
+    // Measured here rather than in an engine because the host budgets
+    // processBlock, not our render call.
+    //
+    // Three numbers rather than one, because a single all-time maximum is
+    // useless: one cold-cache block after a resume would read as "over budget"
+    // for the rest of the session. The recent maximum is a live meter, and the
+    // over-budget COUNT against blocksSeen_ is what says whether an overrun was
+    // a one-off or a pattern -- 1 block in 100000 is noise, 500 is a problem.
+    std::atomic<float> blockLoadRecent_ { 0.0f };
+    std::atomic<float> blockLoadMax_ { 0.0f };
+    std::atomic<std::uint64_t> blocksOverBudget_ { 0 };
+
+    /** Records one block's cost. Audio thread, and nothing else calls it.
+
+        Two mach_absolute_time reads and at most three relaxed atomic writes.
+        No allocation, no locks, no syscall -- the same standard blocksSeen_ and
+        FaustEngine's peak_ already meet.
+    */
+    void recordBlockLoad (int frames, std::int64_t ticks) noexcept;
 
     // Notes injected by triggerTestNote, drained on the audio thread.
     //
