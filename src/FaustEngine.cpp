@@ -1116,9 +1116,32 @@ FaustEngine::Measured FaustEngine::measure()
 
     // Gate 0 §5 validated single-voice RTF as an exact predictor of polyphony,
     // 30/30, with a 1.05 per-voice penalty.
-    m.capAt4x = 1;
-    for (int v = 1; v <= 32; v *= 2)
-        if (m.rtf / (v * 1.05) >= 4.0) m.capAt4x = v;
+    //
+    // CONTINUOUS, not a power-of-two ladder. This used to step `v *= 2`, so it
+    // only ever tested 1, 2, 4, 8, 16, 32 -- making the cap the largest TESTED
+    // value that clears the bar rather than the largest value that clears it.
+    // Measured on an iPhone 13 Pro Max, 2026-09-08: rtf 14.7 and 15.8 both
+    // permit 3 voices and got 2; rtf 24.5 permits 5 and got 4. About a third of
+    // the available polyphony, lost at the top of every band.
+    //
+    // It landed hardest exactly where it hurts most. A genome that sustains
+    // after note-off never frees a voice, so with a cap of 2 it force-stopped 4
+    // of 11 held notes -- and 48 of the 120 archive genomes are drones.
+    //
+    // The intent was already recorded in NEXT_SESSION_PROMPT.2026-09-01.md:
+    // "the useful question is how many voices does each genome get on each
+    // platform -- a CONTINUOUS answer where the rule wants a pass/fail", and
+    // "derive the per-platform cap arithmetically". The ladder contradicted it.
+    //
+    // THE 4x BAR IS UNCHANGED, and deliberately. m.rtf above is measured
+    // free-running, and d3321de measured that holding a real block cadence
+    // costs 2.3-2.9x more, so 4x free-running is nearer 1.4-1.7x in a busy
+    // host. That is not a margin to spend. Whether the bar itself is right
+    // remains rt-sweep.mjs's question.
+    //
+    // rtf is non-negative and rtf < 4.2 floors to 0, which jlimit returns as 1
+    // -- the same answer the old loop's initialiser gave.
+    m.capAt4x = juce::jlimit (1, 32, (int) std::floor (m.rtf / 4.2));
 
     // Computed AFTER the timing is taken, so the FFT never lands inside the
     // measured interval and inflates the genome's apparent cost.
