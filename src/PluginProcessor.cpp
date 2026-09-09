@@ -431,6 +431,13 @@ KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() co
         st.rawPeak = faustRawPeak_;
         st.rtf = (float) faustRtf_;
         st.voiceCap = faustVoices_;
+
+        // FaustEngine has exposed both of these since §4.2 -- "a synth that
+        // renders silence never misses a deadline, never crashes, and passes
+        // every validator" -- and until now nothing called either accessor.
+        // The guard existed and reported to no one.
+        st.renderPeak = faust_->peakSinceReset();
+        st.renderBlocks = faust_->blocksRendered();
     }
    #endif
     return st;
@@ -634,7 +641,26 @@ void KromosynthAudioProcessor::timerCallback()
               // rather than delivered late.
               + " last_offset=" + juce::String (midiLastOffset_.load (std::memory_order_relaxed))
               + " max_per_block=" + juce::String (midiMaxPerBlock_.load (std::memory_order_relaxed))
-              + " blocks=" + juce::String (blocksSeen()));
+              + " blocks=" + juce::String (blocksSeen())
+              // The pair that makes silence readable. render_peak=0 with
+              // render_blocks large is an instrument that rendered NOTHING
+              // audible; render_blocks=0 is a host that never asked us to
+              // render. Without both, those are the same silence -- exactly the
+              // distinction sampler_render_stats was given for the sampler and
+              // the Faust path never had. Logged here rather than on teardown
+              // because it fires when MIDI moves, which is when the question
+              // "I played and heard nothing" actually gets asked.
+              + faustRenderStatsForLog());
+}
+
+juce::String KromosynthAudioProcessor::faustRenderStatsForLog() const
+{
+   #if KROMOSYNTH_HAS_FAUST
+    if (faust_ != nullptr && faust_->isLoaded())
+        return " render_peak=" + juce::String (faust_->peakSinceReset(), 6)
+             + " render_blocks=" + juce::String (faust_->blocksRendered());
+   #endif
+    return {};
 }
 
 KromosynthAudioProcessor::LoadOutcome

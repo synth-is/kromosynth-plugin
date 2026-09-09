@@ -193,6 +193,13 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             o->setProperty ("rawPeak", st.rawPeak);
             o->setProperty ("rtf", st.rtf);
             o->setProperty ("voiceCap", st.voiceCap);
+
+            // int64 through juce::var, because blocksRendered is uint64 and a
+            // long session would overflow an int. The peak is the field that
+            // matters: it is the difference between "rendered nothing audible"
+            // and "was never asked to render".
+            o->setProperty ("renderPeak", st.renderPeak);
+            o->setProperty ("renderBlocks", (juce::int64) st.renderBlocks);
             done (juce::var (o));
         })
         .withNativeFunction ("panic",

@@ -167,6 +167,17 @@ public:
     */
     struct EngineState { int notesOn = 0, notesOff = 0, activeVoices = 0, forcedStops = 0;
                          float trimDb = 0.0f, rawPeak = 0.0f, rtf = 0.0f;
+                         // LIVE peak, distinct from rawPeak above. rawPeak is
+                         // what the offline sweep measured; renderPeak is what
+                         // the audio thread has actually produced since the
+                         // instrument loaded. Without it, "I played and heard
+                         // nothing" cannot be told apart from "we rendered
+                         // signal and the host discarded it" -- which cost two
+                         // diagnoses on 2026-09-08 and -09. FaustEngine has
+                         // tracked both of these since §4.2 and nothing read
+                         // them.
+                         float renderPeak = 0.0f;
+                         std::uint64_t renderBlocks = 0;
                          int voiceCap = 0; bool faust = false; };
 
    #if KROMOSYNTH_HAS_SAMPLER
@@ -425,6 +436,15 @@ public:
         ever run, whatever is or is not loaded. */
     std::uint64_t blocksSeen() const noexcept
     { return blocksSeen_.load (std::memory_order_relaxed); }
+
+    /** " render_peak=... render_blocks=...", or "" when there is no Faust
+        engine loaded to ask.
+
+        Returns a fragment rather than logging, so it can be appended to the
+        midi_in line instead of adding a second line that would have to be
+        correlated with the first by timestamp.
+    */
+    juce::String faustRenderStatsForLog() const;
 
 private:
 

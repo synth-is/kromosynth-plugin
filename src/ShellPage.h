@@ -1028,6 +1028,18 @@ setInterval(async () => {
                           + st.rawPeak.toFixed(3) + ')' : '')
       + (st.voiceCap > 0 ? ' \u00b7 ' + st.voiceCap + '-voice cap (RTF '
                            + st.rtf.toFixed(0) + 'x)' : '')
+      // LIVE output, and the reason it is worth a line of its own. "rendered
+      // 0.000" after thousands of blocks is an instrument producing nothing
+      // audible; "rendered 0 blocks" is a host that never asked. Those look
+      // identical from the keyboard and the offline raw peak above cannot tell
+      // them apart, because it was measured before any of this.
+      //
+      // Shown only once the host has asked for at least one block, so an
+      // editor open before playback does not read as a failure.
+      + (st.renderBlocks > 0
+           ? ' \u00b7 rendered ' + st.renderPeak.toFixed(3)
+             + ' peak over ' + st.renderBlocks + ' blocks'
+           : ' \u00b7 not yet rendered')
       + (stuck > 0 ? ' \u00b7 ' + stuck + ' UNRELEASED' : '')
       + (st.forcedStops > 0 ? ' \u00b7 ' + st.forcedStops + ' force-stopped' : '');
   } catch (e) { /* editor closing */ }
