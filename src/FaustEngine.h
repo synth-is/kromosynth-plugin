@@ -235,7 +235,15 @@ public:
     {
         float  peak = 0.0f;      ///< loudest across the probed pitches
         double rtf = 0.0;        ///< single-voice real-time factor, free-running
-        int    capAt4x = 1;      ///< voices sustainable at the §3.3 headroom bar
+
+        /** Voices sustainable at the §3.3 headroom bar.
+
+            DERIVED from rtf by capForRtf, never measured independently. It is
+            carried here for convenience and MUST NOT be treated as data: see
+            capForRtf for why persisting it caused a policy change to have no
+            effect on anything already measured.
+        */
+        int    capAt4x = 1;
 
         /** Per-pitch peaks at c3, a4 and a5, which the overall peak hides.
 
@@ -344,6 +352,26 @@ public:
         optimistic for it.
     */
     static juce::String runtimeId();
+
+    /** The voice cap this build's POLICY derives from a single-voice RTF.
+
+        One formula, one place. It is called by measure() and by every path that
+        reads a persisted measurement, so a change here applies everywhere at
+        once rather than only to instruments measured after it.
+
+        That matters because it did not. capAt4x used to be PERSISTED alongside
+        rtf and read back verbatim, and the measurement cache validates runtime,
+        sample rate and module bytes -- "nothing the measurement depends on has
+        changed". A change to the FORMULA depends on none of those, so the cache
+        kept serving caps computed by the previous build. The 2026-09-09 change
+        from a power-of-two ladder to arithmetic was live in the binary and
+        invisible on the device for exactly this reason.
+
+        The distinction is measurement versus policy. rtf is what was observed
+        and is worth storing. The cap is what this build concludes from it, and
+        storing a conclusion freezes it.
+    */
+    static int capForRtf (double rtf) noexcept;
 
     /** Changes polyphony without recompiling the module. */
     bool setVoiceCount (int numVoices);

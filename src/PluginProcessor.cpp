@@ -1148,7 +1148,18 @@ std::optional<FaustEngine::Measured> KromosynthAudioProcessor::cachedMeasurement
     FaustEngine::Measured m;
     m.peak    = (float) (double) get ("peak");
     m.rtf     = (double) get ("rtf");
-    m.capAt4x = (int) get ("capAt4x");
+
+    // DERIVED, not read back. The stored "capAt4x" below is deliberately
+    // ignored: the cache validates runtime, sample rate and module bytes, so a
+    // change to the CAP FORMULA passes every one of those checks and the cache
+    // would keep serving caps computed by an older build. That is exactly what
+    // happened on 2026-09-09 -- the ladder-to-arithmetic change was live in the
+    // binary and had no visible effect on any already-measured instrument.
+    //
+    // rtf is the measurement and is worth trusting from disk. The cap is this
+    // build's conclusion from it, and a conclusion must not outlive the code
+    // that drew it.
+    m.capAt4x = FaustEngine::capForRtf (m.rtf);
     m.peakC3  = (float) (double) get ("peakC3");
     m.peakA4  = (float) (double) get ("peakA4");
     m.peakA5  = (float) (double) get ("peakA5");
@@ -1193,6 +1204,10 @@ void KromosynthAudioProcessor::writeCachedMeasurement (const FaustEngine::Measur
 
     o->setProperty ("peak", m.peak);
     o->setProperty ("rtf", m.rtf);
+
+    // Written for human readability only -- the read path above derives it from
+    // rtf and ignores this. Kept rather than dropped so a dumped cache file
+    // still says what the build that wrote it concluded.
     o->setProperty ("capAt4x", m.capAt4x);
     o->setProperty ("peakC3", m.peakC3);
     o->setProperty ("peakA4", m.peakA4);

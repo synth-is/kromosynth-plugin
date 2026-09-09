@@ -933,6 +933,14 @@ bool FaustEngine::setVoiceCount (int numVoices)
     return true;
 }
 
+int FaustEngine::capForRtf (double rtf) noexcept
+{
+    // rtf / (v * 1.05) >= 4.0 is exactly v <= rtf / 4.2, so no search is needed.
+    // rtf is non-negative, and rtf < 4.2 floors to 0 which jlimit returns as 1 --
+    // the same answer the old power-of-two loop's initialiser gave.
+    return juce::jlimit (1, 32, (int) std::floor (rtf / 4.2));
+}
+
 juce::String FaustEngine::runtimeId()
 {
     // Composed from the linked runtime's own version macro, so an upgrade
@@ -1141,7 +1149,7 @@ FaustEngine::Measured FaustEngine::measure()
     //
     // rtf is non-negative and rtf < 4.2 floors to 0, which jlimit returns as 1
     // -- the same answer the old loop's initialiser gave.
-    m.capAt4x = juce::jlimit (1, 32, (int) std::floor (m.rtf / 4.2));
+    m.capAt4x = capForRtf (m.rtf);
 
     // Computed AFTER the timing is taken, so the FFT never lands inside the
     // measured interval and inflates the genome's apparent cost.
