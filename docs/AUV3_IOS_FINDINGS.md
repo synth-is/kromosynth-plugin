@@ -48,6 +48,235 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C25. MY OWN RECURRING ERROR — inferring a missing mechanism from a missing log line
+
+Five times across two days I claimed a capability did not exist because I could
+not see its output, and five times the codebase had already built it:
+
+| claim | reality |
+|---|---|
+| acquisition is not instrumented | `acquisition_sentinel` logs on every path (C11) |
+| the `show-login-modal` listener is unmounted in the plugin | `App.jsx:1450` keeps `NavigationBar` mounted precisely so it survives |
+| the indicator cannot render a code-only `AUTH_REQUIRED` | it handles exactly that case |
+| there is no live Faust render peak | `FaustEngine::peakSinceReset()` since §4.2, called from nowhere |
+| the three surfaces offer different VI formats | one shared `InstrumentDownloadButton` with a dynamic format list |
+
+Plus two tooling errors of the same shape: `find -maxdepth` after `-name`, which
+BSD find ignores, and trusting devicectl's frozen container view over the
+running system (C16).
+
+The fix is procedural and cheap: **grep the source before asserting a thing does
+not exist.** Absence from a log means the layer does not report; absence from
+`grep` on one spelling means nothing at all. This entry exists because catching
+it in oneself is the only version that generalises, and five times is a pattern
+rather than a slip.
+
+---
+
+# C24. FINDING — branding ships, and the AU icon still does not appear
+
+`3e67906` added `ICON_BIG`. Both bundles carry a compiled `AppIcon`, 24 entries
+in each `Assets.car`, `CFBundleIconName` set in both plists.
+
+**The app icon works: it is on the home screen.** **The AU icon does not: AUM
+still draws its no-icon placeholder**, alongside two older Nemur builds that
+never had icons. A device reboot changed nothing, which eliminates the
+AudioComponent registry cache.
+
+So the app-icon pipeline is fine and the AU's icon RESOLUTION is not. The
+surviving hypothesis is the one flagged in `58629e9` and wrongly retired in C7:
+`AudioComponentBundle = is.synth.plugin.internal` in the appex's
+`NSExtensionAttributes`, naming a bundle JUCE only creates on Darwin
+(`juce_PlistOptions.cpp:377` unguarded, `JUCEUtils.cmake:1459-1471`). C7 retired
+it because the AU instantiated; instantiation and icon lookup are different code
+paths, and the crash in C15 was in `requestIcon`. **Over-generalising that
+retirement was a mistake.**
+
+Not a `juce_add_plugin` keyword, so fixing it means a post-build plist edit plus
+re-signing, or patching vendored JUCE. **Untested.** The experiment is one
+throwaway run: strip the key from the built appex plist, re-sign, install, look.
+Do that before building either fix.
+
+Submission item, unrelated: `juceaide` puts an alpha channel back into every
+generated slot even from an RGB source. Fully opaque (extrema 255..255), but
+Apple has historically rejected any alpha on an app icon. Whether `actool`
+strips it is untested.
+
+---
+
+# C23. FINDING — the per-note gain can clip the quiet end of the keyboard
+
+Reported as "a bit distorted in the upper half" on `#DDJ9Y`. Its measurement:
+
+    c3=1.1160  a4=0.6847  a5=0.2743  spread_db=12.2  trim=1.0000
+
+`trim=1.0` means **no attenuation was taken at all**, while the per-note gain
+equalises every key to the a4 reference. So notes near a5 are boosted by
+0.6847/0.2743 = **2.5x** with no headroom in hand, and any moment where the true
+signal exceeds the short measured peak clips.
+
+Mechanism only. The fix is a real decision -- clamp the boost, or take trim
+headroom when the spread is large -- and is deliberately not made here. Note
+that a 12.2 dB spread is mild for this substrate: `FaustEngine.h` records 29.1 dB
+on one archive genome.
+
+---
+
+# C22. THE DEADLINE METER — built, and its first numbers are NOT yet interpretable
+
+`dc5cb17` measures wall time in `processBlock` as a fraction of the block
+period, which is the quantity `capForRtf` has always been a proxy for. Prompted
+by Björn asking, of a reasoned claim that a 2-voice cap was right, "could we
+know?"
+
+First readings, AUM, 2026-09-09:
+
+    #FJF8V  3-voice cap (RTF 15x)  peak 142%  22 OVER BUDGET of 4065 blocks
+    #RPGW9  2-voice cap (RTF 12x)  peak 115%  12 OVER BUDGET of 4804 blocks
+    both:   load 0%  of 42.67 ms
+
+**AUM gives 2048-frame blocks.** With GarageBand's 256 and the standalone app's
+64, block sizes across our surfaces span **64 to 2048, a 32x range**. A cap
+derived once at 512 free-running was never going to fit that.
+
+**But the question is not answered, and the design is why:**
+
+- `load 0%` in both, because both were read with **0 voices** sounding. The
+  rolling meter clears on read, so a poll between notes reads zero. The reading
+  needed is with notes held.
+- 142% of 42.67 ms is a 60 ms block. At RTF 15 a block should cost ~2.8 ms per
+  voice, about 7%. So 60 ms is ~20x steady state and smells like a TRANSIENT --
+  the first block after `suspendProcessing(false)`, a page fault, a thermal
+  event. 22 in 4065 is 0.54%, consistent with a few one-offs.
+
+**So the counters cannot yet separate "this genome is too heavy" from "loading
+costs one late block", which is the whole question.** Next: log the first few
+over-budget blocks with timestamps so they can be correlated against
+`instrument_load` in the same file. Until then these numbers should not be used
+to argue either way about the cap.
+
+---
+
+# C21. FINDING — "you have to tap a new instrument to activate it" is a 9-second audio suspension
+
+Not autoload, which works. `#RPG29`, 2026-09-09:
+
+    11:12:47.406  acquisition_queued 2ac089a6
+    11:12:47.894  acquisition_autoload            <- 488 ms
+    11:12:47.916  instrument_load ok=1 detail="loaded"   <- 22 ms later
+    11:12:56.841  faust_measure rtf=11.7 measure_ms=8918.5   <- NINE SECONDS
+
+`PluginProcessor.cpp:712` suspends processing and, in its own words,
+"suspendProcessing(false) MOVES WITH THE MEASUREMENT" -- resuming earlier would
+open the barrier while the measuring render still owns the engine. Sound
+reasoning. But the comment was written against "the one to three seconds a
+105-second measurement takes", and on an A15 under wasm3 it is **8.9 seconds**.
+
+So: acquire, load in half a second, silence for nine seconds, user taps, the
+measurement is now cached (`measure_ms=0.0`) and it works instantly. The tap
+looks causal and is not.
+
+**And the shell already knows.** `measuring_` is an atomic "read by the editor"
+and the load outcome carries `measuring=true`. Nothing displays it. Cheapest
+honest fix is to say so while it happens; not suspending at all is
+architectural and risks the race the barrier exists to prevent.
+
+---
+
+# C20. THE BADGES SAID THINGS THEY DID NOT MEAN
+
+Two, same failure: an internal value printed as a user-facing fact. `28f0c12`.
+
+**`silent` is the BEST-behaved articulation, not a dead sound.** From
+`faust-artefact.js:282` the classification is tail level after note-off:
+`silent` < 0.001 stops cleanly, `quiet` < 0.032 decays quickly, else `drone`
+sustains. The badge expanded only `drone` and printed the other two raw. Three
+working instruments were reported as "not responding to notes" on 2026-09-09 for
+this reason; their measurements show healthy output at all three probe pitches.
+
+**"8 voices" was another machine's number.** `capAt4x` in the sidecar derives
+from an rtf measured on the render server's V8, and `faustArtefact.js` is
+explicit that "the V8/wasmtime ratio ranges 0.48-0.99 depending on the genome,
+so there is no factor to convert it". Its own text summary says "Indicative
+polyphony" and "Your machine will differ". The badge said `8 voices` for a genome
+the phone capped at 2. Now `est. 8 voices`.
+
+**Related, still open:** `faust-artefact.js:274-279` computes `capAt4x` with the
+same power-of-two ladder this repo removed in `b1e9cfb`, so new artefacts still
+carry ladder estimates and one policy has two disagreeing implementations.
+Different repo, deployed service.
+
+---
+
+# C19. THE VOICE CAP — a ladder, and a persisted conclusion
+
+Two commits, and the second is the interesting one.
+
+**`b1e9cfb`: the ladder.** `capAt4x` stepped `v *= 2`, testing only 1, 2, 4, 8,
+16, 32, so the cap was the largest TESTED value clearing the 4x bar rather than
+the largest value clearing it. rtf 14.7 and 15.8 both permit 3 and got 2; 24.5
+permits 5 and got 4. `rtf / (v * 1.05) >= 4.0` is exactly `v <= rtf / 4.2`, so
+no loop was needed. `NEXT_SESSION_PROMPT.2026-09-01.md` had already specified
+"a CONTINUOUS answer" and "derive the per-platform cap arithmetically" -- the
+ladder contradicted the recorded design.
+
+**`6e13c93`: and on the device the cap stayed at 2.** Because `capAt4x` was
+PERSISTED. The measurement cache validates "this runtime, this rate, these exact
+module bytes -- nothing the measurement depends on has changed", and a change to
+the FORMULA depends on none of those. Every check passed and the cache kept
+serving the previous build's conclusions.
+
+**The generalisable mistake is storing a conclusion beside the observation that
+produced it.** rtf is measured and worth trusting from disk; the cap is what
+this build concludes from rtf, and storing a conclusion freezes it. One formula
+now lives in `FaustEngine::capForRtf`, called by `measure()` and by every read
+path.
+
+Verified on the same cached measurement -- identical rtf, identical peaks,
+`measure_ms=0.0` both times:
+
+    10:30:52  faust_measure rtf=15.0 voices=2   (old build)
+    10:47:27  faust_measure rtf=15.0 voices=3   (new build)
+
+**The 4x bar is UNCHANGED and that is deliberate.** The rtf is free-running, and
+`d3321de` measured a real block cadence costing 2.3-2.9x more, so 4x
+free-running is nearer 1.4-1.7x in a host. Whether the bar is right is what C22
+exists to answer.
+
+---
+
+# C18. STAGE C, AND A HARNESS THAT COULD NOT FAIL
+
+**`0e8b93e`: concurrent log appends LOSE lines, not merely interleave them.**
+C12 understated it. `File::appendText` builds a `FileOutputStream`, and
+`FileOutputStream::openHandle` on POSIX opens `O_CREAT | O_RDWR` -- **no
+O_APPEND** (`juce_SharedCode_posix.h:581`) -- then seeks to the end and writes at
+the offset it just remembered. Two processes each seek to EOF and write THERE.
+
+Fixed: one `write(2)` on an `O_APPEND` descriptor, `stage0-<host>-<wrapper>.log`
+so Standalone and AUv3 no longer share a name, and `pid=` per line because the
+filename separates hosts and formats but not instances. Also fixes a latent
+desktop collision nobody had hit: our AU and VST3 in one host were one process
+writing one filename. Does NOT fix `STAGE0_FINDINGS.md:444` -- GarageBand and
+Logic both host AU in `AUHostingServiceXPC_arrow` -- but their lines now survive
+and are attributable.
+
+**`a7bd1bc`: and the null test reported IDENTICAL for code it had never
+compiled.** The probe build FAILED (`build/wasm3` cannot compile faust_probe --
+`main.cpp` wants `wasmtime.h` and that configuration lacks it) and the script ran
+the months-old binary beside it, reporting PASS 120 FAIL 0. `find | head -1`
+picked whichever of three probes find reached first, and nothing compared the
+binary's age to the source.
+
+Now: newest by mtime, overridable, **refuses** when `FaustEngine.cpp` is newer,
+and prints which probe ran. Negative control run before trusting it. The
+staleness guard is the same one `scripts/build.sh` already applies to a running
+host -- applied to the harness rather than the product.
+
+**A harness that cannot fail is worse than no harness, because it is believed.**
+
+---
+
 # C17. STAGE B VERIFIED — an instrument acquired in the AUv3 appears in the standalone app
 
 Acquired inside AUM, then Refresh in the standalone app revealed it there.
@@ -520,26 +749,30 @@ Not fixed; recorded so the next person does not find it the hard way.
 
 # Open, in order
 
-1. **Fix `InstrumentLibrary.cpp`'s comment**, which cites the devicectl
-   `appGroupDataContainer` command as the way to inspect the shared library.
-   C16 retracts that. One-line correction, and it should not sit wrong.
-2. **Find a reliable way to read the group container from a Mac**, or accept
-   that there isn't one and say so. C16 reopened this; the plugin's own display
-   is currently the only trustworthy view.
-3. **An iOS stale-host guard** (C15), mirroring what `scripts/build.sh` already
-   does on desktop.
-4. **Stage C** — the log filename (C3), escalated by C12 to a live multi-writer
-   problem rather than a latent one.
-5. **The desktop signed-out test** (C11, C14). No phone, no build. Scoped to
-   error-path legibility, and the user hit it as a dead button with no
-   feedback, which is a sharper framing than the one C14 gave it.
-6. **Instrument the acquisition OUTCOME** (C6, C11). Still a real gap — the
-   attempt is logged and `fetchAndInstall` is not — but demoted, because the
-   urgency C16 describes was manufactured to explain a phantom.
-7. **Stage D** — the ticket across the boundary (C2).
-8. **Re-measure voice caps at 256 frames** (C5), pre-registered.
-9. Unified chrome, against 736x242 in GarageBand and a tall view in AUM (C4,
-   C13).
-10. **Migration**, if wanted: the app's four instruments and the extension's
-    five are still in their private containers, untouched and unlisted.
-    Deliberately its own decision.
+1. **Make C22's numbers interpretable.** Log the first few over-budget blocks
+   with timestamps, so a transient can be told from a heavy genome by
+   correlating against `instrument_load` in the same file. Everything about the
+   cap waits on this.
+2. **The icon experiment** (C24). One throwaway run: strip
+   `AudioComponentBundle` from the built appex plist, re-sign, install, look.
+   Confirmed by elimination, untested, and it has now failed twice.
+3. **Say "measuring" while measuring** (C21). Nine seconds of silence that reads
+   as a broken instrument, and the shell already has the flag.
+4. **The unified chrome and the merged library.** Designed and committed as
+   `daw-plugin/WP_UNIFIED_CHROME.md`. §7.2 is the important part and outranks the
+   chrome it sits in: instruments bought on one machine are invisible on
+   another. Blocked on `WP_EXTRACTION_QUOTA.md` open question 7 -- the
+   re-download exemption keys on the takeout entry, so the merged list must
+   re-download the same entry and never re-render.
+5. **The envelope panel** (`WP_UNIFIED_CHROME.md` §9). Parameters already exist
+   as host parameters; the gap is presentational. Release is the polyphony
+   lever, so it belongs beside the voice count.
+6. **The per-note gain clipping decision** (C23). Clamp the boost, or take trim
+   headroom on a wide spread. A real choice, not a number to pick.
+7. **The render server's ladder** (C20), so one policy stops having two
+   implementations.
+8. **The desktop signed-out test** (C11, C14). Still costs nothing.
+9. **Stage D** — the ticket across the process boundary (C2).
+10. **A reliable way to read the group container from a Mac** (C16).
+11. **Migration**, if wanted: the app's four and the extension's several are
+    still in their private containers, untouched and unlisted.
