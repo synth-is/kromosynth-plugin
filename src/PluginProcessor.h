@@ -427,11 +427,85 @@ private:
     std::atomic<float> blockLoadMax_ { 0.0f };
     std::atomic<std::uint64_t> blocksOverBudget_ { 0 };
 
+    // WHICH blocks went over, and not merely how many.
+    //
+    // C22's first readings -- peak 142%, 22 OVER BUDGET of 4065 -- cannot tell a
+    // heavy genome from one late block after a load, and that is the entire
+    // question the meter was built to answer. A count says a thing happened.
+    // These say WHEN, at what block size, and with how many voices sounding,
+    // which is what makes an overrun correlatable against the instrument_load
+    // line sitting above it in the same file.
+    //
+    // FIRST N, not a ring. The transient hypothesis is specifically about the
+    // first blocks after the suspend barrier lifts on a load, so a ring would
+    // overwrite exactly the evidence being sought. Overruns past the last slot
+    // are still COUNTED, by overBudgetClaimed_, so the slots can never be
+    // mistaken for the total.
+    static constexpr int kOverBudgetCaptures = 8;
+
+    struct OverBudgetBlock
+    {
+        std::int64_t ticks = 0;         // getHighResolutionTicks at the overrun
+        float load = 0.0f;              // fraction of the deadline consumed
+        float elapsedMs = 0.0f;         // what the block actually cost
+        // What it had. RECORDED rather than recomputed at drain time: a host
+        // that changed sample rate or block size in between would otherwise
+        // make this line describe a deadline the block never had.
+        float budgetMs = 0.0f;
+        int frames = 0;                 // the host's block size, 64 to 2048
+        int voices = 0;                 // voices sounding at end of block
+        std::uint64_t blockIndex = 0;   // blocksSeen_ when it happened
+    };
+
+    // Plain and non-atomic, which is correct rather than sloppy: the audio
+    // thread writes each slot exactly once, and overBudgetPublished_ carries
+    // the release edge that makes the write visible to the drain.
+    OverBudgetBlock overBudgetBlocks_[kOverBudgetCaptures] {};
+
+    // claimed counts overruns SINCE THE LAST LOAD, including ones with no slot
+    // left to write into, so it is the denominator the slot lines are read
+    // against -- 3 of 3 is three one-offs, 3 of 800 is a pattern whose first
+    // three are merely all that was kept. published is how many slots are
+    // safely filled. drained is how many the timer has logged, and is
+    // message-thread only.
+    std::atomic<std::uint32_t> overBudgetClaimed_ { 0 };
+    std::atomic<std::uint32_t> overBudgetPublished_ { 0 };
+    std::uint32_t overBudgetDrained_ { 0 };
+
+    /** Logs any captured over-budget blocks not yet logged. Message thread.
+
+        Writes nothing when there is nothing new, so it can be called
+        unconditionally -- which it MUST be. The midi_in gate in timerCallback
+        returns early when no MIDI moved, and the transient this exists to
+        catch arrives with no MIDI at all.
+    */
+    void drainOverBudgetBlocks();
+
+    /** Discards the capture window and starts a new one, so that a captured
+        overrun always belongs to the instrument whose load preceded it.
+
+        Message thread, and ONLY from inside a suspendProcessing window: it
+        writes counters the audio thread also writes, and the barrier is what
+        makes that safe -- the same discipline engine_ and faust_ are held to.
+
+        Drains first, so rearming never silently loses a line. Does NOT touch
+        blocksOverBudget_, which is the plugin's lifetime count and is what the
+        status line and over= report.
+    */
+    void rearmOverBudgetCapture();
+
     /** Records one block's cost. Audio thread, and nothing else calls it.
 
-        Two mach_absolute_time reads and at most three relaxed atomic writes.
-        No allocation, no locks, no syscall -- the same standard blocksSeen_ and
-        FaustEngine's peak_ already meet.
+        Two mach_absolute_time reads and at most three relaxed atomic writes on
+        the ordinary path. No allocation, no locks, no syscall -- the same
+        standard blocksSeen_ and FaustEngine's peak_ already meet.
+
+        An OVER-BUDGET block costs more: a third clock read, a voice-count loop
+        over at most 32 idle flags, seven plain stores and one release
+        increment. Still allocation-free and lock-free, and the block that pays
+        it has already missed its deadline -- so the extra work lands where it
+        can no longer make the difference, which is the only reason it is
+        acceptable at all.
     */
     void recordBlockLoad (int frames, std::int64_t ticks) noexcept;
 

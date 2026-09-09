@@ -636,6 +636,15 @@ void KromosynthAudioProcessor::triggerTestNote (int midiNote, float velocity, in
 
 void KromosynthAudioProcessor::timerCallback()
 {
+    // FIRST, and deliberately ABOVE the MIDI gate below.
+    //
+    // The transient this was built to catch is the first block after the
+    // suspend barrier lifts on a load, and no MIDI moved to produce it -- so a
+    // drain placed after that early return would never fire for the one case it
+    // exists for. It writes nothing when there is nothing new, so calling it
+    // unconditionally does not reintroduce the idle chatter the gate prevents.
+    drainOverBudgetBlocks();
+
     const auto events = midiEvents_.load (std::memory_order_relaxed);
 
     // Nothing new since the last line. An idle plugin must not fill the log,
@@ -706,8 +715,118 @@ void KromosynthAudioProcessor::recordBlockLoad (int frames, std::int64_t ticks) 
     // >= 1.0 is the deadline consumed entirely. Whether the host actually
     // glitched depends on its own buffering, so this counts OUR overruns and
     // does not claim a dropout was heard.
-    if (load >= 1.0f)
-        blocksOverBudget_.fetch_add (1, std::memory_order_relaxed);
+    if (load < 1.0f)
+        return;
+
+    blocksOverBudget_.fetch_add (1, std::memory_order_relaxed);
+
+    // ── the circumstances, because the count alone answers nothing ──────────
+    //
+    // See kOverBudgetCaptures. claimed is incremented whether or not a slot is
+    // free, so a window with 200 overruns and 8 kept says 200 rather than
+    // looking like 8.
+    const auto slot = overBudgetClaimed_.fetch_add (1, std::memory_order_relaxed);
+
+    if (slot >= (std::uint32_t) kOverBudgetCaptures)
+        return;
+
+    auto& rec = overBudgetBlocks_[slot];
+    rec.ticks     = juce::Time::getHighResolutionTicks();
+    rec.load      = load;
+    rec.elapsedMs = (float) (elapsed * 1000.0);
+    rec.budgetMs  = (float) (budget * 1000.0);
+    rec.frames    = frames;
+
+    // Already incremented for THIS block at the top of processBlock, so this is
+    // one-based and includes the block being recorded. block=3 is the third
+    // block the host ever asked for, which is the reading that says "cold".
+    rec.blockIndex = blocksSeen_.load (std::memory_order_relaxed);
+
+    // THE discriminating field. 142% with nothing sounding is a transient by
+    // construction -- there was no synthesis to be slow. 142% with three voices
+    // is the genome, and that is a different decision.
+    //
+    // Safe from here: a bounded loop over at most 32 non-atomic idle flags
+    // whose only writer outside the suspend window is this thread. No
+    // allocation, no lock, no syscall.
+    //
+    // Sampled at the END of the block, because this runs from the RAII guard's
+    // destructor after the engine has returned. A voice that released partway
+    // through is therefore attributed to the lower count, which overstates
+    // per-voice cost -- the safe direction to be wrong in when the question is
+    // whether a cap is too generous.
+   #if KROMOSYNTH_HAS_FAUST
+    rec.voices = faust_ != nullptr ? faust_->activeVoices() : 0;
+   #endif
+
+    // LAST, and the only ordered write in the function. Everything above is a
+    // plain store into a slot no other thread reads until this publishes it.
+    overBudgetPublished_.fetch_add (1, std::memory_order_release);
+}
+
+void KromosynthAudioProcessor::drainOverBudgetBlocks()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    // acquire, pairing with the release in recordBlockLoad: every slot below
+    // this count is fully written and visible here.
+    const auto published = overBudgetPublished_.load (std::memory_order_acquire);
+
+    if (published == overBudgetDrained_)
+        return;
+
+    const auto claimed    = overBudgetClaimed_.load (std::memory_order_relaxed);
+    const auto nowTicks   = juce::Time::getHighResolutionTicks();
+    const auto perSecond  = (double) juce::Time::getHighResolutionTicksPerSecond();
+
+    for (auto i = overBudgetDrained_; i < published; ++i)
+    {
+        const auto& rec = overBudgetBlocks_[i];
+
+        // WALL CLOCK, reconstructed rather than taken now. The audio thread can
+        // read a monotonic tick count and cannot format a date, and this line is
+        // written up to 500 ms after the block it describes -- so a drain-time
+        // timestamp would place a load transient half a second away from the
+        // instrument_load line it belongs to, and break the one correlation
+        // this whole mechanism exists to make.
+        const auto ageMs = 1000.0 * (double) (nowTicks - rec.ticks) / perSecond;
+        const auto at    = juce::Time::getCurrentTime()
+                         - juce::RelativeTime::milliseconds ((juce::int64) ageMs);
+
+        // elapsed_ms as well as load, because 142% of 42.67 ms is a 60 ms block
+        // and no reader should have to do that multiplication to see it.
+        logEvent ("block_over_budget n=" + juce::String (i + 1)
+                  + "/" + juce::String (kOverBudgetCaptures)
+                  + " at=" + at.toISO8601 (true)
+                  + " age_ms=" + juce::String (ageMs, 1)
+                  + " load=" + juce::String (rec.load, 3)
+                  + " elapsed_ms=" + juce::String (rec.elapsedMs, 2)
+                  + " budget_ms=" + juce::String (rec.budgetMs, 2)
+                  + " frames=" + juce::String (rec.frames)
+                  + " block=" + juce::String (rec.blockIndex)
+                  + " voices=" + juce::String (rec.voices)
+                  + " over_since_load=" + juce::String (claimed));
+    }
+
+    overBudgetDrained_ = published;
+}
+
+void KromosynthAudioProcessor::rearmOverBudgetCapture()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    // BEFORE resetting, so an overrun captured under the previous instrument is
+    // logged rather than discarded by the load that replaced it. Same thread as
+    // the timer's own drain, so the two cannot interleave.
+    drainOverBudgetBlocks();
+
+    // Writing counters the audio thread also writes is safe ONLY because the
+    // caller holds the suspend window: processBlock cannot be in flight, and no
+    // later block can enter until the barrier lifts. The CriticalSection both
+    // sides take supplies the happens-before edge, so relaxed is enough here.
+    overBudgetClaimed_.store (0, std::memory_order_relaxed);
+    overBudgetPublished_.store (0, std::memory_order_relaxed);
+    overBudgetDrained_ = 0;
 }
 
 juce::String KromosynthAudioProcessor::faustRenderStatsForLog() const
@@ -767,6 +886,13 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         }
 
         suspendProcessing (true);
+
+        // The capture window is PER INSTRUMENT, which is what removes the
+        // arithmetic from the correlation: an over-budget line below this load's
+        // instrument_load line is about this instrument by construction, and
+        // over_since_load counts only its overruns. Inside the barrier because
+        // it writes counters the audio thread also writes.
+        rearmOverBudgetCapture();
 
         // Whatever was sounding must stop before the module bytes go away.
         // Without this, loading a second instrument to escape a stuck drone
@@ -946,6 +1072,13 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
     // the caller here is JavaScript on the message thread rather than the host
     // changes nothing about sfizz's requirement.
     suspendProcessing (true);
+
+    // Here as well as on the Faust path, so that over_since_load means what it
+    // says whichever engine loaded last. The voice-cap question is Faust's
+    // alone, but a sampler load that left the window open would make the next
+    // Faust reading span two instruments while still being labelled per-load --
+    // a field that lies is worse than one that is missing.
+    rearmOverBudgetCapture();
 
     const auto result = engine_->load (file);
 
