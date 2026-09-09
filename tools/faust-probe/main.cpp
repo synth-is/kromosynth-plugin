@@ -412,13 +412,40 @@ int runMeasure (const juce::File& wasmFile, const juce::File& jsonFile,
     const double rtf = elapsed > 0.0 ? 5.0 / elapsed : 0.0;
 
     // Gate 0 §5 validated single-voice RTF as an exact predictor of polyphony,
-    // 30/30, using a 1.05 per-voice penalty.
+    // 30/30, using a 1.05 per-voice penalty. That input is unchanged; only the
+    // derivation below is.
+    //
+    // ARITHMETIC, matching FaustEngine::capForRtf. This was a power-of-two
+    // ladder -- v stepping 1, 2, 4, 8, 16, 32, keeping the largest value that
+    // cleared the bar, which is the largest TESTED value and not the largest
+    // value. b1e9cfb removed that from capForRtf and MISSED THIS COPY, so the
+    // probe went on reporting ladder caps after the engine had stopped.
+    //
+    // Worth more than a tidy-up, because of what this tool is FOR. faust-probe
+    // produces the reference JSON that kromosynth-render's
+    // test-faust-artefact.js compares its own numbers against. The render
+    // server carried the identical ladder until 94e7471, so BOTH SIDES of that
+    // comparison were wrong in the same direction and therefore agreed --
+    // which reads as confirmation. A cross-check between two copies of one
+    // mistake cannot detect it.
+    //
+    // rtf / (v * 1.05) >= headroom is exactly v <= rtf / (1.05 * headroom), so
+    // there is nothing to search. The floor is 1 rather than the old `cap = 0`
+    // initialiser: below rtf 4.2 the loop fell through untouched and printed a
+    // cap of ZERO voices, which is not what the measurement said. It said the
+    // genome is too expensive for that headroom, and one voice is still the
+    // honest answer.
+    //
+    // STILL A SECOND IMPLEMENTATION, and deliberately left as one for now.
+    // capForRtf's own documentation claims "one formula, one place" and that is
+    // not yet true -- it hardcodes 4.2, so it answers headroom 4.0 only, while
+    // this tool also reports 2x. Collapsing them means giving capForRtf a
+    // headroom parameter, which touches FaustEngine.cpp and puts the change
+    // behind the 120/120 null test. The numbers agree from here; the structure
+    // is one commit behind, and that is recorded rather than glossed.
     const auto capAt = [rtf] (double headroom)
     {
-        int cap = 0;
-        for (int v = 1; v <= 32; v *= 2)
-            if (rtf / (v * 1.05) >= headroom) cap = v;
-        return cap;
+        return juce::jlimit (1, 32, (int) std::floor (rtf / (1.05 * headroom)));
     };
 
     const float trim = peakOverall > 0.0f ? kTargetPeak / peakOverall : 1.0f;
