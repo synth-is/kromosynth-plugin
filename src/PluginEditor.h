@@ -119,8 +119,17 @@ private:
     private:
         void timerCallback() override;
 
-        /** Renders the runner's snapshot into one line. */
+        /** Renders the runner's snapshot into one line.
+
+            `measuring` is passed in rather than read off the processor so this
+            stays a pure function of what it reports. It is not optional:
+            without it the bar says "ready in Library" throughout the eight to
+            nine seconds the keyboard measurement holds the audio path
+            suspended, which is not silence about the wait but a false claim
+            about it. See AUV3_IOS_FINDINGS C21.
+        */
         static juce::String describe (const std::vector<AcquisitionRunner::Status>&,
+                                      bool measuring,
                                       bool& anyFailed);
 
         KromosynthAudioProcessor& proc_;

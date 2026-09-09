@@ -1017,10 +1017,42 @@ document.getElementById('testnote').addEventListener('click', async () => {
 // notesOff means the host is not delivering note-offs, which is a completely
 // different problem from the engine holding a voice open, and the two are
 // indistinguishable by ear.
+//
+// Owns the status line WHILE MEASURING, and hands it back on the falling edge.
+// See the measuring block below.
+let wasMeasuring = false;
+
 setInterval(async () => {
   try {
     const st = await call('engineState');
     if (!st) return;
+
+    // NINE SECONDS OF SILENCE, said out loud. C21.
+    //
+    // An instrument acquired from the site autoloads in about half a second and
+    // the audio path is then suspended for as long as the keyboard measurement
+    // takes -- 8.9 s on an A15 under wasm3. A load started from THIS page
+    // already says so, in load(); an autoload never goes through that function,
+    // because the user was on the site when they pressed "Add to plugin". So
+    // the shell woke up, called refresh(), and wrote "Loaded" over a plugin
+    // that could not yet make a sound. The user then taps the instrument, hits
+    // the cached measurement, and learns that tapping is what activates it.
+    //
+    // Owning the line unconditionally while measuring is right rather than
+    // rude: there is no other true thing to say about the plugin during those
+    // seconds.
+    if (st.measuring) {
+      setStatus('Measuring levels across the keyboard\u2026 not playable yet');
+      wasMeasuring = true;
+    } else if (wasMeasuring) {
+      wasMeasuring = false;
+      // Handed back rather than left saying "Measuring" forever. Skipped when
+      // the list is busy: that means load() is mid-flight and does its own
+      // refresh and its own status write, and a second one here would
+      // duplicate a listInstruments call and race the message.
+      const listEl = document.getElementById('list');
+      if (!listEl || !listEl.classList.contains('busy')) refresh();
+    }
 
     // DEADLINE LOAD, built first and shown whether or not an engine is loaded,
     // because processBlock is timed regardless and "nothing loaded and still at

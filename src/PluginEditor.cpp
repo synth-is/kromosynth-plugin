@@ -208,6 +208,16 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             o->setProperty ("loadMax", st.loadMax);
             o->setProperty ("blocksOver", (juce::int64) st.blocksOver);
             o->setProperty ("budgetMs", st.budgetMs);
+
+            // On the POLL as well as on loadInstrument and getLoadState, and
+            // the difference is which loads it covers. Those two are answers to
+            // a load the SHELL started, and the shell's load() already says
+            // "measuring" for the whole of one. An AUTOLOAD after an
+            // acquisition goes through neither -- the completion handler calls
+            // loadPendingInstrument directly -- so nothing on this page knew a
+            // measurement was running, and refresh() then wrote "Loaded",
+            // which is true of the module and false of the sound. C21.
+            o->setProperty ("measuring", proc_.isMeasuring());
             done (juce::var (o));
         })
         .withNativeFunction ("panic",
@@ -786,12 +796,9 @@ void KromosynthAudioProcessorEditor::SiteBar::visibilityChanged()
 }
 
 juce::String KromosynthAudioProcessorEditor::SiteBar::describe (
-    const std::vector<AcquisitionRunner::Status>& jobs, bool& anyFailed)
+    const std::vector<AcquisitionRunner::Status>& jobs, bool measuring, bool& anyFailed)
 {
     anyFailed = false;
-
-    if (jobs.empty())
-        return {};
 
     int active = 0;
     double worstProgress = 1.0;
@@ -834,6 +841,33 @@ juce::String KromosynthAudioProcessorEditor::SiteBar::describe (
         }
     }
 
+    // MEASURING, and ahead of "ready" because "ready" is FALSE while it runs.
+    //
+    // C21. An acquired instrument autoloads in about half a second and the
+    // audio path is then suspended for as long as the keyboard measurement
+    // takes -- 8.9 s on an A15 under wasm3, against the "one to three seconds"
+    // the barrier's own comment was written for. This bar said "Installed -
+    // ready in Library" for every one of those seconds, so the user taps the
+    // instrument, finds the measurement cached and instant, and concludes the
+    // tap is what activated it. It is not, and the bar taught them that.
+    //
+    // Same failure as C20's badges: an internal state printed as a user-facing
+    // fact. Saying so costs nothing and is strictly more true than "ready".
+    //
+    // The wait itself is ARCHITECTURAL and this does not shorten it. Not
+    // suspending would open the barrier while the measuring render still owns
+    // the engine, which is the race that produced a raw peak of 23182060. This
+    // makes the wait legible and claims nothing about its length.
+    //
+    // BEFORE the empty-jobs case below, because the shell clears finished
+    // acquisitions and can do it while the site is still open -- leaving a
+    // measurement running with no job left to describe it.
+    if (measuring)
+        return "Measuring levels across the keyboard - a few seconds";
+
+    if (jobs.empty())
+        return {};
+
     return jobs.size() == 1
          ? juce::String ("Installed - ready in Library")
          : "Installed " + juce::String ((int) jobs.size()) + " instruments";
@@ -842,7 +876,8 @@ juce::String KromosynthAudioProcessorEditor::SiteBar::describe (
 void KromosynthAudioProcessorEditor::SiteBar::timerCallback()
 {
     bool failed = false;
-    const auto text = describe (proc_.acquisitions().snapshot(), failed);
+    const auto text = describe (proc_.acquisitions().snapshot(),
+                                proc_.isMeasuring(), failed);
 
     // Repaint only on change. This runs four times a second for as long as the
     // site is open, and a webview is already the expensive thing on screen.
