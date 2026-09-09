@@ -48,6 +48,71 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C26. THE VOICE-CAP LADDER HAD THREE IMPLEMENTATIONS, AND TWO OF THEM CHECKED EACH OTHER (2026-09-09)
+
+C20 closed with "one policy has two disagreeing implementations". It was three,
+and the third is the reason the disagreement was invisible.
+
+| where | state before | now |
+|---|---|---|
+| `FaustEngine::capForRtf` | arithmetic | unchanged (`b1e9cfb`) |
+| `kromosynth-render/.../faust-artefact.js:274` | ladder | arithmetic (`94e7471`) |
+| **`tools/faust-probe/main.cpp:416`** | **ladder** | arithmetic (`884e0c3`) |
+
+**`b1e9cfb` fixed the engine and missed the probe in the same repo.** Not found
+by reasoning about it -- found by grepping for `v *= 2` across every repo while
+looking for the render server's copy, which is the C25 lesson applied on
+purpose rather than in hindsight.
+
+**Why the third one matters more than the second.** `faust-probe` produces the
+reference JSON that `kromosynth-render/render-socket/src/test-faust-artefact.js`
+compares its own numbers against. Both sides carried the identical ladder, so
+both were wrong in the same direction and therefore **agreed** -- and an
+agreeing cross-check reads as confirmation. A comparison between two copies of
+one mistake cannot detect it. That test had been passing on this field the whole
+time.
+
+**Two defects in each ladder, not one.**
+
+    ladder    v stepped 1, 2, 4, 8, 16, 32, keeping the largest value clearing
+              the bar -- the largest TESTED value, not the largest value.
+              rtf 14.7 permits 3 and gave 2. rtf 100 permits 23 and gave 16.
+
+    cap = 0   the initialiser. Below rtf 4.2 the loop fell through untouched and
+              the cap was reported as ZERO voices -- an unplayable instrument.
+              The measurement did not say that. It said the genome is too
+              expensive for 4x headroom, and one voice is still the answer.
+
+The second is the one that would have been hardest to attribute later, because
+`applyFaustTrim` does `jlimit(1, 32, faustDeclared_.capAt4x)` and silently
+clamps a declared 0 up to 1. The wrong number was corrected downstream and
+therefore never surfaced as a disagreement between the two sides.
+
+**Verified rather than asserted.** `rtf / (v * 1.05) >= headroom` is exactly
+`v <= rtf / (1.05 * headroom)`. At headroom 4.0 that reduces to
+`floor(rtf / 4.2)` clamped to 1..32, which is `capForRtf`'s body character for
+character -- checked against it at 500001 points over rtf 0..5000, identical at
+every one. That check is what to rerun if either side moves again.
+
+**Written as `1.05 * headroom`, not folded to 4.2**, in both copies. `capAt2x`
+comes from the same lambda, and a folded constant would put two policies back
+inside one file.
+
+**STILL TWO IMPLEMENTATIONS, and deliberately.** `capForRtf`'s own
+documentation claims "one formula, one place" and that is not true yet: it
+hardcodes 4.2 and answers headroom 4.0 only, while the probe also reports 2x.
+Collapsing them means giving `capForRtf` a headroom parameter, which touches
+`FaustEngine.cpp` and sits behind the 120/120 null test. **The numbers agree
+across all three copies now; the structure is one commit behind.** Left for a
+session that can run the null test rather than done half-way.
+
+**Not deployed.** `94e7471` is committed and not pushed or restarted. Artefacts
+already on disk keep whatever cap they were minted with, and the plugin
+re-derives from stored `rtf` rather than reading `capAt4x` back (`b1e9cfb`), so
+installed instruments are unaffected either way.
+
+---
+
 # C25. MY OWN RECURRING ERROR — inferring a missing mechanism from a missing log line
 
 Five times across two days I claimed a capability did not exist because I could
@@ -749,30 +814,61 @@ Not fixed; recorded so the next person does not find it the hard way.
 
 # Open, in order
 
-1. **Make C22's numbers interpretable.** Log the first few over-budget blocks
-   with timestamps, so a transient can be told from a heavy genome by
-   correlating against `instrument_load` in the same file. Everything about the
-   cap waits on this.
-2. **The icon experiment** (C24). One throwaway run: strip
+1. **RUN C22's measurement.** The mechanism is built (`844223d`): eight
+   over-budget blocks captured per instrument load, each with a reconstructed
+   wall clock, elapsed and budget ms, block size, block index and **voices
+   sounding**. Nothing has been measured with it yet. One AUM run against
+   `#FJF8V` and `#RPGW9` -- the two genomes C22 already has numbers for -- with
+   notes HELD rather than polled between them, which is the other half of why
+   C22 read `load 0%`. Until that run exists the cap argument is where C22 left
+   it, and C22's numbers still must not be used to argue it either way.
+2. **Decide whether load-by-voice-count lands** (proposed, unwritten). Item 1
+   says which readings to *discard*; it does not produce the reading the cap
+   decision rests on. That is `loadByVoices_[0..32]` with a block count beside
+   each entry, so playing one note, two, three gives the intercept and the
+   per-voice slope directly -- which is what turns "the 4x bar is about right"
+   from an inference into a measurement. Needs a **pre-registered bar** before
+   the run: with cap voices held and transients excluded, below what is too
+   tight and above what is too loose. Choosing those after seeing the numbers is
+   how the 4x bar got its authority in the first place.
+3. **The icon experiment** (C24). One throwaway run: strip
    `AudioComponentBundle` from the built appex plist, re-sign, install, look.
-   Confirmed by elimination, untested, and it has now failed twice.
-3. **Say "measuring" while measuring** (C21). Nine seconds of silence that reads
-   as a broken instrument, and the shell already has the flag.
+   Confirmed by elimination, untested, and it has now failed twice. **The
+   verdict step needs eyes on AUM**, so it cannot be done unattended.
 4. **The unified chrome and the merged library.** Designed and committed as
    `daw-plugin/WP_UNIFIED_CHROME.md`. §7.2 is the important part and outranks the
    chrome it sits in: instruments bought on one machine are invisible on
    another. Blocked on `WP_EXTRACTION_QUOTA.md` open question 7 -- the
    re-download exemption keys on the takeout entry, so the merged list must
-   re-download the same entry and never re-render.
+   re-download the same entry and never re-render. **OQ7 is still open, unchanged
+   since 2026-09-07, and it is one decision: entry or sound.** Highest leverage
+   item on this list, and not code. §11's acceptance list already includes the
+   merged-library criterion, so building the chrome first means shipping against
+   a list known to be incomplete.
 5. **The envelope panel** (`WP_UNIFIED_CHROME.md` §9). Parameters already exist
    as host parameters; the gap is presentational. Release is the polyphony
    lever, so it belongs beside the voice count.
 6. **The per-note gain clipping decision** (C23). Clamp the boost, or take trim
    headroom on a wide spread. A real choice, not a number to pick.
-7. **The render server's ladder** (C20), so one policy stops having two
-   implementations.
-8. **The desktop signed-out test** (C11, C14). Still costs nothing.
-9. **Stage D** — the ticket across the process boundary (C2).
-10. **A reliable way to read the group container from a Mac** (C16).
-11. **Migration**, if wanted: the app's four and the extension's several are
+7. **Finish consolidating `capForRtf`** (C26). All three copies now agree
+   numerically; there are still two of them. Giving `capForRtf` a headroom
+   parameter touches `FaustEngine.cpp` and so sits behind the 120/120 null test.
+8. **Deploy `94e7471`** (C26), whenever the hub is next restarted. Committed in
+   `kromosynth-render`, not pushed. Nothing breaks until it ships; new artefacts
+   keep being minted with ladder caps until it does.
+9. **The desktop signed-out test** (C11, C14). Still costs nothing.
+10. **Stage D** — the ticket across the process boundary (C2).
+11. **A reliable way to read the group container from a Mac** (C16).
+12. **Migration**, if wanted: the app's four and the extension's several are
     still in their private containers, untouched and unlisted.
+
+# Closed 2026-09-09, after the prompt was rotated
+
+- **C22's counters are now interpretable** (`844223d`). Item 1 above is the run,
+  not the build.
+- **"Say measuring while measuring"** (`2f40a20`, C21). Both surfaces — and both
+  turned out to be making a positive false claim rather than staying silent:
+  `SiteBar` said "Installed - ready in Library" and the shell said "Loaded",
+  throughout the eight to nine seconds the audio path is suspended.
+- **The render server's ladder** (`94e7471`, C26), and the probe's, which was not
+  on this list because nobody knew it existed (`884e0c3`).
