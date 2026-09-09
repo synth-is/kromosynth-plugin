@@ -3,6 +3,14 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#if JUCE_MAC || JUCE_IOS || JUCE_LINUX
+ // For the atomic log append below. juce::File cannot express O_APPEND, which
+ // is the whole point -- see appendLineAtomically.
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <cstring>
+#endif
+
 #if KROMOSYNTH_HAS_SAMPLER
  #include "SamplerEngine.h"
 #endif
@@ -166,15 +174,35 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
         juce::ParameterID { "macro1", 1 }, "Macro 1",
         juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f }, 0.0f));
 
-    // One log file per host process, named after the host, because the whole
-    // Stage 0 question is "does this behave differently in Logic vs Live vs
-    // Reaper vs Bitwig" and mixing four hosts into one file loses that.
+    // One log file per host process AND per plug-in format.
+    //
+    // The host name alone was the original scheme, and it is not enough. Two
+    // reasons, the first measured on a device:
+    //
+    //   - ON iOS IT IDENTIFIES NOTHING. hostApplicationPath is
+    //     _NSGetExecutablePath() (juce_Files_mac.mm:238), the CURRENT process's
+    //     executable. On desktop the plug-in lives in the host's process, so
+    //     that is Logic or Live and the scheme works. An AUv3 runs in its OWN
+    //     process, so it resolves to our appex -- and getFileNameWithoutExtension()
+    //     then strips ".is" from "Synth.is", leaving "Synth". Every surface in
+    //     every host wrote one "stage0-Synth.log".
+    //     See AUV3_IOS_FINDINGS.md C3 and C12.
+    //
+    //   - ON DESKTOP IT COLLIDES TOO, latently and unnoticed: our AU and our
+    //     VST3 loaded into the same host are one process writing one filename.
+    //
+    // hostName is kept, because where the plug-in really does share the host's
+    // process it answers the actual Stage 0 question -- does this behave
+    // differently in Logic vs Live vs Reaper vs Bitwig. It is simply no longer
+    // trusted on its own.
     const auto hostName = juce::File::getSpecialLocation (
                               juce::File::hostApplicationPath).getFileNameWithoutExtension();
 
     logFile_ = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
                    .getChildFile ("Library/Logs/Synth.is")
-                   .getChildFile ("stage0-" + hostName + ".log");
+                   .getChildFile ("stage0-" + hostName + "-"
+                                  + juce::AudioProcessor::getWrapperTypeDescription (wrapperType)
+                                  + ".log");
 
     logFile_.getParentDirectory().createDirectory();
 
@@ -238,12 +266,80 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
     });
 }
 
+namespace
+{
+
+/** The current process id, for attributing lines that share a file. */
+int currentProcessId()
+{
+   #if JUCE_MAC || JUCE_IOS || JUCE_LINUX
+    return (int) ::getpid();
+   #else
+    return 0;
+   #endif
+}
+
+/** Appends one line with ONE write(2) on an O_APPEND descriptor.
+
+    NOT juce::File::appendText, which is what this used to be, and the
+    difference is correctness rather than speed. appendText builds a
+    FileOutputStream, and FileOutputStream::openHandle on POSIX opens with
+    O_CREAT | O_RDWR -- no O_APPEND (juce_SharedCode_posix.h:581) -- then seeks
+    to the end and writes at the offset it just remembered. Two processes each
+    seek to EOF and then write THERE, so the second can land on top of the
+    first's bytes. That is LOST lines, not merely interleaved ones.
+
+    Live rather than theoretical: an AUv3's container is per extension, not per
+    host, so every instance in every host shares one file and each instance is
+    its own process. AUV3_IOS_FINDINGS.md C12.
+
+    O_APPEND advances the offset and writes under the same inode lock, so one
+    short write lands whole.
+*/
+void appendLineAtomically (const juce::File& file, const juce::String& line)
+{
+   #if JUCE_MAC || JUCE_IOS || JUCE_LINUX
+    const auto* bytes = line.toRawUTF8();
+    const auto length = std::strlen (bytes);
+
+    // 4096 is the smallest PIPE_BUF any POSIX system promises. Past it a single
+    // write is no longer guaranteed to land whole, and a TORN line is worse
+    // than an out-of-order one -- it would be read as corruption rather than as
+    // concurrency. So long lines go back to JUCE and keep the race, which is at
+    // least the behaviour that was there before.
+    if (length > 0 && length < 4096)
+    {
+        const int fd = ::open (file.getFullPathName().toRawUTF8(),
+                               O_WRONLY | O_APPEND | O_CREAT, 0644);
+
+        if (fd >= 0)
+        {
+            const auto written = ::write (fd, bytes, length);
+            ::close (fd);
+            juce::ignoreUnused (written);
+            return;
+        }
+    }
+   #endif
+
+    file.appendText (line, false, false, "\n");
+}
+
+} // namespace
+
 void KromosynthAudioProcessor::logEvent (const juce::String& event)
 {
     // Timestamped, append-only, flushed per line. Slow and completely
     // acceptable: nothing here runs on the audio thread.
-    const auto line = juce::Time::getCurrentTime().toISO8601 (true) + "  " + event + "\n";
-    logFile_.appendText (line, false, false, "\n");
+    //
+    // pid= because the FILENAME now separates hosts and formats but not
+    // INSTANCES. Two AUv3s in one AUM session are two processes sharing one
+    // file, and without this a working instance and a failing one are
+    // indistinguishable once their lines interleave.
+    const auto line = juce::Time::getCurrentTime().toISO8601 (true)
+                      + "  pid=" + juce::String (currentProcessId())
+                      + "  " + event + "\n";
+    appendLineAtomically (logFile_, line);
     DBG ("[stage0] " << event);
 }
 
