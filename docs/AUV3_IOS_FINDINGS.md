@@ -48,6 +48,59 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C34. THE ICON: FIVE HYPOTHESES DEAD, AND I AM PUTTING IT DOWN (2026-09-10)
+
+Everything checkable from this side is checked. Recording the eliminations so
+the next attempt starts here rather than at the beginning.
+
+| hypothesis | test | result |
+|---|---|---|
+| icon assets missing or malformed | `assetutil` on both `Assets.car` | 30 renditions, `AppIcon`, idioms phone+pad, **scales 1, 2 and 3** |
+| plist icon keys wrong | `CFBundleIcons`, `~ipad`, `IconFiles`, `IconName` in both bundles | all present, names resolve to files on disk |
+| loose PNGs wrong size | `file` on the bundle's PNGs | 180x180 @3x, 120x120 @2x, 29x29 @1x |
+| `AudioComponentBundle` points at nothing | **stripped** (C28) | no change |
+| `AudioComponentBundle` should point at the app | **set to `is.synth.plugin`** | no change |
+| AudioComponent registry stale | app **deleted**, device rebooted, installed once | no change |
+| AUM cannot draw AU icons at all | Bjorn's plugin list | Moog and Space Mushrooms show icons — **so it is us** |
+
+**Both directions of the key are now dead**, which is worth more than either
+alone: the value is not involved, so JUCE writing it unguarded on Darwin is a
+real oddity and not this bug.
+
+**The registry is not stale.** The `NEMUR NET EHF.` and `NEMUR NET EHF` entries
+survived a full delete and reboot, so they are not leftovers of the current app
+— they are almost certainly separate older builds still installed under their
+own bundle ids. Which reframes the whole thing: **three different JUCE-built
+AUv3s of ours, over years, none with an icon**, while other vendors' show fine.
+That points at what JUCE emits for iOS rather than at anything specific to this
+build.
+
+## Why this stops here
+
+It is cosmetic, five hypotheses are dead, and a large part of one session went
+into it. Two queued items matter more: the Output and Release panel, which is
+the only fix for an AUDIBLE problem (C23, and the chord distortion observed on
+`#MKV9X`), and the navbar reuse question.
+
+## What the next attempt should do, and NOT do
+
+**Do not** propose another bundle hypothesis. The bundle is exhausted, and the
+pattern in C24 through C28 — five rounds of plausible elimination on the wrong
+layer — is the thing to avoid repeating.
+
+**Do** read what the system actually reports while AUM draws that row. Console.app
+with the device attached, filtered on AUM, at the moment the plugin browser
+opens. `log stream --device` is not supported by this macOS `log`, and
+libimobiledevice is not installed, so this needs the GUI or one `brew install`.
+It is the first diagnostic that would observe the failure rather than guess at
+it.
+
+**Also worth one look:** whether ANY JUCE-built AUv3 shows an icon in AUM. If
+none does, this is upstream and the answer is in JUCE's plist generation, not
+here.
+
+---
+
 # C33. THE ICON IS NOT IN THE BUNDLE — four sessions looked at the wrong layer (2026-09-10)
 
 **The control test nobody ran first.** Björn's AUM plugin list, photographed:
