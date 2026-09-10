@@ -61,7 +61,23 @@ fail() { printf '\nFAIL  %s\n' "$*" >&2; exit 1; }
 
 [ -d "$SRC_APP" ] || fail "nothing built — run ./scripts/ios-build.sh first."
 
-if [ "${1:-}" = "--revert" ]; then
+# ── which experiment ────────────────────────────────────────────────────────
+#
+# C28 STRIPPED the key and the icon stayed absent. That eliminated "the key
+# points somewhere dead, so remove it" and left the more interesting version
+# untried: JUCE sets AudioComponentBundle to <bundleID>.internal, a helper
+# bundle it creates on macOS ONLY (JUCEUtils.cmake:1459-1471). On iOS nothing
+# by that name is ever built, so the appex tells a host to look for its icon in
+# a bundle that does not exist -- and the containing app, two directories up,
+# is the bundle that actually holds one.
+#
+#   --strip   remove the key entirely (C28, done, no effect)
+#   --point   set it to the CONTAINING APP's bundle id (untried)
+#
+# Default is --point, because the strip has already been run.
+MODE="${1:---point}"
+
+if [ "$MODE" = "--revert" ]; then
   say "Revert is just reinstalling the untouched build:"
   say ""
   say "  ./scripts/ios-install.sh"
@@ -97,8 +113,20 @@ rm -rf "$WORK"
 mkdir -p "$WORK"
 cp -R "$SRC_APP" "$OUT_APP"
 
-/usr/libexec/PlistBuddy -c "Delete $KEY" "$OUT_APPEX/Info.plist"
-say "stripped the key from the copy"
+if [ "$MODE" = "--strip" ]; then
+  /usr/libexec/PlistBuddy -c "Delete $KEY" "$OUT_APPEX/Info.plist"
+  say "stripped the key from the copy (C28's experiment)"
+else
+  # The containing app's bundle id, read from the app rather than hardcoded so
+  # a rename cannot silently point this at the wrong thing.
+  APP_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+              "$OUT_APP/Info.plist" 2>/dev/null)"
+
+  [ -n "$APP_ID" ] || fail "could not read the containing app's bundle id."
+
+  /usr/libexec/PlistBuddy -c "Set $KEY $APP_ID" "$OUT_APPEX/Info.plist"
+  say "pointed the key at the containing app: $APP_ID"
+fi
 
 # Entitlements must survive the re-sign. Dropping them silently is how you get
 # a plugin that installs, launches, and quietly cannot see the App Group — an
