@@ -432,8 +432,21 @@ KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() co
     st.loadMax    = blockLoadMax_.load (std::memory_order_relaxed);
     st.blocksOver = blocksOverBudget_.load (std::memory_order_relaxed);
 
+    // THE FRAMES ACTUALLY DELIVERED, not getBlockSize().
+    //
+    // This read getBlockSize(), the host's declared maximum, while loadRecent
+    // and loadMax beside it are fractions of the ACTUAL block. AUM declares
+    // 2048 and delivers 256, so the editor showed "load 35% of 42.67 ms" for a
+    // block whose real deadline was 5.33 ms -- a correct percentage next to a
+    // denominator eight times too large, which is worse than either alone.
+    //
+    // Falls back to getBlockSize() only before the first block, where there is
+    // no measured figure and the declared one is the best available.
     if (const auto rate = getSampleRate(); rate > 0.0)
-        st.budgetMs = (float) (1000.0 * getBlockSize() / rate);
+    {
+        const auto frames = lastBlockFrames_.load (std::memory_order_relaxed);
+        st.budgetMs = (float) (1000.0 * (frames > 0 ? frames : getBlockSize()) / rate);
+    }
 
    #if KROMOSYNTH_HAS_FAUST
     if (faust_ != nullptr && faust_->isLoaded())
@@ -683,9 +696,16 @@ void KromosynthAudioProcessor::timerCallback()
               // blocks= above.
               + " load_max=" + juce::String (blockLoadMax_.load (std::memory_order_relaxed), 3)
               + " over=" + juce::String (blocksOverBudget_.load (std::memory_order_relaxed))
-              + " budget_ms=" + juce::String (getSampleRate() > 0.0
-                                              ? 1000.0 * getBlockSize() / getSampleRate()
-                                              : 0.0, 2));
+              // ACTUAL frames, not getBlockSize(). Same defect as engineState
+              // had: the host's declared maximum is not the deadline the load
+              // fraction was computed against. frames= is printed alongside so
+              // a host that varies its block size is visible rather than
+              // averaged into one misleading number.
+              + " frames=" + juce::String (lastBlockFrames_.load (std::memory_order_relaxed))
+              + " budget_ms=" + juce::String (
+                    (getSampleRate() > 0.0 && lastBlockFrames_.load (std::memory_order_relaxed) > 0)
+                        ? 1000.0 * lastBlockFrames_.load (std::memory_order_relaxed) / getSampleRate()
+                        : 0.0, 2));
 }
 
 void KromosynthAudioProcessor::recordBlockLoad (int frames, std::int64_t ticks) noexcept
@@ -701,6 +721,10 @@ void KromosynthAudioProcessor::recordBlockLoad (int frames, std::int64_t ticks) 
                          / (double) juce::Time::getHighResolutionTicksPerSecond();
     const double budget  = (double) frames / rate;
     const auto   load    = (float) (elapsed / budget);
+
+    // Published so the editor can report the deadline this load was measured
+    // against, rather than getBlockSize()'s declared maximum. See the member.
+    lastBlockFrames_.store (frames, std::memory_order_relaxed);
 
     // Single writer, so load-then-store rather than a compare-exchange loop.
     // blockLoadRecent_ has a second writer -- engineState() clears it on read --

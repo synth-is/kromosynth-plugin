@@ -427,6 +427,24 @@ private:
     std::atomic<float> blockLoadMax_ { 0.0f };
     std::atomic<std::uint64_t> blocksOverBudget_ { 0 };
 
+    // FRAMES THE HOST ACTUALLY DELIVERED, which is not getBlockSize().
+    //
+    // getBlockSize() is the host's DECLARED MAXIMUM, set at prepareToPlay. AUM
+    // declares 2048 and delivers 256, so the deadline reported to the editor
+    // was 42.67 ms while the deadline the recorder measured against was 5.33 ms
+    // -- an eightfold overstatement of the time available, sitting next to a
+    // correct percentage.
+    //
+    // Measured on device 2026-09-10: the footer read "load 35% of 42.67 ms"
+    // in the same second the log read "budget_ms=5.33 frames=256". Both came
+    // from this class. A reader multiplying 35% by 42.67 gets 14.9 ms for a
+    // block that took 1.87 ms.
+    //
+    // This is the other half of why C22's numbers could not be read, and the
+    // half nobody was looking for: the over-budget capture answered "which
+    // blocks", and the denominator beside them was wrong the whole time.
+    std::atomic<int> lastBlockFrames_ { 0 };
+
     // WHICH blocks went over, and not merely how many.
     //
     // C22's first readings -- peak 142%, 22 OVER BUDGET of 4065 -- cannot tell a
