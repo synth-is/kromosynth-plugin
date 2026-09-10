@@ -172,13 +172,29 @@ running_hosts="$(grep -iE "$AU_HOSTS" "$TMP/procs" || true)"
 if [ -n "$running_hosts" ]; then
   say ""
   say "$(printf '%s\n' "$running_hosts" | sed 's/^/      /')"
-  fail "an AU host is running. Refusing to install (C15 — this took AUM down).
+  fail "a known AU host has a LIVE PROCESS. Refusing to install (C15 — this
+      took AUM down).
 
-      Force-quit it on the phone and rerun. Force-quit, not just background:
-      a host that stays alive keeps the OLD plugin binary loaded for its whole
-      process lifetime, so even a successful install would not reach it."
+      It may be SUSPENDED rather than active, and it may not show in the app
+      switcher: iOS keeps an app's process alive after you leave it. Seen
+      2026-09-10, when MobileGarageBand held pid 9177 across fifteen minutes
+      while the phone appeared to have nothing running.
+
+      Suspended is still a refusal, deliberately. C15's crash was inside the
+      host's requestIcon during a plugin rescan, which replacing a bundle can
+      trigger in a host that is merely resident — so 'our plugin is not loaded
+      in it' is NOT the same as 'it is not at risk'. A narrower test keyed on
+      our own appex would be weaker, not smarter.
+
+      To clear it: OPEN the host, then swipe it away in the app switcher.
+      Opening it first is what makes the force-quit actually end the process.
+      A reboot also works.
+
+      Force-quit rather than background either way: a host that stays alive
+      keeps the OLD plugin binary loaded for its whole process lifetime, so
+      even a successful install would not reach it."
 fi
-ok "no AU host running ($proc_lines processes seen)"
+ok "no AU host process ($proc_lines processes seen)"
 
 # ── 4. Install ──────────────────────────────────────────────────────────────
 
