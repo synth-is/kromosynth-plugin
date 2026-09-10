@@ -4,6 +4,8 @@
 #include "ShellPage.h"
 #include "Palette.h"
 
+using namespace kromosynth;
+
 // For kSpectrogramBins/Frames. PluginProcessor.h only forward-declares
 // FaustEngine -- enough to hold a unique_ptr, not enough to read a static
 // constant off it.
@@ -614,8 +616,21 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     site_->interceptsSentinels = true;
     addChildComponent (*site_);
 
-    siteBar_ = std::make_unique<SiteBar> (proc_, [this] { showSite (false); });
-    addChildComponent (*siteBar_);
+    chromeBar_ = std::make_unique<ChromeBar> (
+        proc_,
+        [this] { showSite (false); },
+        [this] (const juce::String& path)
+        {
+            // Navigate FIRST, then raise the surface. The other order shows the
+            // page the user was last on for however long the load takes, which
+            // reads as the tap having gone to the wrong place.
+            navigateSiteTo (path);
+            showSite (true);
+        });
+
+    // Visible from the start, unlike the site bar it replaces. It is chrome
+    // now, so there is no state in which it should be absent.
+    addAndMakeVisible (*chromeBar_);
 #endif
 
     // Resizable with a wide range, because "does it resize" is a gate
@@ -706,18 +721,34 @@ void KromosynthAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
 
-    if (siteBar_ != nullptr)
-        siteBar_->setBounds (bounds.removeFromTop (siteVisible_ ? 32 : 0));
+    // PERSISTENT, and this one line is what "seamless instead of switching"
+    // means. It used to be `siteVisible_ ? 32 : 0`, so the bar existed only
+    // over the site and the shell covered the whole rectangle including the
+    // strip -- which made going between them a full-view mode change rather
+    // than a change of content. Now the chrome stays put and the surface swaps
+    // beneath it.
+    if (chromeBar_ != nullptr)
+        bounds.removeFromTop (ChromeBar::kBarHeight);
+
+    if (chromeBar_ != nullptr)
+        chromeBar_->setBounds (getLocalBounds().removeFromTop (ChromeBar::kBarHeight));
 
     if (site_ != nullptr)
         site_->setBounds (bounds);
 
     if (browser_ != nullptr)
     {
-        // The shell keeps the full area. It is the surface the inset
-        // diagnostic was measured against, and giving it a different rectangle
-        // depending on whether the site strip exists would invalidate that.
-        auto area = getLocalBounds();
+        // BOTH surfaces get the same rectangle now, which is the point.
+        //
+        // The shell used to take getLocalBounds() in full, and the reason
+        // recorded here was that a rectangle differing by whether the site
+        // strip exists would invalidate the section A3.1c inset diagnostic.
+        // That property is preserved rather than dropped: the bar is now
+        // unconditional, so the shell's rectangle is still the same on every
+        // call -- it is simply 50px shorter than it was. KROMOSYNTH_BROWSER_INSET
+        // is 0 in every configured build, so nothing is measuring against the
+        // old value today either.
+        auto area = bounds;
 
 #if KROMOSYNTH_BROWSER_INSET > 0
         // §A3.1c occlusion test — DIAGNOSTIC ONLY, not a kept workaround.
@@ -778,19 +809,77 @@ void KromosynthAudioProcessorEditor::StubContent::paint (juce::Graphics&) {}
 
 // ── Lifecycle hooks ──────────────────────────────────────────────────────────
 
-KromosynthAudioProcessorEditor::SiteBar::SiteBar (KromosynthAudioProcessor& proc,
-                                                  std::function<void()> onBack)
+KromosynthAudioProcessorEditor::ChromeBar::ChromeBar (
+    KromosynthAudioProcessor& proc,
+    std::function<void()> onShowShell,
+    std::function<void (const juce::String&)> onNavigate)
     : proc_ (proc)
 {
-    back.onClick = std::move (onBack);
-    addAndMakeVisible (back);
+    for (int i = 0; i < kNumDestinations; ++i)
+    {
+        const auto& d = kDestinations[i];
+        auto* b = tabs_.add (new juce::TextButton (d.label));
+
+        // FLAT. TextButton's default is a rounded filled control, and five of
+        // them in a row reads as a toolbar of unrelated actions rather than as
+        // one nav. The web app draws these as text that gains a filled pill
+        // only when current, so the colours are set per state below and the
+        // background of an inactive tab is transparent.
+        b->setColour (juce::TextButton::buttonColourId,   juce::Colours::transparentBlack);
+        b->setColour (juce::TextButton::buttonOnColourId, palette::colour (palette::accent));
+        b->setColour (juce::TextButton::textColourOffId,  palette::colour (palette::textSecondary));
+        b->setColour (juce::TextButton::textColourOnId,   palette::colour (palette::onAccent));
+        b->setClickingTogglesState (false);
+
+        // Path captured by value. An empty path is the plugin's own library and
+        // is not a navigation at all -- see Destination.
+        const juce::String path (d.path);
+
+        b->onClick = [path, onShowShell, onNavigate]
+        {
+            if (path.isEmpty())
+            {
+                if (onShowShell) onShowShell();
+            }
+            else if (onNavigate)
+            {
+                onNavigate (path);
+            }
+        };
+
+        addAndMakeVisible (b);
+    }
+
+    // Here rather than only in the shell, because a stuck drone is exactly the
+    // thing you cannot fix by navigating -- and until now the panic button was
+    // on the one surface a user leaves in order to browse.
+    panic.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    panic.setColour (juce::TextButton::textColourOffId, palette::colour (palette::textMuted));
+    panic.onClick = [&proc] { proc.panic(); };
+    addAndMakeVisible (panic);
+
+    setActiveDestination (0);
 }
 
-void KromosynthAudioProcessorEditor::SiteBar::visibilityChanged()
+void KromosynthAudioProcessorEditor::ChromeBar::setActiveDestination (int index)
 {
-    // Only poll while the user can see the result. While the site is hidden the
-    // shell is up and doing its own polling, and two timers asking the same
-    // question is one too many.
+    active_ = juce::jlimit (0, kNumDestinations - 1, index);
+
+    for (int i = 0; i < tabs_.size(); ++i)
+        tabs_[i]->setToggleState (i == active_, juce::dontSendNotification);
+
+    repaint();
+}
+
+void KromosynthAudioProcessorEditor::ChromeBar::visibilityChanged()
+{
+    // PERSISTENT NOW, so this is effectively always on -- kept because a host
+    // that hides the whole editor should still stop the timer.
+    //
+    // The old comment said two timers asking the same question is one too many,
+    // and that reasoning stood while this bar appeared only over the site. It
+    // is now above both surfaces, so it is the one thing that never stops
+    // reporting, and the shell's own polling is the duplicate rather than this.
     if (isVisible())
     {
         timerCallback();      // paint now rather than after one tick
@@ -802,7 +891,7 @@ void KromosynthAudioProcessorEditor::SiteBar::visibilityChanged()
     }
 }
 
-juce::String KromosynthAudioProcessorEditor::SiteBar::describe (
+juce::String KromosynthAudioProcessorEditor::ChromeBar::describe (
     const std::vector<AcquisitionRunner::Status>& jobs, bool measuring, bool& anyFailed)
 {
     anyFailed = false;
@@ -880,7 +969,7 @@ juce::String KromosynthAudioProcessorEditor::SiteBar::describe (
          : "Installed " + juce::String ((int) jobs.size()) + " instruments";
 }
 
-void KromosynthAudioProcessorEditor::SiteBar::timerCallback()
+void KromosynthAudioProcessorEditor::ChromeBar::timerCallback()
 {
     bool failed = false;
     const auto text = describe (proc_.acquisitions().snapshot(),
@@ -901,29 +990,75 @@ void KromosynthAudioProcessorEditor::SiteBar::timerCallback()
 // swallow the outcome and the other would never show it. Leaving finished
 // entries in place means this bar keeps reporting the last result until the
 // user returns to the library, which is the moment it stops being useful.
-void KromosynthAudioProcessorEditor::SiteBar::paint (juce::Graphics& g)
+void KromosynthAudioProcessorEditor::ChromeBar::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour::fromRGB (0x1a, 0x1d, 0x21));
+    // The web app's own chrome surface, from Palette.h. Was a hardcoded
+    // #1a1d21 -- GitHub-dark, matching nothing on the site.
+    g.fillAll (palette::colour (palette::surfaceBase));
+
+    g.setColour (palette::colour (palette::border));
+    g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
 
     if (status_.isEmpty())
         return;
 
-    g.setColour (failed_ ? juce::Colour::fromRGB (0xe0, 0x6c, 0x60)
-                         : juce::Colour::fromRGB (0x9a, 0xa4, 0xae));
-    g.setFont (juce::FontOptions (12.0f));
+    g.setColour (failed_ ? palette::colour (palette::danger)
+                         : palette::colour (palette::textMuted));
+    g.setFont (juce::FontOptions (11.0f));
 
-    auto area = getLocalBounds().withTrimmedLeft (120).reduced (6, 0);
-    g.drawText (status_, area, juce::Justification::centredLeft, true);
+    // The STATUS ROW, under the tabs rather than beside them. It used to sit to
+    // the right of one button; five tabs leave no room, and a sentence about a
+    // download is not competing with navigation for the same line.
+    g.drawText (status_, getLocalBounds().removeFromBottom (kStatusHeight).reduced (8, 0),
+                juce::Justification::centredLeft, true);
 }
 
-void KromosynthAudioProcessorEditor::SiteBar::resized()
+void KromosynthAudioProcessorEditor::ChromeBar::resized()
 {
-    back.setBounds (getLocalBounds().removeFromLeft (110).reduced (4));
+    auto bounds = getLocalBounds();
+
+    // Reserved unconditionally, so the tabs do not jump by a few pixels the
+    // moment a download starts. An empty status row is cheaper than a moving
+    // one.
+    bounds.removeFromBottom (kStatusHeight);
+
+    panic.setBounds (bounds.removeFromRight (54).reduced (2, 4));
+
+    // Equal widths, and they will truncate before they overlap. GarageBand's
+    // 736 x 242 letterbox is the acceptance viewport (section 8) and five tabs
+    // fit it; a narrower host truncates the labels rather than dropping any,
+    // because a nav that silently loses destinations is worse than one with
+    // short words.
+    const auto each = bounds.getWidth() / juce::jmax (1, tabs_.size());
+
+    for (auto* b : tabs_)
+        b->setBounds (bounds.removeFromLeft (each).reduced (1, 4));
 }
 
 void KromosynthAudioProcessorEditor::navigateSiteTo (const juce::String& path)
 {
     if (site_ == nullptr) return;
+
+    // WHICH TAB THIS IS, matched before the query string is appended. Recorded
+    // here rather than in the bar's own click handler because deep links reach
+    // this function too -- the tree button on an instrument row calls it with
+    // /tree and a run id, and the bar should light Biomes for that just as it
+    // would for a tap on the tab itself.
+    //
+    // startsWith rather than equality, since a deep link carries parameters and
+    // /tree?run=... is still Biomes. Index 0 is the library and is never a
+    // site path, so the search starts at 1.
+    for (int i = 1; i < ChromeBar::kNumDestinations; ++i)
+    {
+        if (path.startsWith (ChromeBar::kDestinations[i].path))
+        {
+            activeSiteDestination_ = i;
+            break;
+        }
+    }
+
+    if (chromeBar_ != nullptr)
+        chromeBar_->setActiveDestination (activeSiteDestination_);
 
     // Same ?client marker showSite appends, so the app still knows where it is
     // -- a deep link that lost it would render the browser presentation inside
@@ -940,7 +1075,7 @@ void KromosynthAudioProcessorEditor::navigateSiteTo (const juce::String& path)
 
 void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
 {
-    if (site_ == nullptr || siteBar_ == nullptr || browser_ == nullptr)
+    if (site_ == nullptr || chromeBar_ == nullptr || browser_ == nullptr)
         return;
 
     siteVisible_ = shouldShowSite;
@@ -964,8 +1099,12 @@ void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
     }
 
     site_->setVisible (shouldShowSite);
-    siteBar_->setVisible (shouldShowSite);
     browser_->setVisible (! shouldShowSite);
+
+    // The bar is NOT hidden with the site any more -- it is the persistent
+    // chrome and hiding it is what made this a mode switch. It only needs
+    // telling which destination now reads as current.
+    chromeBar_->setActiveDestination (shouldShowSite ? activeSiteDestination_ : 0);
 
     proc_.logEvent (shouldShowSite ? "surface_site" : "surface_shell");
 
