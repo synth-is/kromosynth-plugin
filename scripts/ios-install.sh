@@ -60,7 +60,15 @@ APPEX="$APP/PlugIns/Synth.is.appex"
 AU_HOSTS="${KROMOSYNTH_IOS_AU_HOSTS:-AUM\.app|GarageBand|Loopy|Cubasis|Drambo|BeatMaker|NanoStudio|Audiobus|apeMatrix|AudioKit}"
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+WAIT=0
+WAIT_TIMEOUT="${KROMOSYNTH_IOS_WAIT_TIMEOUT:-600}"
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --wait)    WAIT=1 ;;
+  esac
+done
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -142,6 +150,38 @@ fi
 say "ok    device is answering"
 
 # ── 3. THE GATE (C15) ───────────────────────────────────────────────────────
+
+# ── 3a. WAIT for the host to go away, if asked ──────────────────────────────
+#
+# The gate below needs the host closed; checking the result needs it open. So
+# every test cycle cost a round trip: refuse, ask, be told, retry. Four times
+# in one afternoon.
+#
+# --wait polls until no host process is resident, then falls through to the
+# real gate. Force-quit whenever you like and the install happens on its own.
+#
+# This does NOT relax the gate. It is a loop in front of it, and section 3
+# still runs and still refuses -- so a host that appears between the last poll
+# and the install is caught exactly as before.
+if [ "$WAIT" = 1 ]; then
+  waited=0
+  while [ "$waited" -lt "$WAIT_TIMEOUT" ]; do
+    rc=0
+    run_bounded "$QUERY_TIMEOUT" "$TMP/waitprocs" \
+      xcrun devicectl device info processes -d "$DEVICE" || rc=$?
+
+    if [ "$rc" = 0 ] && [ "$(grep -c . "$TMP/waitprocs")" -ge 5 ]; then
+      still="$(grep -v '/PlugIns/' "$TMP/waitprocs" | grep -iE "$AU_HOSTS" || true)"
+      [ -z "$still" ] && { say "ok    host closed after ${waited}s"; break; }
+      say "      waiting for the host to close (${waited}s)..."
+    else
+      say "      device not answering, retrying (${waited}s)..."
+    fi
+
+    sleep 5
+    waited=$(( waited + 5 ))
+  done
+fi
 
 rc=0
 run_bounded "$QUERY_TIMEOUT" "$TMP/procs" \
