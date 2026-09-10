@@ -61,12 +61,14 @@ AU_HOSTS="${KROMOSYNTH_IOS_AU_HOSTS:-AUM\.app|GarageBand|Loopy|Cubasis|Drambo|Be
 
 DRY_RUN=0
 WAIT=0
+FORCE=0
 WAIT_TIMEOUT="${KROMOSYNTH_IOS_WAIT_TIMEOUT:-600}"
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --wait)    WAIT=1 ;;
+    --force)   FORCE=1 ;;
   esac
 done
 
@@ -228,7 +230,24 @@ proc_lines="$(grep -c . "$TMP/procs" || true)"
 host_candidates="$(grep -v '/PlugIns/' "$TMP/procs" || true)"
 running_hosts="$(printf '%s\n' "$host_candidates" | grep -iE "$AU_HOSTS" || true)"
 
-if [ -n "$running_hosts" ]; then
+# ── OUR APPEX loaded in a host: the hazard C15 actually recorded ────────────
+#
+# Refused unconditionally and with no override. A host with our plugin loaded
+# and rendering is the situation that took AUM down, and replacing the bundle
+# underneath it is the thing not to do.
+our_appex="$(grep -iE "Synth\.is\.appex" "$TMP/procs" || true)"
+
+if [ -n "$our_appex" ]; then
+  say ""
+  say "$(printf '%s\n' "$our_appex" | sed 's/^/      /')"
+  fail "OUR PLUGIN IS LOADED in a host right now. Refusing, and there is no
+      override for this one: replacing the bundle under a running instance is
+      exactly what C15 recorded.
+
+      Close the plugin in the host, or force-quit the host."
+fi
+
+if [ -n "$running_hosts" ] && [ "$FORCE" != 1 ]; then
   say ""
   say "$(printf '%s\n' "$running_hosts" | sed 's/^/      /')"
   fail "a known AU host has a LIVE PROCESS. Refusing to install (C15 — this
@@ -251,7 +270,13 @@ if [ -n "$running_hosts" ]; then
 
       Force-quit rather than background either way: a host that stays alive
       keeps the OLD plugin binary loaded for its whole process lifetime, so
-      even a successful install would not reach it."
+      even a successful install would not reach it.
+
+      --force proceeds anyway. Our plugin is NOT loaded in anything (checked
+      above and refused separately if it were), so what you would be accepting
+      is the risk that a merely resident host rescans plugins during the
+      install. That is my inference from C15 rather than anything measured, and
+      it should not cost you a build you cannot otherwise get."
 fi
 ok "no AU host process ($proc_lines processes seen)"
 
