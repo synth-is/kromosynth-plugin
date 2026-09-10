@@ -173,7 +173,13 @@ if [ "$WAIT" = 1 ]; then
     if [ "$rc" = 0 ] && [ "$(grep -c . "$TMP/waitprocs")" -ge 5 ]; then
       still="$(grep -v '/PlugIns/' "$TMP/waitprocs" | grep -iE "$AU_HOSTS" || true)"
       [ -z "$still" ] && { say "ok    host closed after ${waited}s"; break; }
-      say "      waiting for the host to close (${waited}s)..."
+
+      # NAMED, because an unnamed wait sends people to close the wrong thing.
+      # Bjorn force-quit AUM and was told for five minutes that a host was
+      # still open; it was GarageBand, resident since a reboot, and the loop
+      # never said so.
+      say "      waiting for $(printf '%s\n' "$still" | sed 's|.*/||' \
+                                | sort -u | tr '\n' ' ')(${waited}s)..."
     else
       say "      device not answering, retrying (${waited}s)..."
     fi
