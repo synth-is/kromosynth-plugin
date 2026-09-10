@@ -48,6 +48,70 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C29. PRE-REGISTERED — the bar the voice cap will be judged against (2026-09-10)
+
+Registered **before** the run, and committed before the measurement exists. The
+mechanism is `cb5e763`; no `load_by_voices` reading has been taken on any
+device at the time of writing.
+
+## The rule
+
+With the instrument's own `cap` voices held, in steady state, reading the
+`load_by_voices` entry at `cap`:
+
+| `load@cap` | verdict |
+|---|---|
+| **> 0.85** | too generous — reduce the cap |
+| **0.55 – 0.85** | about right |
+| **< 0.55** | too tight — the 4x divisor is costing usable voices |
+
+**Conditions, all required:**
+
+- At least **200 blocks** at that voice count. This is why the table carries a
+  count beside every max; a max over three blocks is not a reading.
+- Warmup excluded, which the mechanism does structurally — the first 64 blocks
+  after a load never enter the table.
+- Read at the host's real delivered block size, **not** its declared maximum.
+  C27: AUM declares 2048 and delivers 256, so this is 5.33 ms and not 42.67.
+
+**And a separate condition that overrides the table entirely:** *any* blocks
+over budget at or below the cap in steady state means **too generous**,
+whatever the mean says. A cap that permits deadline misses is wrong even if the
+average looks comfortable.
+
+## Where 0.85 comes from, and what would move it
+
+15% held back for everything the measurement cannot see: other plugins in the
+session, the host's own mixing and summing, thermal throttling on a phone that
+has been rendering for a while. It is a judgement, not a derivation, and it is
+the number to argue about — the rest of the rule follows from it.
+
+## Honesty about how pre-registered this is
+
+**Not naive.** C27 was measured first, and it already shows sustained overruns
+at three voices on a three-voice cap. So the shape of the answer is known and
+this bar was chosen knowing it.
+
+What that costs and what it does not: the bar cannot be retrofitted to C27, and
+C27 must not be re-read as though it had been. It applies to the `load@cap`
+measurement, which is a **different instrument** — a per-voice-count maximum
+with a block count, not a capture of eight overruns. Registering it here, in
+advance of that run, is what stops the thresholds moving once the numbers
+arrive.
+
+**The prediction, so it can be wrong:** the current cap fails this bar, on the
+override clause rather than on the table. Written down because a bar nobody
+commits to in advance is not a bar.
+
+## If the rule fails
+
+A failed rule is the result. If `load@cap` lands in 0.55–0.85 *and* the override
+clause also fires, the two halves disagree and the bar was badly designed — that
+is a finding about the bar, to be recorded as one, not an excuse to pick
+whichever half gives the preferred answer.
+
+---
+
 # C28. ELIMINATED — the AU icon is not `AudioComponentBundle` either (2026-09-10)
 
 C24's surviving hypothesis is dead. **There is no shortlist left.**
