@@ -769,7 +769,11 @@ void KromosynthAudioProcessor::recordBlockLoad (int frames, std::int64_t ticks) 
     {
         const auto v = (size_t) juce::jlimit (0, kMaxTrackedVoices, voices);
 
-        blocksByVoices_[v].fetch_add (1, std::memory_order_relaxed);
+        // The distribution. C30: a maximum alone measures the scheduling tail,
+        // so the shape is what the cap has to be judged from.
+        const auto bucket = (size_t) juce::jlimit (0, kLoadBuckets - 1,
+                                                   (int) (load * 10.0f));
+        loadHistogram_[v][bucket].fetch_add (1, std::memory_order_relaxed);
 
         if (load > loadByVoices_[v].load (std::memory_order_relaxed))
             loadByVoices_[v].store (load, std::memory_order_relaxed);
@@ -892,7 +896,9 @@ void KromosynthAudioProcessor::rearmLoadMeasurement()
     for (int v = 0; v <= kMaxTrackedVoices; ++v)
     {
         loadByVoices_[(size_t) v].store (0.0f, std::memory_order_relaxed);
-        blocksByVoices_[(size_t) v].store (0, std::memory_order_relaxed);
+
+        for (int b = 0; b < kLoadBuckets; ++b)
+            loadHistogram_[(size_t) v][(size_t) b].store (0, std::memory_order_relaxed);
     }
 
     blocksSinceLoad_.store (0, std::memory_order_relaxed);
@@ -913,17 +919,60 @@ juce::String KromosynthAudioProcessor::loadByVoicesForLog() const
 
     for (int v = 0; v <= kMaxTrackedVoices; ++v)
     {
-        const auto blocks = blocksByVoices_[(size_t) v].load (std::memory_order_relaxed);
+        std::uint32_t counts[kLoadBuckets];
+        std::uint32_t n = 0;
 
-        // Never seen, so omitted. Printing 33 columns of 0:0.000/0 would bury
-        // the three that carry the answer.
-        if (blocks == 0)
+        for (int b = 0; b < kLoadBuckets; ++b)
+        {
+            counts[b] = loadHistogram_[(size_t) v][(size_t) b].load (std::memory_order_relaxed);
+            n += counts[b];
+        }
+
+        // Never seen, so omitted. 33 rows of zeroes would bury the three that
+        // carry the answer.
+        if (n == 0)
             continue;
 
-        out << (out.isEmpty() ? " load_by_voices=" : ",")
-            << juce::String (v) << ":"
-            << juce::String (loadByVoices_[(size_t) v].load (std::memory_order_relaxed), 3)
-            << "/" << juce::String (blocks);
+        // Bucket 10 is [1.0, 1.1), so 10 and above IS over budget. Derived
+        // from the same histogram rather than counted separately -- two
+        // counters for one quantity is two things that can disagree, which is
+        // how C26's ladder went unnoticed in three places at once.
+        std::uint32_t over = 0;
+        for (int b = 10; b < kLoadBuckets; ++b) over += counts[b];
+
+        // Reported as the bucket's LOWER EDGE, so p50=0.6 means the median
+        // block fell in [0.6, 0.7). Coarse and stated, rather than a
+        // false-precision interpolation across a bucket nothing was measured
+        // inside.
+        //
+        // CEIL, AND AT LEAST 1. Written first as (uint32)(q * n), which is 0
+        // whenever q * n < 1 -- and `seen >= 0` is true at the first bucket, so
+        // a single block at 0.8 reported p50=0.0. Wrong precisely when the
+        // sample is thin, which is the case the bar most needs to distrust.
+        // Caught by replicating this lambda outside the plugin and testing it
+        // against hand-worked cases, not by reading it.
+        const auto quantile = [&counts, n] (double q)
+        {
+            const auto target = juce::jmax ((std::uint32_t) 1,
+                                            (std::uint32_t) std::ceil (q * (double) n));
+            std::uint32_t seen = 0;
+
+            for (int b = 0; b < kLoadBuckets; ++b)
+            {
+                seen += counts[b];
+                if (seen >= target) return b;
+            }
+
+            return kLoadBuckets - 1;
+        };
+
+        out << (out.isEmpty() ? " load_dist=" : " ")
+            << juce::String (v) << ":n=" << juce::String ((int) n)
+            << ",p50=" << juce::String (quantile (0.50) / 10.0, 1)
+            << ",p99=" << juce::String (quantile (0.99) / 10.0, 1)
+            << ",max=" << juce::String (loadByVoices_[(size_t) v].load (
+                                            std::memory_order_relaxed), 3)
+            << ",over=" << juce::String ((int) over);
     }
 
     return out;

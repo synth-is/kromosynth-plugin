@@ -464,8 +464,49 @@ private:
     // cannot be checked at all.
     static constexpr int kMaxTrackedVoices = 32;
 
+    // A MAXIMUM AND A DISTRIBUTION, because C30 established the max alone is
+    // an OS measurement.
+    //
+    // C29's bar read `load@cap` off these maxima and was falsified: one block
+    // with voices=0 hit 1.572, so nothing-sounding consumed 157% of the
+    // deadline. A maximum over thousands of blocks samples the scheduling tail
+    // by construction, and two maxima drawn from that tail look nearly equal
+    // whatever the voice count -- which is exactly what the second instrument
+    // showed, 1.108 at one voice against 1.145 at two.
+    //
+    // The max is KEPT, not removed. Understood as "the worst this host did to
+    // us" it is worth having; it was only ever wrong as a measure of synthesis
+    // cost.
     std::atomic<float> loadByVoices_[kMaxTrackedVoices + 1] {};
-    std::atomic<std::uint32_t> blocksByVoices_[kMaxTrackedVoices + 1] {};
+
+    // WHY A HISTOGRAM RATHER THAN A RATE OR A PERCENTILE. They answer
+    // different questions and the cap needs both:
+    //
+    //   a RATE says how often the deadline is missed, which is what can
+    //   actually be heard -- a block at 90% sounds identical to one at 10%, so
+    //   only misses matter perceptually.
+    //
+    //   a PERCENTILE says how close to the edge the instrument normally sits,
+    //   which is what predicts fragility. One typically at 0.95 shows almost
+    //   no misses today and falls apart the moment a reverb is added or the
+    //   phone warms up.
+    //
+    // A rate alone cannot tell "comfortable at 0.3" from "knife-edge at 0.95"
+    // while both show zero misses, and that is precisely the case where a cap
+    // looks fine and is not. One histogram yields both, plus the noise floor
+    // from its own voices=0 row.
+    //
+    // 21 buckets of 0.1: bucket i is [i/10, (i+1)/10) for i in 0..19, and
+    // bucket 20 is 2.0 and above so nothing falls off the end. Percentiles are
+    // therefore reported to 0.1 resolution as a bucket's LOWER EDGE, which is
+    // coarse and sufficient -- the distinction that matters, 0.3 against 0.95,
+    // is six buckets wide.
+    //
+    // 33 x 21 uint32 is 2.8 KB and one fetch_add per block, cheaper than the
+    // activeVoices() loop already being paid beside it.
+    static constexpr int kLoadBuckets = 21;
+
+    std::atomic<std::uint32_t> loadHistogram_[kMaxTrackedVoices + 1][kLoadBuckets] {};
 
     // WARMUP, skipped rather than filtered out afterwards.
     //
@@ -482,11 +523,14 @@ private:
 
     std::atomic<std::uint64_t> blocksSinceLoad_ { 0 };
 
-    /** The load-by-voice table as one sparse log field. Message thread.
+    /** The load distribution per voice count, as one sparse log field.
 
-        Sparse on purpose: voice counts never seen are omitted rather than
-        printed as zero, so the line shows what was actually played instead of
-        33 columns of nothing.
+        Per voice count seen: n, p50, p99, max and the over-budget count. Every
+        one derived from the same histogram, so there is no second counter to
+        drift out of step with it -- n is the bucket sum and over is the sum of
+        buckets at 1.0 and above.
+
+        Message thread. Sparse: voice counts never seen are omitted.
     */
     juce::String loadByVoicesForLog() const;
 
