@@ -445,6 +445,59 @@ private:
     // blocks", and the denominator beside them was wrong the whole time.
     std::atomic<int> lastBlockFrames_ { 0 };
 
+    // ── load as a function of voice count ───────────────────────────────
+    //
+    // C27 answered whether an overrun is a load transient or the genome: the
+    // genome. It did NOT produce the number the cap decision rests on, and
+    // load_max cannot -- it is one figure with no voice count attached, so it
+    // says nothing about the slope.
+    //
+    // This does. One note, then two, then three gives the intercept and the
+    // per-voice cost directly, and where the line crosses 1.0 is the polyphony
+    // the host can actually sustain -- MEASURED, rather than inferred from a
+    // free-running RTF and a 4x divisor. Replacing that inference is the point.
+    //
+    // A COUNT BESIDE EVERY MAX, because a max drawn from three blocks and a max
+    // drawn from four thousand are different claims that look identical. The
+    // registered bar (AUV3_IOS_FINDINGS C29) requires at least 200 blocks at
+    // the cap before a reading counts, and without this column that condition
+    // cannot be checked at all.
+    static constexpr int kMaxTrackedVoices = 32;
+
+    std::atomic<float> loadByVoices_[kMaxTrackedVoices + 1] {};
+    std::atomic<std::uint32_t> blocksByVoices_[kMaxTrackedVoices + 1] {};
+
+    // WARMUP, skipped rather than filtered out afterwards.
+    //
+    // The bar excludes transients, and a maximum cannot exclude anything
+    // retroactively: one cold block at three voices would poison entry 3 for
+    // the rest of the session and there would be no way to tell. So the first
+    // blocks after a load never enter the table.
+    //
+    // 64 blocks is 0.34 s at AUM's 256-frame delivery. C27 measured the real
+    // overruns at block 7,400 and beyond, so this window drops the cold start
+    // WITHOUT dropping anything the measurement is about -- which is the test a
+    // warmup window has to pass to be honest rather than merely convenient.
+    static constexpr std::uint64_t kLoadTableWarmupBlocks = 64;
+
+    std::atomic<std::uint64_t> blocksSinceLoad_ { 0 };
+
+    /** The load-by-voice table as one sparse log field. Message thread.
+
+        Sparse on purpose: voice counts never seen are omitted rather than
+        printed as zero, so the line shows what was actually played instead of
+        33 columns of nothing.
+    */
+    juce::String loadByVoicesForLog() const;
+
+    /** " cap=N" for the log, or empty when no Faust instrument is loaded.
+
+        The cap belongs beside the table rather than only on the instrument_load
+        line: the bar is a statement about the entry AT the cap, so a reader
+        needs both without scrolling to find which load this was.
+    */
+    juce::String faustVoiceCapForLog() const;
+
     // WHICH blocks went over, and not merely how many.
     //
     // C22's first readings -- peak 142%, 22 OVER BUDGET of 4065 -- cannot tell a
@@ -499,8 +552,13 @@ private:
     */
     void drainOverBudgetBlocks();
 
-    /** Discards the capture window and starts a new one, so that a captured
-        overrun always belongs to the instrument whose load preceded it.
+    /** Discards the measurement window and starts a new one, so that every
+        reading belongs to the instrument whose load preceded it.
+
+        Covers BOTH the over-budget captures and the load-by-voice table. They
+        rearm together because they answer one question between them and a table
+        spanning two instruments would silently average a cheap genome with an
+        expensive one.
 
         Message thread, and ONLY from inside a suspendProcessing window: it
         writes counters the audio thread also writes, and the barrier is what
@@ -510,7 +568,7 @@ private:
         blocksOverBudget_, which is the plugin's lifetime count and is what the
         status line and over= report.
     */
-    void rearmOverBudgetCapture();
+    void rearmLoadMeasurement();
 
     /** Records one block's cost. Audio thread, and nothing else calls it.
 

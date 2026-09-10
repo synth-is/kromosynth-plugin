@@ -705,7 +705,17 @@ void KromosynthAudioProcessor::timerCallback()
               + " budget_ms=" + juce::String (
                     (getSampleRate() > 0.0 && lastBlockFrames_.load (std::memory_order_relaxed) > 0)
                         ? 1000.0 * lastBlockFrames_.load (std::memory_order_relaxed) / getSampleRate()
-                        : 0.0, 2));
+                        : 0.0, 2)
+              // THE CAP QUESTION, on one line. cap= is what the plugin decided
+              // the polyphony should be; load_by_voices= is what each voice
+              // count actually cost. The bar in C29 is applied by reading the
+              // entry at cap= and checking its block count is at least 200.
+              //
+              // Here rather than in a new event, because this line already
+              // fires exactly when MIDI moves -- which is when voices are
+              // sounding and the table has anything to say.
+              + faustVoiceCapForLog()
+              + loadByVoicesForLog());
 }
 
 void KromosynthAudioProcessor::recordBlockLoad (int frames, std::int64_t ticks) noexcept
@@ -735,6 +745,35 @@ void KromosynthAudioProcessor::recordBlockLoad (int frames, std::int64_t ticks) 
 
     if (load > blockLoadMax_.load (std::memory_order_relaxed))
         blockLoadMax_.store (load, std::memory_order_relaxed);
+
+    // ── load at THIS voice count ────────────────────────────────────
+    //
+    // The voice count is now read on EVERY block, not only on overruns, and
+    // that is a new cost on the ordinary path -- so it is stated rather than
+    // buried. A bounded loop over at most 32 non-atomic idle flags, about 190
+    // times a second at AUM's 5.33 ms delivery. No allocation, no lock, no
+    // syscall, and this thread is the only writer of those flags outside the
+    // suspend window.
+    //
+    // Worth paying because the alternative is inferring the per-voice slope
+    // from one undifferentiated maximum, which is exactly the inference C27 was
+    // written to stop.
+    int voices = -1;
+   #if KROMOSYNTH_HAS_FAUST
+    if (faust_ != nullptr) voices = faust_->activeVoices();
+   #endif
+
+    const auto sinceLoad = blocksSinceLoad_.fetch_add (1, std::memory_order_relaxed);
+
+    if (voices >= 0 && sinceLoad >= kLoadTableWarmupBlocks)
+    {
+        const auto v = (size_t) juce::jlimit (0, kMaxTrackedVoices, voices);
+
+        blocksByVoices_[v].fetch_add (1, std::memory_order_relaxed);
+
+        if (load > loadByVoices_[v].load (std::memory_order_relaxed))
+            loadByVoices_[v].store (load, std::memory_order_relaxed);
+    }
 
     // >= 1.0 is the deadline consumed entirely. Whether the host actually
     // glitched depends on its own buffering, so this counts OUR overruns and
@@ -766,22 +805,17 @@ void KromosynthAudioProcessor::recordBlockLoad (int frames, std::int64_t ticks) 
     // block the host ever asked for, which is the reading that says "cold".
     rec.blockIndex = blocksSeen_.load (std::memory_order_relaxed);
 
-    // THE discriminating field. 142% with nothing sounding is a transient by
-    // construction -- there was no synthesis to be slow. 142% with three voices
-    // is the genome, and that is a different decision.
-    //
-    // Safe from here: a bounded loop over at most 32 non-atomic idle flags
-    // whose only writer outside the suspend window is this thread. No
-    // allocation, no lock, no syscall.
+    // THE discriminating field, and now read ONCE per block above rather than
+    // again here. 142% with nothing sounding is a transient by construction --
+    // there was no synthesis to be slow. 142% with three voices is the genome,
+    // and that is a different decision.
     //
     // Sampled at the END of the block, because this runs from the RAII guard's
     // destructor after the engine has returned. A voice that released partway
     // through is therefore attributed to the lower count, which overstates
     // per-voice cost -- the safe direction to be wrong in when the question is
     // whether a cap is too generous.
-   #if KROMOSYNTH_HAS_FAUST
-    rec.voices = faust_ != nullptr ? faust_->activeVoices() : 0;
-   #endif
+    rec.voices = juce::jmax (0, voices);
 
     // LAST, and the only ordered write in the function. Everything above is a
     // plain store into a slot no other thread reads until this publishes it.
@@ -835,7 +869,7 @@ void KromosynthAudioProcessor::drainOverBudgetBlocks()
     overBudgetDrained_ = published;
 }
 
-void KromosynthAudioProcessor::rearmOverBudgetCapture()
+void KromosynthAudioProcessor::rearmLoadMeasurement()
 {
     JUCE_ASSERT_MESSAGE_THREAD
 
@@ -851,6 +885,48 @@ void KromosynthAudioProcessor::rearmOverBudgetCapture()
     overBudgetClaimed_.store (0, std::memory_order_relaxed);
     overBudgetPublished_.store (0, std::memory_order_relaxed);
     overBudgetDrained_ = 0;
+
+    // The table too, and the warmup counter with it. A table carried across a
+    // load would average this genome's cost with the last one's and there would
+    // be nothing in the reading to reveal it.
+    for (int v = 0; v <= kMaxTrackedVoices; ++v)
+    {
+        loadByVoices_[(size_t) v].store (0.0f, std::memory_order_relaxed);
+        blocksByVoices_[(size_t) v].store (0, std::memory_order_relaxed);
+    }
+
+    blocksSinceLoad_.store (0, std::memory_order_relaxed);
+}
+
+juce::String KromosynthAudioProcessor::faustVoiceCapForLog() const
+{
+   #if KROMOSYNTH_HAS_FAUST
+    if (faust_ != nullptr && faust_->isLoaded())
+        return " cap=" + juce::String (faustVoices_);
+   #endif
+    return {};
+}
+
+juce::String KromosynthAudioProcessor::loadByVoicesForLog() const
+{
+    juce::String out;
+
+    for (int v = 0; v <= kMaxTrackedVoices; ++v)
+    {
+        const auto blocks = blocksByVoices_[(size_t) v].load (std::memory_order_relaxed);
+
+        // Never seen, so omitted. Printing 33 columns of 0:0.000/0 would bury
+        // the three that carry the answer.
+        if (blocks == 0)
+            continue;
+
+        out << (out.isEmpty() ? " load_by_voices=" : ",")
+            << juce::String (v) << ":"
+            << juce::String (loadByVoices_[(size_t) v].load (std::memory_order_relaxed), 3)
+            << "/" << juce::String (blocks);
+    }
+
+    return out;
 }
 
 juce::String KromosynthAudioProcessor::faustRenderStatsForLog() const
@@ -916,7 +992,7 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         // instrument_load line is about this instrument by construction, and
         // over_since_load counts only its overruns. Inside the barrier because
         // it writes counters the audio thread also writes.
-        rearmOverBudgetCapture();
+        rearmLoadMeasurement();
 
         // Whatever was sounding must stop before the module bytes go away.
         // Without this, loading a second instrument to escape a stuck drone
@@ -1102,7 +1178,7 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
     // alone, but a sampler load that left the window open would make the next
     // Faust reading span two instruments while still being labelled per-load --
     // a field that lies is worse than one that is missing.
-    rearmOverBudgetCapture();
+    rearmLoadMeasurement();
 
     const auto result = engine_->load (file);
 
