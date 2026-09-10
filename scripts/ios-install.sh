@@ -167,7 +167,20 @@ proc_lines="$(grep -c . "$TMP/procs" || true)"
 
       and rerun."
 
-running_hosts="$(grep -iE "$AU_HOSTS" "$TMP/procs" || true)"
+# EXTENSIONS ARE NOT HOSTS, and the host list matches a substring of a path.
+#
+# MobileGarageBandThumbnailExtension renders GarageBand project thumbnails and
+# hosts nothing, but its path contains "GarageBand" and so tripped the gate --
+# refusing an install for a process that could not possibly be at risk. Seen
+# 2026-09-10 as pid 9346, immediately after GarageBand itself had correctly
+# been cleared, which made a working gate look broken.
+#
+# A process running out of a host's PlugIns directory is a plugin or an
+# extension by construction. AU hosts run as apps. So they are dropped before
+# the host names are matched at all -- which also excludes OUR OWN appex,
+# though the host list never named us anyway.
+host_candidates="$(grep -v '/PlugIns/' "$TMP/procs" || true)"
+running_hosts="$(printf '%s\n' "$host_candidates" | grep -iE "$AU_HOSTS" || true)"
 
 if [ -n "$running_hosts" ]; then
   say ""
