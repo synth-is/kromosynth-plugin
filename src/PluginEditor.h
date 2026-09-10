@@ -226,6 +226,12 @@ private:
     // first load goes to the app root, which is a feed.
     int activeSiteDestination_ = 1;
 
+    // PROBE, section A3.2. Height of the shell strip kept visible above the
+    // site while both webviews render. Deliberately taller than the eventual
+    // nav so the shell's own header is recognisable in it -- the question is
+    // whether it renders AT ALL, and a 50px sliver would be ambiguous.
+    static constexpr int kShellStripHeight = 72;
+
     // WebBrowserComponent has no URL getter in JUCE 9 -- goToURL only, no
     // getCurrentURL -- so "has the site been navigated yet" is tracked here
     // rather than asked of the component.

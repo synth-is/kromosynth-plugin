@@ -733,22 +733,18 @@ void KromosynthAudioProcessorEditor::resized()
     if (chromeBar_ != nullptr)
         chromeBar_->setBounds (getLocalBounds().removeFromTop (ChromeBar::kBarHeight));
 
-    if (site_ != nullptr)
-        site_->setBounds (bounds);
-
     if (browser_ != nullptr)
     {
-        // BOTH surfaces get the same rectangle now, which is the point.
-        //
-        // The shell used to take getLocalBounds() in full, and the reason
-        // recorded here was that a rectangle differing by whether the site
-        // strip exists would invalidate the section A3.1c inset diagnostic.
-        // That property is preserved rather than dropped: the bar is now
-        // unconditional, so the shell's rectangle is still the same on every
-        // call -- it is simply 50px shorter than it was. KROMOSYNTH_BROWSER_INSET
-        // is 0 in every configured build, so nothing is measuring against the
-        // old value today either.
-        auto area = bounds;
+        // PROBE: a strip when the site is up, the full area otherwise. See
+        // showSite. In the design this probe is testing, the strip is where an
+        // HTML nav would live and the shell page would switch to a bar-only
+        // layout via a class; for now it simply renders its normal header
+        // clipped, which is enough to answer whether it renders at all.
+        auto area = siteVisible_ ? bounds.removeFromTop (kShellStripHeight)
+                                 : bounds;
+
+        if (site_ != nullptr)
+            site_->setBounds (bounds);
 
 #if KROMOSYNTH_BROWSER_INSET > 0
         // §A3.1c occlusion test — DIAGNOSTIC ONLY, not a kept workaround.
@@ -1099,7 +1095,32 @@ void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
     }
 
     site_->setVisible (shouldShowSite);
-    browser_->setVisible (! shouldShowSite);
+
+    // ── PROBE, section A3.2: both webviews visible at once ──────────────────
+    //
+    // The shell used to be hidden whenever the site was up. It is now kept
+    // visible as a strip, because whether two WKWebViews can composite
+    // simultaneously in an AUv3 decides where the nav bar lives.
+    //
+    // Bjorn asked why we hand-roll JUCE buttons instead of reusing the web
+    // app's NavigationBar. WP_UNIFIED_CHROME section 4 rejects HTML chrome on
+    // the grounds that it would mean injecting into synth.is or maintaining
+    // the bar in two documents -- but it never considered a THIRD option: the
+    // bar living in the shell's own document, which never navigates, sized to
+    // a strip while the site fills the rest. That satisfies section 4's
+    // persistence requirement without a remote origin and without a second
+    // implementation.
+    //
+    // MOST OF THE RISK IS ALREADY RETIRED. Both browsers are constructed with
+    // withKeepPageLoadedWhenBrowserIsHidden, so two content processes already
+    // coexist in this extension in every shipped build. What is untested is
+    // only whether both RENDER at once.
+    //
+    // If they do, the nav becomes HTML in the shell page and this strip
+    // becomes the bar. If they do not -- blank strip, or the extension gets
+    // memory-killed -- revert this hunk and the native ChromeBar stands, with
+    // section 4 confirmed as written.
+    browser_->setVisible (true);
 
     // The bar is NOT hidden with the site any more -- it is the persistent
     // chrome and hiding it is what made this a mode switch. It only needs
