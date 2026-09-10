@@ -48,6 +48,57 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C33. THE ICON IS NOT IN THE BUNDLE — four sessions looked at the wrong layer (2026-09-10)
+
+**The control test nobody ran first.** Björn's AUM plugin list, photographed:
+Moog's Model 15 and Model D show icons, Space Mushrooms' Bass 808 and
+Digitalism show icons, and **all three of our registrations show a red X**. So
+the feature works in this AUM build and C24 through C28 were eliminating causes
+on the right bundle. That question should have come before the elimination, not
+after four rounds of it.
+
+**Everything static now checks out.** Verified on the built artefacts:
+
+| checked | result |
+|---|---|
+| `CFBundleIcons` / `~ipad`, both bundles | present, complete |
+| `CFBundleIconFiles` names against files on disk | all resolve |
+| `CFBundleIconName` | `AppIcon`, both bundles |
+| `Assets.car` present, both bundles | yes, 49912 bytes each |
+| catalog renditions | 30, `Name: AppIcon`, `AssetType: Icon Image` |
+| catalog idioms | phone and pad |
+| catalog scales | **1, 2 AND 3** — 11, 13, 6 |
+| loose PNG pixel sizes | 180x180 @3x, 120x120 @2x, 29x29 @1x |
+| `AudioComponentBundle` stripped (C28) | no change |
+| device reboot (C24) | no change |
+
+There is nothing left to find in the bundle. **That is a result**: it moves the
+question from what we ship to how it is registered.
+
+**The unexamined signal, visible in the same photograph.** Three registrations
+of one plugin, under two DEAD manufacturer names — `NEMUR NET EHF.` with a
+trailing period, `NEMUR NET EHF` without — alongside the current `SYNTH.IS`.
+The AudioComponent registry has accumulated entries across development
+installs, and every install today took a fresh container UUID: 9F22C374,
+2FEE671A, 042EC08C, 0D06E159, 855E64E8.
+
+If a registry entry caches a bundle path from an earlier install, the icon
+lookup lands on a container that no longer exists. **A reboot with the app still
+installed does not clear registrations**, which is why C24's reboot proved less
+than it appeared to.
+
+**Next, and never tried: delete the app entirely, reboot, install once.** Costs
+the App Group container and therefore the local library — re-acquirable at no
+quota, since `hasDownloadedEntry` exempts re-downloading the same entry, but not
+free of effort.
+
+Either outcome is informative. An icon means the cause was registry staleness
+from repeated dev installs and was never in the bundle. No icon, with a clean
+registry and every static check passing, is a far sharper fact than the present
+one.
+
+---
+
 # C32. THE CAP IS TOO TIGHT — C31 passed, and my prediction was wrong (2026-09-10)
 
 First reading under a bar that held. AUM, 256 frames, 5.33 ms:
