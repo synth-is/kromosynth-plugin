@@ -49,7 +49,11 @@ DEVICE="${KROMOSYNTH_IOS_DEVICE:-00008110-000120D9228A801E}"   # iPhone bthj, 13
 QUERY_TIMEOUT="${KROMOSYNTH_IOS_QUERY_TIMEOUT:-25}"
 
 APP_REL="src/KromosynthPlugin_artefacts/$CONFIG/Standalone/Synth.is.app"
-APP="$BUILD_DIR/$APP_REL"
+# KROMOSYNTH_IOS_APP lets a MODIFIED copy be installed through this same gate
+# rather than around it -- see ios-icon-experiment.sh, which strips a plist key
+# and re-signs into a scratch directory. A throwaway experiment is exactly the
+# case where the temptation to skip the gate is highest, so it gets to reuse it.
+APP="${KROMOSYNTH_IOS_APP:-$BUILD_DIR/$APP_REL}"
 APPEX="$APP/PlugIns/Synth.is.appex"
 
 # Explicit, and ours is not on it. Extend with KROMOSYNTH_IOS_AU_HOSTS.
@@ -97,7 +101,7 @@ run_bounded() {
 
 # ── 1. The artefact ─────────────────────────────────────────────────────────
 
-[ -d "$APP" ] || fail "nothing built at $APP_REL — run ./scripts/ios-build.sh first."
+[ -d "$APP" ] || fail "nothing built at $APP — run ./scripts/ios-build.sh first."
 [ -d "$APPEX" ] || fail "the app has no embedded appex at PlugIns/ —
       installing it would deliver no AUv3."
 
