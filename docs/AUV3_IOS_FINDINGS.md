@@ -48,6 +48,80 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C31. PRE-REGISTERED — the replacement bar, after C29's failed (2026-09-10)
+
+Registered before the run. Mechanism is `c5b3bc6`; no `load_dist` reading
+exists on any device at the time of writing.
+
+C29 failed because it judged the cap on a MAXIMUM, and C30 showed a maximum
+over thousands of blocks samples the scheduling tail rather than synthesis
+cost. This bar names quantities the OS cannot dominate, and calibrates against
+the plugin's own idle behaviour instead of against zero.
+
+## The rule
+
+With `cap` voices held, warmup excluded, **at least 1000 blocks** at that voice
+count — raised from C29's 200, because a rate needs more samples than a maximum
+does.
+
+1. **Overrun rate, calibrated.** `rate@cap > max(0.05%, 3 x rate@0)`
+   → **too generous.**
+   The `voices=0` row is the noise floor and the plugin measures its own, which
+   is what C29 had no way to do. **Requires at least 10 overruns at the cap
+   before it may fire.** Two events cannot support a rate, and instrument 1's
+   `over=2` in 2297 blocks is precisely that trap.
+2. **Fragility, independent of rate.** `p99@cap >= 1.0` → **too generous**, even
+   at zero measured misses. An instrument normally at 0.95 shows nothing today
+   and fails the moment a reverb is added or the phone warms.
+3. **Too tight.** `p50@cap <= 0.5` → the 4x divisor is costing usable voices.
+   Applies only if neither 1 nor 2 fires.
+4. Otherwise **about right.**
+
+Rules 1 and 2 are independent grounds. Rule 3 is subordinate to both.
+
+## What this bar explicitly does NOT settle
+
+Whether the result **sounds** right. `blocksOverBudget_` counts OUR overruns,
+and `recordBlockLoad`'s own comment says so: whether the host actually glitched
+depends on its buffering, and AUM may absorb misses entirely. Whether a given
+rate is audible is a listening question and nothing above touches it. Keeping
+that separate is the point — C29's error was letting one statistic stand in for
+a judgement it could not make.
+
+## Where the numbers come from
+
+0.05% is about 1 miss per 10 seconds at 188 blocks/second, and is a floor for
+the case where `rate@0` measures zero. The 3x multiplier is the real test and
+is self-calibrating. `p99 >= 1.0` needs no justification beyond its meaning:
+one block in a hundred missing the deadline in normal play. `p50 <= 0.5` mirrors
+the one clean reading C30 salvaged — instrument 1 at one voice, max 0.509 with
+zero overruns — so an instrument sitting at half the deadline at its cap has
+room for another voice.
+
+1000 blocks is 5.3 seconds at 256 frames, so holding a chord for a couple of
+seconds per voice count is not enough on its own. **The condition is on blocks,
+not on patience:** if `n` is under 1000 the reading does not count, and the
+honest response is to play longer rather than to read it anyway.
+
+## The prediction, so it can be wrong
+
+**Rule 2 decides it.** `p99@cap` lands at or just below 1.0, rule 1 cannot fire
+because there will not be 10 overruns, and rule 3 does not apply.
+
+If rule 1 fires instead, with a large overrun count, then I have misjudged the
+noise floor's size relative to real synthesis cost — and that is a finding about
+the floor, not a licence to move the threshold.
+
+## If this rule fails too
+
+Same discipline as C29. A rule that cannot separate the genome from the host is
+a result about the rule. Two failures in a row would say the deadline meter is
+the wrong instrument for the cap question altogether, and the honest next move
+would be measuring polyphony by ear against a metronome rather than by
+statistics — which is where the listening clause has been pointing all along.
+
+---
+
 # C30. THE BAR FAILED, NOT THE CAP — maxima measure the OS (2026-09-10)
 
 C29 was registered in advance and is **falsified**. This is the result, not a
