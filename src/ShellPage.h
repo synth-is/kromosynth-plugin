@@ -48,16 +48,16 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Synth.is</title>
 <style>
-  :root { color-scheme: dark; }
+/*PALETTE*/
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 0;
-    background: #0d1117; color: #e6edf3;
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: var(--surface-deep); color: var(--text-primary);
+    font: 14px/1.5 var(--font-stack);
     height: 100vh; display: flex; flex-direction: column;
   }
   header {
-    padding: 14px 18px; border-bottom: 1px solid #21262d;
+    padding: 14px 18px; border-bottom: 1px solid var(--border-subtle);
     display: flex; align-items: baseline; gap: 12px; flex: 0 0 auto;
     /* Wraps, because four controls plus a title do not fit across a phone
        even once the editor is the right width. Without this the row simply
@@ -66,17 +66,17 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     flex-wrap: wrap;
   }
   header h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
-  header .count { color: #7d8590; font-size: 12px; }
+  header .count { color: var(--text-muted); font-size: 12px; }
   header button {
-    background: #21262d; color: #e6edf3;
-    border: 1px solid #30363d; border-radius: 6px;
+    background: var(--border-subtle); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 6px;
     padding: 5px 12px; font-size: 12px; cursor: pointer;
   }
   /* Only the FIRST button takes the free space, so the group still sits right
      on a desktop width. It was on every button, which happened to work only
      because nothing wrapped. */
   header button:first-of-type { margin-left: auto; }
-  header button:hover { background: #30363d; }
+  header button:hover { background: var(--border); }
   main { flex: 1 1 auto; overflow-y: auto; padding: 8px; position: relative; }
   /* The spectrogram sits BEHIND the list, not beside it. It is context for the
      loaded instrument, not a control, and anything that took vertical space
@@ -99,10 +99,10 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   #list { position: relative; z-index: 1; }
   .toolbar {
     flex: 0 0 auto; display: flex; gap: 8px; align-items: center;
-    padding: 8px 18px; border-bottom: 1px solid #21262d;
+    padding: 8px 18px; border-bottom: 1px solid var(--border-subtle);
   }
   .toolbar input, .toolbar select {
-    background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+    background: var(--surface-deep); color: var(--text-primary); border: 1px solid var(--border);
     border-radius: 6px; padding: 4px 8px; font-size: 12px;
     font-family: inherit;
   }
@@ -111,32 +111,32 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     padding: 9px 12px; border-radius: 6px; cursor: pointer;
     border: 1px solid transparent;
   }
-  .row:hover { background: #161b22; border-color: #21262d; }
-  .row.active { background: #16281d; border-color: #2ea04326; }
+  .row:hover { background: var(--surface-base); border-color: var(--border-subtle); }
+  .row.active { background: var(--accent-surface); border-color: var(--success-edge); }
   .row .top { display: flex; align-items: center; gap: 12px; }
   .row .name {
     flex: 1 1 auto; font-variant-numeric: tabular-nums;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .row .meta { color: #7d8590; font-size: 12px; flex: 0 0 auto; }
+  .row .meta { color: var(--text-muted); font-size: 12px; flex: 0 0 auto; }
   .row .sub {
-    margin: 2px 0 0 19px; color: #6e7681; font-size: 11.5px;
+    margin: 2px 0 0 19px; color: var(--text-muted); font-size: 11.5px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .row .sub .sep { opacity: .4; padding: 0 5px; }
-  .row .sub .warn { color: #d29922; }
-  .row.fresh { border-color: #2ea04355; }
+  .row .sub .warn { color: var(--warning); }
+  .row.fresh { border-color: var(--success-glow); }
   .row .new {
     flex: 0 0 auto; font-size: 10px; text-transform: uppercase;
-    letter-spacing: .04em; color: #3fb950;
-    border: 1px solid #2ea04355; border-radius: 4px; padding: 1px 5px;
+    letter-spacing: .04em; color: var(--success);
+    border: 1px solid var(--success-glow); border-radius: 4px; padding: 1px 5px;
   }
   .row .treebtn {
     flex: 0 0 auto; font: inherit; font-size: 11px; cursor: pointer;
-    background: #21262d; color: #7d8590;
-    border: 1px solid #30363d; border-radius: 4px; padding: 1px 7px;
+    background: var(--border-subtle); color: var(--text-muted);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 7px;
   }
-  .row .treebtn:hover { background: #30363d; color: #e6edf3; }
+  .row .treebtn:hover { background: var(--border); color: var(--text-primary); }
 
   /* The list goes quiet while an instrument loads. Loading BLOCKS the message
      thread for one to three seconds -- measure() renders 105 s of audio to
@@ -151,45 +151,45 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
      indistinguishable from a freeze. */
   .spinner {
     display: inline-block; width: 11px; height: 11px; flex: 0 0 auto;
-    border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%;
     animation: spin .7s linear infinite; vertical-align: -1px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .row .rmbtn {
     flex: 0 0 auto; font: inherit; font-size: 11px; cursor: pointer;
-    background: transparent; color: #6e7681;
+    background: transparent; color: var(--text-muted);
     border: 1px solid transparent; border-radius: 4px; padding: 1px 7px;
   }
-  .row:hover .rmbtn { border-color: #30363d; }
-  .row .rmbtn:hover { background: #3d1d1d; border-color: #6e2f2f; color: #f85149; }
-  .row .confirm { flex: 0 0 auto; font-size: 11px; color: #f0883e; }
+  .row:hover .rmbtn { border-color: var(--border); }
+  .row .rmbtn:hover { background: var(--danger-surface-dim); border-color: var(--danger-surface); color: var(--danger); }
+  .row .confirm { flex: 0 0 auto; font-size: 11px; color: var(--warning); }
   .row .confirm button {
     font: inherit; font-size: 11px; cursor: pointer; margin-left: 6px;
     border-radius: 4px; padding: 1px 7px;
   }
   .row .confirm .yes {
-    background: #6e2f2f; color: #ffdcd7; border: 1px solid #8e3b3b;
+    background: var(--danger-surface); color: var(--danger-text); border: 1px solid var(--danger-border);
   }
   .row .confirm .no {
-    background: transparent; color: #7d8590; border: 1px solid #30363d;
+    background: transparent; color: var(--text-muted); border: 1px solid var(--border);
   }
   .row .dot {
     width: 7px; height: 7px; border-radius: 50%;
-    background: #30363d; flex: 0 0 auto;
+    background: var(--border); flex: 0 0 auto;
   }
-  .row.active .dot { background: #3fb950; }
-  .empty { padding: 40px 18px; color: #7d8590; }
+  .row.active .dot { background: var(--success); }
+  .empty { padding: 40px 18px; color: var(--text-muted); }
   .empty code {
     display: block; margin-top: 10px; padding: 10px;
-    background: #161b22; border-radius: 6px; font-size: 12px;
-    color: #a5d6ff; user-select: text; word-break: break-all;
+    background: var(--surface-base); border-radius: 6px; font-size: 12px;
+    color: var(--text-secondary); user-select: text; word-break: break-all;
   }
   footer {
-    flex: 0 0 auto; padding: 9px 18px; border-top: 1px solid #21262d;
-    color: #7d8590; font-size: 12px; min-height: 34px;
+    flex: 0 0 auto; padding: 9px 18px; border-top: 1px solid var(--border-subtle);
+    color: var(--text-muted); font-size: 12px; min-height: 34px;
   }
-  footer.warn { color: #d29922; }
-  footer.err { color: #f85149; }
+  footer.warn { color: var(--warning); }
+  footer.err { color: var(--danger); }
 </style>
 </head>
 <body>

@@ -2,6 +2,7 @@
 
 #include "PluginEditor.h"
 #include "ShellPage.h"
+#include "Palette.h"
 
 // For kSpectrogramBins/Frames. PluginProcessor.h only forward-declares
 // FaustEngine -- enough to hold a unique_ptr, not enough to read a static
@@ -161,7 +162,13 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             if (clean != "/" && clean != "/index.html")
                 return std::nullopt;
 
-            const juce::String html (kromosynth::shell::kIndexHtml);
+            // The palette substituted in at the ONE place the page is built.
+            // Its values live in Palette.h and nowhere else, so this
+            // stylesheet and the native chrome cannot drift apart -- see the
+            // C26 note in that file for what happens when they can.
+            const juce::String html = juce::String (kromosynth::shell::kIndexHtml)
+                                          .replace ("/*PALETTE*/",
+                                                    kromosynth::palette::rootCss());
             const auto utf8 = html.toRawUTF8();
             const auto len = std::strlen (utf8);
 
