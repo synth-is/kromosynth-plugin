@@ -13,3 +13,4 @@ cmake-build-*/
 
 # Stage 0 logs, if anyone copies them into the repo
 *.log
+build/icon-experiment/
