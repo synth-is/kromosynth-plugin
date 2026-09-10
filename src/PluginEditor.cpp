@@ -735,13 +735,11 @@ void KromosynthAudioProcessorEditor::resized()
 
     if (browser_ != nullptr)
     {
-        // PROBE: a strip when the site is up, the full area otherwise. See
-        // showSite. In the design this probe is testing, the strip is where an
-        // HTML nav would live and the shell page would switch to a bar-only
-        // layout via a class; for now it simply renders its normal header
-        // clipped, which is enough to answer whether it renders at all.
-        auto area = siteVisible_ ? bounds.removeFromTop (kShellStripHeight)
-                                 : bounds;
+        // Both surfaces get the same rectangle, below the persistent bar. The
+        // section A3.1c inset diagnostic needs this to be unconditional, and
+        // it is: the bar is always present, so the shell's rectangle is the
+        // same on every call.
+        auto area = bounds;
 
         if (site_ != nullptr)
             site_->setBounds (bounds);
@@ -1062,7 +1060,7 @@ void KromosynthAudioProcessorEditor::navigateSiteTo (const juce::String& path)
     const juce::String url = juce::String (KROMOSYNTH_WEB_APP_URL)
                            + path
                            + (path.contains ("?") ? "&" : "?")
-                           + "client=synthis-plugin";
+                           + "client=synthis-plugin&chrome=host";
 
     proc_.logEvent ("navigating to " + url);
     site_->goToURL (url);
@@ -1086,8 +1084,24 @@ void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
         // shells and in-app browsers, so the app treats it as a fallback and
         // this parameter as the statement. See packages/web/src/services/
         // pluginHost.js.
+        // chrome=host as well as client=synthis-plugin, and the second one is
+        // the one that was missing.
+        //
+        // hostDrawsChrome() in pluginHost.js:101 tests for chrome=host. The
+        // plugin has only ever sent client=synthis-plugin, so App.jsx:1450's
+        // `if (hostDrawsChrome()) return <NavigationBar hideNav />` has NEVER
+        // FIRED and the web app has been drawing its own nav inside the plugin
+        // the whole time. WP_UNIFIED_CHROME section 2 says "half of this work
+        // is already done and was done deliberately" -- the code was, the
+        // trigger was not.
+        //
+        // Two markers rather than one, deliberately: client says WHERE the app
+        // is, chrome says WHAT THE HOST HAS DRAWN. pluginHost.js's own comment
+        // makes the distinction -- "a fingerprint can suggest where we are, but
+        // it cannot tell us what the host has drawn" -- so collapsing them
+        // would lose a case, a plugin surface that draws no chrome of its own.
         const juce::String url = juce::String (KROMOSYNTH_WEB_APP_URL)
-                               + "?client=synthis-plugin";
+                               + "?client=synthis-plugin&chrome=host";
 
         proc_.logEvent ("navigating to site " + url);
         site_->goToURL (url);
@@ -1096,31 +1110,16 @@ void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
 
     site_->setVisible (shouldShowSite);
 
-    // ── PROBE, section A3.2: both webviews visible at once ──────────────────
+    // PROBE ANSWERED (section A3.2, 2026-09-10): two WKWebViews DO composite
+    // simultaneously in an AUv3 -- the shell's header rendered in a strip with
+    // synth.is live below it. So the nav can live in the shell's own document
+    // as HTML, shared with the web app, and WP_UNIFIED_CHROME section 4's
+    // objection does not reach that design.
     //
-    // The shell used to be hidden whenever the site was up. It is now kept
-    // visible as a strip, because whether two WKWebViews can composite
-    // simultaneously in an AUv3 decides where the nav bar lives.
-    //
-    // Bjorn asked why we hand-roll JUCE buttons instead of reusing the web
-    // app's NavigationBar. WP_UNIFIED_CHROME section 4 rejects HTML chrome on
-    // the grounds that it would mean injecting into synth.is or maintaining
-    // the bar in two documents -- but it never considered a THIRD option: the
-    // bar living in the shell's own document, which never navigates, sized to
-    // a strip while the site fills the rest. That satisfies section 4's
-    // persistence requirement without a remote origin and without a second
-    // implementation.
-    //
-    // MOST OF THE RISK IS ALREADY RETIRED. Both browsers are constructed with
-    // withKeepPageLoadedWhenBrowserIsHidden, so two content processes already
-    // coexist in this extension in every shipped build. What is untested is
-    // only whether both RENDER at once.
-    //
-    // If they do, the nav becomes HTML in the shell page and this strip
-    // becomes the bar. If they do not -- blank strip, or the extension gets
-    // memory-killed -- revert this hunk and the native ChromeBar stands, with
-    // section 4 confirmed as written.
-    browser_->setVisible (true);
+    // Reverted to one-at-a-time because the probe was not a layout: it stacked
+    // three chromes and looked it. The strip returns when the nav actually
+    // moves into the shell page.
+    browser_->setVisible (! shouldShowSite);
 
     // The bar is NOT hidden with the site any more -- it is the persistent
     // chrome and hiding it is what made this a mode switch. It only needs
