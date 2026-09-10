@@ -48,6 +48,88 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C28. ELIMINATED — the AU icon is not `AudioComponentBundle` either (2026-09-10)
+
+C24's surviving hypothesis is dead. **There is no shortlist left.**
+
+The run C24 asked for, finally done: `AudioComponentBundle` stripped from the
+built appex's `NSExtensionAttributes`, appex then app re-signed inside out with
+entitlements preserved, installed 12:09:27, AUM force-quit beforehand and opened
+after. **AUM still draws its no-icon placeholder.**
+
+**The install is proven, which is what makes this an elimination rather than
+another inconclusive run.** C0's trap is that a stale binary looks exactly like
+a fix that did not work, and `processor_constructed` does not distinguish them.
+Here the log does: pid 9029 at 12:14 writes `block_over_budget` lines, a string
+that did not exist in any binary before 2026-09-10. So the stripped build ran.
+
+Also confirmed before installing, by measurement rather than argument: the
+re-signed copy's `__TEXT,__text` section is byte-identical to the plain build's
+(`4b64b922744299ff24b90189b412c9ab` both). Only the signature and the removed
+plist key differ, so nothing measured on it is affected by the re-sign.
+
+**What this leaves.** The key was mechanically consistent with the symptom — it
+named `is.synth.plugin.internal`, and no bundle by that name exists anywhere in
+the shipped app. It was still not the cause. Mechanically consistent is not
+demonstrated, and this is the entry that proves the distinction was worth
+keeping.
+
+Repeatable with `./scripts/ios-icon-experiment.sh`, which refuses to run if the
+premise is gone. **A reboot has not been tried since the strip** — C24's reboot
+eliminated the registry cache as a cause of absence, which is not the same as
+establishing that a corrected plist would be picked up without one. That is the
+one loose thread.
+
+---
+
+# C27. C22 ANSWERED — the overruns are the genome, and the denominator was wrong too (2026-09-10)
+
+Measured in AUM on the device, 19 over-budget blocks captured across three
+loads.
+
+**The pre-registered question was whether an overrun could be told from a load
+transient. It can, and it is not one.**
+
+    block=7400  voices=0      block=26890  voices=0     block=103645 voices=2
+    block=8994  voices=3      block=28579  voices=1
+    block=9312  voices=2      block=28655  voices=0
+    block=11679 voices=1
+
+Nothing near `block=3`. These run from block 7,400 to block 103,645 — deep in
+the session, nowhere near the suspend barrier. **The transient hypothesis is
+dead.**
+
+The 12:14 load is unambiguous: **eight overruns between block 2454 and 2727,
+about 1.5 seconds, every one at `voices=3`**, load 1.13 to 1.40, on an
+instrument whose declared cap is 3. At its own cap, in a real host, it misses
+the deadline repeatedly.
+
+**NOT a verdict on the cap.** No bar was pre-registered, and converting this
+into one now is how the 4x bar acquired its authority. What the data supports
+without a bar is narrower and still worth stating: *the cap permits sustained
+deadline misses at the cap.*
+
+## And the denominator was wrong the whole time
+
+The footer read `load 35% of 42.67 ms` while the log read `budget_ms=5.33
+frames=256`, in the same second, from the same class.
+
+`engineState` computed `budgetMs` from `getBlockSize()` — the host's **declared
+maximum**. `recordBlockLoad` computes its fraction from frames **actually
+delivered**. AUM declares 2048 and delivers 256, so the editor overstated the
+available deadline eightfold, beside a correct percentage. Fixed in `704bd1e`,
+in both places that had it.
+
+**C22 named two reasons its numbers could not be read and this was a third it
+did not know about.** The capture answered *which blocks*; this answers *out of
+how long*. Every "of 42.67 ms" reading so far, C22's own included, was labelled
+against a deadline the host never used. The percentages stand — they were always
+computed against real frames — only the labels were wrong.
+
+**The real regime is 5.33 ms, not 42.67 ms.** Any cap reasoning starts there.
+
+---
+
 # C26. THE VOICE-CAP LADDER HAD THREE IMPLEMENTATIONS, AND TWO OF THEM CHECKED EACH OTHER (2026-09-09)
 
 C20 closed with "one policy has two disagreeing implementations". It was three,
@@ -814,31 +896,25 @@ Not fixed; recorded so the next person does not find it the hard way.
 
 # Open, in order
 
-1. **RUN C22's measurement.** The mechanism is built (`844223d`): eight
-   over-budget blocks captured per instrument load, each with a reconstructed
-   wall clock, elapsed and budget ms, block size, block index and **voices
-   sounding**. Nothing has been measured with it yet. One AUM run against
-   `#FJF8V` and `#RPGW9` -- the two genomes C22 already has numbers for -- with
-   notes HELD rather than polled between them, which is the other half of why
-   C22 read `load 0%`. Until that run exists the cap argument is where C22 left
-   it, and C22's numbers still must not be used to argue it either way.
-2. **Decide whether load-by-voice-count lands** (proposed, unwritten). Item 1
-   says which readings to *discard*; it does not produce the reading the cap
-   decision rests on. That is `loadByVoices_[0..32]` with a block count beside
-   each entry, so playing one note, two, three gives the intercept and the
-   per-voice slope directly -- which is what turns "the 4x bar is about right"
-   from an inference into a measurement. Needs a **pre-registered bar** before
-   the run: with cap voices held and transients excluded, below what is too
-   tight and above what is too loose. Choosing those after seeing the numbers is
-   how the 4x bar got its authority in the first place.
-3. **The icon experiment** (C24). One throwaway run: strip
-   `AudioComponentBundle` from the built appex plist, re-sign, install, look.
-   Confirmed by elimination, untested, and it has now failed twice. **The
-   verdict step needs eyes on AUM**, so it cannot be done unattended.
+1. **The `load@cap` measurement** (C27 answered the transient question; this is
+   the cap question). `loadByVoices_[0..32]` with a block count beside each
+   entry, so one note, two, three gives the intercept and the per-voice slope
+   directly. **Needs a bar registered before the run** — and note we are no
+   longer naive, since C27 shows the shape. The bar is for the next
+   measurement, not retrofitted to this one.
+2. **Re-read the footer after `704bd1e`.** It should now say roughly 5.33 ms in
+   AUM, not 42.67. One glance, no run needed. If it still says 42.67 the fix
+   did not reach the device.
+3. **The icon is now unexplained** (C28). The `AudioComponentBundle` strip was
+   run on device and changed nothing, so C24's last hypothesis is eliminated and
+   there is no shortlist left. The one loose thread is that **no reboot has been
+   tried since the strip** — C24's reboot ruled out the registry cache as a
+   cause of absence, which is not the same as showing a corrected plist gets
+   picked up without one. Cheapest next step, and it needs eyes on AUM.
 4. **The unified chrome and the merged library.** Designed and committed as
    `daw-plugin/WP_UNIFIED_CHROME.md`. §7.2 is the important part and outranks the
    chrome it sits in: instruments bought on one machine are invisible on
-   another. Blocked on `WP_EXTRACTION_QUOTA.md` open question 7 -- the
+   another. **NOT blocked, correcting an earlier overstatement**: §7.2 already
    re-download exemption keys on the takeout entry, so the merged list must
    re-download the same entry and never re-render. **OQ7 is still open, unchanged
    since 2026-09-07, and it is one decision: entry or sound.** Highest leverage
