@@ -48,6 +48,90 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C32. THE CAP IS TOO TIGHT — C31 passed, and my prediction was wrong (2026-09-10)
+
+First reading under a bar that held. AUM, 256 frames, 5.33 ms:
+
+    cap=2
+      0: n=2158  p50=0.0  p99=0.0  max=1.955  over=1
+      1: n=3178  p50=0.2  p99=0.3  max=1.144  over=1
+      2: n=5957  p50=0.3  p99=0.4  max=1.150  over=6
+
+Sample conditions met: n@cap 5957 and n@0 2158, both over 1000.
+
+## Applying C31 as registered
+
+| rule | value | threshold | fires |
+|---|---|---|---|
+| 1 rate | 0.101% | max(0.05%, 3 x 0.046%) = 0.139% | no |
+| 1 gate | over=6 | needs 10 | **cannot fire** |
+| 2 p99 | 0.4 | >= 1.0 | no |
+| 3 p50 | 0.3 | <= 0.5 | **YES** |
+
+**Verdict: TOO TIGHT.** The 4x divisor is costing usable voices — the opposite
+of what C22 and C29 pointed at for two days.
+
+## The prediction was wrong, and that is the point
+
+C31 predicted rule 2 would decide it, with `p99@cap` at or just below 1.0. It
+came in at **0.4**, nowhere near. Rule 3 decided it instead.
+
+That is a better outcome than being right: a bar that returns the verdict its
+author expected is not evidence of much. This one contradicted its author on
+the first reading.
+
+## The noise floor did the work it was built for
+
+    0: max=1.955  over=1
+
+With **nothing sounding**, one block took 195.5% of the deadline. C30's
+diagnosis confirmed twice over, and this is why maxima are useless here: `max`
+at one voice is 1.144 and at two voices 1.150, both indistinguishable from an
+idle 1.955.
+
+The rates tell the real story. **0.046% idle against 0.101% at the cap** — the
+overruns at the cap are within about 2x of what the plugin produces rendering
+silence. C29's override clause, "any blocks over budget at or below the cap
+means too generous", would have condemned this cap on 6 events barely above the
+idle rate. **C29 and C31 return opposite verdicts from the same instrument, and
+the entire difference is calibration.**
+
+## The 10-overrun gate was load-bearing, not decoration
+
+Rule 1 came within 1.4x of its threshold. Without the minimum-count gate it
+would have been one noisy stretch away from firing — and since C31 makes rule 3
+subordinate to rule 1, that would have flipped the verdict from too tight to
+too generous. The gate is the only thing that kept the two rules from
+contradicting each other. Worth keeping and worth knowing it nearly mattered.
+
+## How MUCH too tight is not settled
+
+The honest limit of this data. p50 goes 0.2 at one voice to 0.3 at two, so the
+per-voice cost looks like about 0.1 of the deadline with an intercept near 0.1,
+which extrapolates to crossing 1.0 somewhere around **7 to 9 voices** against a
+cap of 2.
+
+**That extrapolation rests on a one-bucket difference.** Percentiles are
+reported at 0.1 resolution as a bucket's lower edge, so a per-voice increment of
+~0.1 is exactly at the resolution limit and the slope could plausibly be half or
+double what it looks like. The DIRECTION is solid — 0.3 is well under 0.5
+whatever the bucket edges do — and the magnitude is not.
+
+So: the cap is too tight, and "raise it to 8" is not yet supported.
+
+## Next instrument
+
+Resolve the slope, which needs finer buckets in the region that is actually
+occupied, or a running mean per voice count rather than a median. Everything
+measured so far sits below 0.5, so 21 uniform buckets spend most of their range
+on load values that never occur.
+
+And a reading at 3 and 4 voices, which this run did not capture — two points
+cannot distinguish a linear cost from a flattening one, and the whole cap
+argument depends on which it is.
+
+---
+
 # C31. PRE-REGISTERED — the replacement bar, after C29's failed (2026-09-10)
 
 Registered before the run. Mechanism is `c5b3bc6`; no `load_dist` reading
