@@ -48,6 +48,78 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C30. THE BAR FAILED, NOT THE CAP — maxima measure the OS (2026-09-10)
+
+C29 was registered in advance and is **falsified**. This is the result, not a
+reason to tune it.
+
+## What was measured
+
+AUM, 256-frame blocks, 5.33 ms deadline, two instruments both declaring `cap=2`:
+
+    cap=2  load_by_voices=0:0.003/119, 1:0.509/735,  2:1.274/2297
+    cap=2  load_by_voices=0:0.003/93,  1:1.108/1314, 2:1.145/3218
+
+Against C29 both fail: `load@cap` of 1.274 and 1.145 are over 0.85, and the
+override clause fires. **Both halves agree, so the bar looked vindicated.**
+
+## Why that agreement is worthless
+
+Nine over-budget blocks in **12,448** — 0.07% — and one of them is this:
+
+    load=1.572  block=12908  voices=0
+
+**A block with nothing sounding took 157% of the deadline.** That is not
+synthesis cost. It is scheduling, another process, or thermal behaviour on a
+phone. So the tail of this distribution is the operating system, and a MAXIMUM
+over thousands of blocks samples that tail by construction.
+
+`load@1 = 1.108` on the second instrument is one block out of 1,314. Its
+`load@2 = 1.145` is barely higher than its `load@1` — a per-voice slope of
+almost nothing, which contradicts the cost model the table was built to
+measure. Two maxima drawn from the same noise floor will always look like that.
+
+**The override clause is worse than merely noisy: it is incoherent.** Taken
+literally, the `voices=0` overrun means an IDLE plugin is "too generous". A
+rule that condemns a plugin rendering silence is not measuring polyphony.
+
+## The prediction was confirmed by a broken instrument
+
+C29 predicted the cap would fail on the override clause. It did. That is not a
+success — a confirmed prediction from an invalid test is worth nothing, and
+recording it as a win would have been the most expensive available mistake
+here. C29's own "if the rule fails" clause is what this entry discharges.
+
+## The noise floor is the thing worth having
+
+The run measured it for free: **1 overrun at `voices=0`** across the session.
+That is the OS's own contribution, and it means an overrun RATE at the cap can
+be judged against a baseline instead of against zero.
+
+## What is actually defensible from this data
+
+One reading, and it is the useful one:
+
+**Instrument 1 at one voice: max 0.509 over 735 blocks with ZERO overruns.**
+Clean, no tail, no ambiguity. One voice costs about half the 5.33 ms deadline.
+
+If per-voice cost is roughly linear, two voices land near 1.0 — which makes
+`cap=2` genuinely marginal rather than comfortable. Note what that says about
+the 4x divisor: it was derived from a FREE-RUNNING RTF, and the real headroom
+here at one voice is about 2x. Stated as an inference from maxima, which is all
+this instrument supports, and not as a verdict.
+
+## What the next instrument has to be
+
+Count over-budget blocks PER VOICE COUNT, `overByVoices_[v]`, so the question
+becomes an overrun **rate** at the cap against the `voices=0` baseline. A rate
+is robust to the single hiccup that destroyed this bar; a maximum never can be.
+
+The replacement bar must be registered before that run, and this time the
+quantity it names has to be one the OS cannot dominate.
+
+---
+
 # C29. PRE-REGISTERED — the bar the voice cap will be judged against (2026-09-10)
 
 Registered **before** the run, and committed before the measurement exists. The
