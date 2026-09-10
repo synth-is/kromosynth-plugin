@@ -178,8 +178,8 @@ if [ "$WAIT" = 1 ]; then
       say "      device not answering, retrying (${waited}s)..."
     fi
 
-    sleep 5
-    waited=$(( waited + 5 ))
+    sleep 2
+    waited=$(( waited + 2 ))
   done
 fi
 
