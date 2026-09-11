@@ -186,20 +186,22 @@ log lives in `appDataContainer` / `is.synth.plugin.pluginAUv3` under
 
 ## 3. Open, in order
 
-**§3.1 of the previous rotation — measure the AUv3 inset — PASSED. See C36.**
+**§3.1 of the previous rotation — measure the AUv3 inset — PASSED (C36). The
+deletion it unblocked is DONE (`21f438a`), and it exposed a defect that C37
+records: the strip's `ResizeObserver` was watching the content box, so it could
+not see the inset land. Fixed in `7928b41`.**
 
-1. **Delete `ChromeBar`, and the disposable probe block with it.** Now
-   unblocked: the inset reading was the condition, and the native bar is no
-   longer needed as a fallback. `kNativeChrome` in `PluginEditor.cpp` is the
-   switch; the strip inset diagnostic in `kProbeScript` goes at the same time,
-   as does `/*STRIPH*/`'s justification if `kStripHeight` stops earning its
-   place.
-
-2. **Update `WP_UNIFIED_CHROME` §4.** It rejects HTML chrome on the grounds of
+1. **Update `WP_UNIFIED_CHROME` §4.** It rejects HTML chrome on the grounds of
    injecting into synth.is or maintaining the bar twice. Neither happens — the
    nav is in the shell's own document, which never navigates. Its argument never
    reached this option. Listed in the last two rotations and not done either
-   time.
+   time. `ChromeBar` no longer exists, so §4 now argues against something that
+   shipped.
+
+2. **`kStripHeight` earns a second look.** It is the bar height, substituted
+   into the CSS at `/*STRIPH*/` and seeding `stripHeight_`. Still justified, but
+   the real number is measured now and the constant's comment is written as
+   though it were the authority.
 
 3. **Narrow `hideNav` and then deploy `kromosynth-desktop`.** C36 settles the
    shape from the rendered result rather than from reading the file: the two

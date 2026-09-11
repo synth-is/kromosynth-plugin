@@ -48,6 +48,83 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C37. THE INSTRUMENT WAS HIDING THE BUG IT WAS INSTALLED TO FIND (2026-09-11)
+
+`ChromeBar` and the strip inset diagnostic are deleted (`21f438a`) — C36's
+reading was the condition for keeping the native bar as a fallback. Removing the
+diagnostic immediately exposed a defect dating from `e393a5f` that it had been
+masking.
+
+## The defect
+
+**`ResizeObserver` observes the CONTENT box unless told otherwise**, and the
+safe-area inset arrives as `padding-top`. Tabs 34 plus line 16 is 50 whether the
+padding is 0 or 62, so the observer installed specifically to catch the inset
+landing could not see it.
+
+```
+before  16:40:22.680  chrome_height reported=51   was=50
+        16:41:34.935  surface_site
+        16:41:35.520  chrome_height reported=113   was=51    ← 585ms AFTER the tap
+
+after   16:43:51.474  chrome_height reported=51    was=50
+        16:43:51.501  page_finished_loading
+        16:43:51.632  chrome_height reported=113   was=51    ← 158ms, no interaction
+```
+
+The 113 in the "before" run was fired by the webview's **width** changing when
+C++ resized it to the too-short strip — not by the inset. So entering strip mode
+left a ~585ms window with the strip at 51pt and the bar clipped out of itself.
+Longer on a slower device. `{ box: 'border-box' }` fixes it.
+
+## Why this is the entry worth reading
+
+The strip inset diagnostic read `getComputedStyle` three seconds after load.
+That read plausibly forced the flush that made earlier runs report 113 in time,
+which would mean **the instrument was standing between me and the bug it was
+installed to find** — and that deleting it was what surfaced the defect, the
+opposite of how that is meant to go.
+
+**Plausibly, not established.** I kept no timestamps from those runs, so I cannot
+say the diagnostic caused the earlier passes. The box explains the behaviour on
+its own and that is all the code comment claims. Recorded this way deliberately:
+the satisfying causal story here is exactly the shape of the `calc()`
+misattribution in C35, taken because it was obvious rather than because it was
+shown.
+
+What generalises regardless: **a diagnostic that reads layout is not passive.**
+`getComputedStyle`, `getBoundingClientRect` and `offsetHeight` all force style
+and layout flushes, so a probe measuring a timing-sensitive layout can change
+the timing it is measuring. If the strip's behaviour had been judged on probe
+runs alone, it would have looked correct in every one.
+
+## How it was caught
+
+Not by reasoning. The deletion build reported `51` with no follow-up, which
+looked like a regression from the deletion. Two things then had to be separated:
+
+- **Background colour could not settle it.** With `viewport-fit=cover` the nav
+  paints its own padding box, so a 0 inset and a 62 inset are the same colour
+  from y=0. The earlier runs looked different only because the nav then started
+  *below* the inset and `--surface-deep` showed above it.
+- **Icon position could.** Icons at device y≈237 is 79pt, which is 62 of padding
+  plus half a 34pt row. So the inset WAS applied while the report said 51 — and
+  that contradiction is the whole finding.
+
+The strip screenshot then showed the bar *present*, which looked like the
+regression disproving itself. It was the late report arriving during the 14s
+between the tap and the screenshot. **A screenshot cannot see a 585ms window**,
+and the timestamps in the log are what distinguished "correct" from "correct
+soon enough that I did not notice".
+
+## Also
+
+`local-terminal` returned a bare `null` a third time, on a multi-line command
+with a shell variable assignment — the case recorded in the previous rotation's
+§6, written by me, after the first two. Use literals.
+
+---
+
 # C36. THE AUv3 INSET IS ZERO, and the strip clears its budget (2026-09-11)
 
 **Device, not simulator.** iPhone 13 Pro Max `00008110-000120D9228A801E`, AUM,
