@@ -48,6 +48,191 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C35. THE NAV MOVED INTO HTML, and the strip took four readings to find its own height (2026-09-11)
+
+**Simulator, not device.** `AC0AA08E` iPhone 17 Pro, runtime 27.0, Standalone
+target, `build/ios-sim`. Everything below is a simulator reading. The one claim
+that needs the phone is named as unverified at the end.
+
+ChromeBar is replaced by a `<nav>` in the shell's own document. That is
+`WP_UNIFIED_CHROME` §4's third option, which its argument against HTML chrome
+never reached: the bar is neither injected into synth.is nor maintained in two
+documents, because the shell never navigates and the site fills the rectangle
+beneath it. `showSite` no longer hides the shell — hiding it would take the
+chrome with it — it resizes it, and the page's own `body.strip` removes
+everything below its nav.
+
+Both navigation calls are measured, not inferred:
+
+| Tap | Log |
+|---|---|
+| Feed | `surface_site`, then `page_about_to_load …/network?client=synthis-plugin&chrome=host` |
+| Library | `surface_shell` |
+
+The composite renders: strip on top, synth.is live below, `rootChildren:1`, no
+blank and no memory kill. A3.2's probe result holds as a layout and not only as
+a probe.
+
+## The strip was empty, and the cause was not where I put it
+
+First build: the strip was 150 device px of bare `--surface-deep` with no bar in
+it. `nav#chrome`'s background began at device y≈185 — the bar sat 62pt down
+inside a 50pt strip, 35px below its own bottom edge.
+
+JUCE was cleared from source first: `juce_WebBrowserComponent_mac.mm` is the iOS
+implementation and mentions neither `contentInsetAdjustmentBehavior` nor
+`safeArea` nor `scrollView`, so WKWebView's defaults were in force.
+
+Four readings, one question each:
+
+| # | Reading | Conclusion |
+|---|---|---|
+| 1 | `innerHeight` 812 vs `editor_resized h=874`, `navTop` 0, `scrollTop` 0, `envTop` 0 | the layout VIEWPORT was inset; the content was not scrolled |
+| 2 | `innerHeight` 874, `envTop` 62 | `viewport-fit=cover` restores the viewport and exposes the inset |
+| 3 | `chrome_height reported=50` ×3, under `height: calc(50px + env(…))` | the page measures its own bar at exactly the calc's first term, while an inline `env()` in the same document reads 62 |
+| 4 | `reported=51` ×3 under an auto height, with `navPadTop` `"62px"`, `navCssH` `"113px"`, `navH` 113 | the stylesheet resolved `env` perfectly — the fault was TIMING |
+
+Reading 4's `51` is the tell. It is 34 (tabs) + 16 (status) + 1 (border) — the
+bar with **no padding above it** — measured on an element whose computed
+`paddingTop` was `62px` three seconds later. So the box grew between the report
+and the probe.
+
+`env(safe-area-inset-top)` is **0 at first layout and becomes 62 milliseconds
+later, and its arrival raises no window `resize`**. All three reports — script
+end, `requestAnimationFrame`, `resize` — fired inside that window. Three
+observations inside the wrong window are still one observation.
+
+A `ResizeObserver` on the element itself cannot miss it, whatever the cause:
+
+```
+chrome_height reported=51  using=51  was=50   ← eager floor
+chrome_height reported=113 using=113 was=51   ← observer, inset landed
+probe: navH 113  (independent, 3s later)
+```
+
+So the strip's height is **reported by the page, not computed by C++**.
+`kStripHeight` (50) is the bar and only seeds `stripHeight_` as a fallback; the
+element is that plus whatever inset applies, which is 62pt here and expected to
+be 0 in a host frame. Nothing on the C++ side can compute the second term.
+
+## I blamed `calc()`, and I was wrong
+
+Reading 3 has an obvious reading — 50 is the calc's first term, so the `env()`
+term contributed nothing — and I took it, wrote "no `env()` inside `calc()`, and
+that is measured" into the `nav#chrome` comment, and restructured the rule to an
+auto height to avoid it. Reading 4's `getComputedStyle` showed `paddingTop:
+"62px"` and `height: "113px"`: the stylesheet had been resolving `env` correctly
+all along, inside `calc()` included. The 50 was the inset being absent, not the
+function being unsupported — and 0 is what an absent inset and a broken `env()`
+both look like. The correction sits in that comment next to the wrong claim.
+
+The restructure stands, for a different reason than the one I gave: the rows
+carry their own heights, so the total falls out of layout and the number the
+page reports is what it **laid out** rather than what it was told to be. Had
+reading 4 not included computed style, I would have "fixed" `calc` and booked
+the result.
+
+Same shape as C32. The reading that mattered was the one that contradicted the
+hypothesis the build was made to confirm.
+
+## Two of my own instruments were wrong before the code was
+
+**`chrome_height` logged only on change.** That made "the page never called" and
+"the page reported the seed value" produce identical silence — and that was
+exactly the pair I then needed to distinguish. It logs unconditionally now,
+including `args=`. C25's rule about writing the check that refuses rather than
+the one you read applies to instruments too.
+
+**A blank screenshot was nearly filed as a finding.** The first shot after
+install was pure white at 999 bytes and I went looking for a broken stylesheet.
+It was the launch screen: `page_finished_loading` lands ~6.8s after launch and I
+shot at 10s with the animation still up. The previous build had the same gap and
+got away with it. **Poll the log for `page_finished_loading`; do not sleep.**
+
+## Deploy skew — `chrome=host` is sent to a site that cannot read it
+
+The session prompt has `5521287` as the site's nav standing down. It does not,
+in production. The deployed bundle at `https://synth.is/assets/index-By5LI93m.js`
+contains `synthis_plugin_host` once and `synthis_host_draws_chrome` **zero**
+times: `isPluginHost` is live, `hostDrawsChrome` is not. `efe5386` is committed
+in `kromosynth-desktop` and not deployed.
+
+So the screenshot shows **two navigation bars**, ours above the site's, ~20pt
+apart — precisely the case `pluginHost.js`'s own comment predicted for a new
+plugin against an old deploy, resolving in the safe direction: ugly, not broken.
+
+**Correction to a claim I made earlier the same day.** I reported that the
+plugin's site surface had no account affordance as of `5521287`. It has one right
+now — Sign In and Create Account are both in the strip screenshot, in the site's
+own nav. The gap is real but **pending**: it appears when `kromosynth-desktop`
+deploys, not before. That reorders the dependency — the question of whether the
+bar carries an account item gates the DEPLOY, not this work.
+
+## Assets, and the rule they had to survive
+
+`ShellPage.h`'s stated rule is no fonts, no CDN, no images, because every
+external reference is a network request on the one surface justified by working
+without a network. The logo is served from a compiled-in constant through the
+same resource provider that serves the page, on a new `/logo.svg` route — the
+bytes never leave the binary, so the rule holds. What it forbids is fetching,
+not drawing. Icons are lucide 0.454.0's own path data, inline, from the package
+the web app imports.
+
+Funnel Sans is **not** here. It is the only part with a real size cost and
+`Palette.h:191` says it is not to be smuggled in with a colour change. It wants
+its own commit with a measured number.
+
+## Two defects fixed on the way, both invisible to a screenshot
+
+The label breakpoint was `560px` with a comment claiming it mirrors the web
+app's `hidden sm:inline`. Tailwind's `sm` is 640. At 402pt both give icon-only,
+so no screenshot here could have caught the discrepancy — the comment was an
+assertion the number did not support. Now `639px`.
+
+The S mark is four horizontal bars and lucide's `library` is four vertical ones;
+at 18px side by side they read as two icons rather than a mark and a tab. Ruled
+off with a border and margin.
+
+## UNVERIFIED, and only the phone can settle it
+
+**The AUv3 inset is an expectation, not a measurement.** The reasoning is that a
+host-framed view does not touch the top of the screen, and the site's own
+webview corroborates it — starting at y=150 it showed ~8pt of offset against the
+shell's 62. But the standalone is the only target measured. If a host reports a
+non-zero inset the `ResizeObserver` path handles it without code changes, which
+is the point of measuring rather than computing; that it reports zero is still a
+guess. GarageBand's 736×242 letterbox is where it matters most — 113pt of chrome
+out of 242 would be untenable, and 50 is the number that budget was built on.
+
+**Also untested:** AUM, orientation change, landscape (the body handles top and
+bottom insets and explicitly not left/right, which will clip under a rounded
+corner), and the strip against a site page that is not `/network`.
+
+`kNativeChrome` in `PluginEditor.cpp` is one character from restoring the old
+bar; both paths still compile. The strip-inset block in `kProbeScript` is marked
+disposable and goes when this settles.
+
+## Tooling notes
+
+- `xcode-27-headless` `DeviceInteractionSynthesize` **does** drive the simulator
+  despite its `skillToTrigger` insisting on a subagent. Its
+  `applicationState: "NotRun"` is a red herring — the hierarchy dump alongside
+  it showed `Application, pid: 5556` running. Sessions expire after a couple of
+  calls; restart rather than debug.
+- Web content appears as a `RemotePlaceholder` in the a11y tree, so DOM
+  positions are not available. Tap coordinates came from the measured CSS box
+  (tabs row y 62–96pt, 31pt buttons from x≈31) and `t 80 79` hit Feed first try.
+  Computed from layout, not eyeballed from a screenshot.
+- `local-terminal` returns a bare `null` for multi-line commands carrying a
+  shell variable assignment, returning in seconds rather than hanging. It is
+  **not** the hang trap it resembles. Single-line literals work.
+- `timeout` and `gtimeout` DO exist here (`/opt/homebrew/bin`), unlike the Mac
+  Studio.
+- Every `simctl install` produced a fresh data container UUID, so the log path
+  must be re-derived each time.
+
+---
+
 # C34. THE ICON: FIVE HYPOTHESES DEAD, AND I AM PUTTING IT DOWN (2026-09-10)
 
 Everything checkable from this side is checked. Recording the eliminations so
