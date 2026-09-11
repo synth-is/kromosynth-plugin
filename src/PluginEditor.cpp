@@ -31,6 +31,20 @@ using namespace kromosynth;
   #define KROMOSYNTH_BROWSER_INSET 0
 #endif
 
+// ── Which bar draws ─────────────────────────────────────────────────────────
+//
+// TEMPORARY, and it goes away with ChromeBar itself.
+//
+// The nav moved into the shell's own document -- WP_UNIFIED_CHROME section 4's
+// third option, which its argument against HTML chrome never reached, because
+// the shell neither injects into synth.is nor keeps a second copy of the bar.
+//
+// Both bars stay COMPILABLE for one build so they can be compared rather than
+// swapped sight-unseen, but only one is CONSTRUCTED: two bars drawn at once is
+// not a comparison, it is the three stacked chromes the A3.2 probe looked like.
+// Flip to true to get the native bar back.
+static constexpr bool kNativeChrome = false;
+
 // ── Stage 0 environment probe ────────────────────────────────────────────────
 //
 // DISPOSABLE, and the most disposable thing in the repository — it exists to
@@ -122,6 +136,55 @@ static const char* kProbeScript = R"JS(
   } catch (e) { r.webgl = 'ERR ' + e; }
   try { r.serviceWorker = ('serviceWorker' in navigator) ? 'present' : 'absent'; } catch (e) { r.serviceWorker = 'ERR ' + e; }
   try { r.rootChildren = document.getElementById('root') ? document.getElementById('root').childElementCount : -1; } catch (e) { r.rootChildren = -1; }
+  // ── STRIP INSET DIAGNOSTIC ─ DISPOSABLE, delete once the strip height is settled.
+  //
+  // nav#chrome's background begins at device y 185 on a 3x screen, so the bar
+  // sits about 61.7pt down inside its own webview while the strip is 50pt --
+  // the bar is clipped out entirely and the strip shows bare --surface-deep.
+  //
+  // JUCE's iOS WebBrowserComponent is juce_WebBrowserComponent_mac.mm and it
+  // mentions neither contentInsetAdjustmentBehavior nor safeArea nor
+  // scrollView, so WKWebView's default automatic adjustment is the suspect.
+  // That is a reading of JUCE's source, not of this runtime, which is why
+  // these numbers exist: they say WHICH layer moved instead of leaving it to a
+  // colour boundary in a screenshot. C34's rule -- observe the failure rather
+  // than eliminate causes on a guessed layer.
+  //
+  //   innerHeight against the `editor_resized h=` on the preceding log line
+  //       equal    -> layout viewport is full height, content is SCROLL-INSET
+  //       smaller  -> the layout viewport itself was inset
+  //   navTop      nav#chrome's top in viewport coords; -1 on the site page,
+  //               which is the control -- that webview does not touch the top
+  //               of the screen and showed only ~8pt of offset
+  //   scrollTop   a contentInset leaves this at 0 with content visually down
+  //   envTop      resolved env(safe-area-inset-top). Expected 0 here, because
+  //               the meta viewport has no viewport-fit=cover yet. If it IS 0
+  //               and innerHeight matches, cover is the documented lever and
+  //               the next build tests it.
+  try {
+    var navEl = document.getElementById('chrome');
+    r.innerHeight = window.innerHeight;
+    r.clientHeight = document.documentElement.clientHeight;
+    r.navTop = navEl ? Math.round(navEl.getBoundingClientRect().top * 10) / 10 : -1;
+    r.navH = navEl ? Math.round(navEl.getBoundingClientRect().height * 10) / 10 : -1;
+    // WHICH DECLARATION RESOLVED. The reported height came back 50 with an
+    // inline env() reading 62 in the same document, so these say whether the
+    // stylesheet's padding-top saw the inset at all -- rather than leaving me
+    // to pick between calc, the stylesheet and cascade order by guessing.
+    if (navEl) {
+      var cs = getComputedStyle(navEl);
+      r.navPadTop = cs.paddingTop;
+      r.navCssH = cs.height;
+    }
+    var se = document.scrollingElement || document.documentElement;
+    r.scrollTop = se ? se.scrollTop : -1;
+    var pr = document.createElement('div');
+    pr.style.cssText = 'position:absolute;top:0;left:0;width:1px;'
+                     + 'height:env(safe-area-inset-top,0px);visibility:hidden';
+    document.body.appendChild(pr);
+    r.envTop = pr.offsetHeight;
+    document.body.removeChild(pr);
+  } catch (e) { r.inset = 'THREW ' + e; }
   return JSON.stringify(r);
 })();
 )JS";
@@ -161,6 +224,26 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             // query existed.
             const auto clean = path.upToFirstOccurrenceOf ("?", false, false);
 
+            // The logo, and the reason there is a second route here at all.
+            //
+            // ShellPage.h's rule is no fonts, no CDN and no images, because
+            // every external reference is a network request on the one surface
+            // justified by working without a network. Handing the SVG over from
+            // a compiled-in constant through this same provider KEEPS that
+            // rule: the bytes never leave the binary. What the rule forbids is
+            // fetching, not drawing.
+            if (clean == "/logo.svg")
+            {
+                const auto* svg = kromosynth::shell::kLogoSvg;
+                const auto svgLen = std::strlen (svg);
+
+                std::vector<std::byte> svgBytes (svgLen);
+                std::memcpy (svgBytes.data(), svg, svgLen);
+
+                return juce::WebBrowserComponent::Resource {
+                    std::move (svgBytes), juce::String ("image/svg+xml") };
+            }
+
             if (clean != "/" && clean != "/index.html")
                 return std::nullopt;
 
@@ -168,9 +251,16 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             // Its values live in Palette.h and nowhere else, so this
             // stylesheet and the native chrome cannot drift apart -- see the
             // C26 note in that file for what happens when they can.
+            //
+            // kStripHeight goes in the same way and for the same reason: the
+            // editor lays the shell out at that height when the site is up and
+            // the nav#chrome rule draws the bar at it. A literal in both places
+            // would be two numbers obliged to agree.
             const juce::String html = juce::String (kromosynth::shell::kIndexHtml)
                                           .replace ("/*PALETTE*/",
-                                                    kromosynth::palette::rootCss());
+                                                    kromosynth::palette::rootCss())
+                                          .replace ("/*STRIPH*/",
+                                                    juce::String (kromosynth::shell::kStripHeight));
             const auto utf8 = html.toRawUTF8();
             const auto len = std::strlen (utf8);
 
@@ -523,6 +613,66 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             showSite (true);
             done (juce::var (true));
         })
+        .withNativeFunction ("chromeHeight",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // THE PAGE MEASURES ITS OWN BAR AND WE BELIEVE IT.
+            //
+            // kStripHeight is only the bar; the element is that plus
+            // env(safe-area-inset-top), and nothing on this side can compute
+            // the second term for the rectangle we actually occupy. The first
+            // version of this assumed 50pt and the bar rendered 62pt below the
+            // strip's own bottom edge -- measured, AUV3_IOS_FINDINGS C35.
+            //
+            // Clamped rather than trusted blindly. A page is not a threat here
+            // -- it is ours, served from this binary, and cannot navigate away
+            // -- but a layout bug reporting 0 would hide the chrome entirely
+            // and one reporting 5000 would hide the content, and neither should
+            // be reachable from a CSS mistake.
+            const auto reported = args.size() > 0 ? (int) args[0] : 0;
+            const auto clamped  = juce::jlimit (kromosynth::shell::kStripHeight,
+                                                kromosynth::shell::kStripHeight * 6,
+                                                reported);
+
+            // LOGGED UNCONDITIONALLY, and the first version was not.
+            //
+            // It logged only when the value CHANGED, which made "the page never
+            // called" and "the page reported the seed value" produce identical
+            // silence -- and that is exactly the pair I then had to tell apart.
+            // C25's rule about writing the check that refuses rather than the
+            // one you read applies to instruments too.
+            proc_.logEvent ("chrome_height reported=" + juce::String (reported)
+                            + " using=" + juce::String (clamped)
+                            + " was=" + juce::String (stripHeight_)
+                            + " args=" + juce::String (args.size()));
+
+            if (clamped != stripHeight_)
+            {
+                stripHeight_ = clamped;
+
+                // Only matters while the site is up -- that is the one state
+                // where this number decides anything. resized() is cheap and
+                // unconditional is one fewer branch to get wrong.
+                resized();
+            }
+
+            done (juce::var (clamped));
+        })
+        .withNativeFunction ("showLibrary",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // The way back, which the page could not ask for until the nav was
+            // in it. ChromeBar held this as a `showShell` callback; the strip's
+            // Library tab needs it as a call.
+            //
+            // The site is NOT navigated away from and NOT unloaded -- it keeps
+            // `withKeepPageLoadedWhenBrowserIsHidden`, so coming back resumes
+            // wherever the user was, half-completed sign-in included.
+            showSite (false);
+            done (juce::var (true));
+        })
         .withNativeFunction ("openSitePath",
                              [this] (const juce::Array<juce::var>& args,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
@@ -616,21 +766,29 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     site_->interceptsSentinels = true;
     addChildComponent (*site_);
 
-    chromeBar_ = std::make_unique<ChromeBar> (
-        proc_,
-        [this] { showSite (false); },
-        [this] (const juce::String& path)
-        {
-            // Navigate FIRST, then raise the surface. The other order shows the
-            // page the user was last on for however long the load takes, which
-            // reads as the tap having gone to the wrong place.
-            navigateSiteTo (path);
-            showSite (true);
-        });
+    // CONSTRUCTED ONLY WHEN THE NATIVE BAR IS THE ONE THAT DRAWS. Left null
+    // otherwise, and everything downstream null-checks it -- see the note on
+    // kNativeChrome at the top of this file, and mind that showSite's guard
+    // used to include chromeBar_, which would have made a null bar disable
+    // surface switching entirely.
+    if (kNativeChrome)
+    {
+        chromeBar_ = std::make_unique<ChromeBar> (
+            proc_,
+            [this] { showSite (false); },
+            [this] (const juce::String& path)
+            {
+                // Navigate FIRST, then raise the surface. The other order
+                // shows the page the user was last on for however long the load
+                // takes, which reads as the tap having gone to the wrong place.
+                navigateSiteTo (path);
+                showSite (true);
+            });
 
-    // Visible from the start, unlike the site bar it replaces. It is chrome
-    // now, so there is no state in which it should be absent.
-    addAndMakeVisible (*chromeBar_);
+        // Visible from the start, unlike the site bar it replaces. It is chrome
+        // now, so there is no state in which it should be absent.
+        addAndMakeVisible (*chromeBar_);
+    }
 #endif
 
     // Resizable with a wide range, because "does it resize" is a gate
@@ -727,22 +885,37 @@ void KromosynthAudioProcessorEditor::resized()
     // strip -- which made going between them a full-view mode change rather
     // than a change of content. Now the chrome stays put and the surface swaps
     // beneath it.
+    //
+    // Null whenever the nav is HTML, in which case there is nothing to reserve:
+    // the chrome is inside the shell's own rectangle.
     if (chromeBar_ != nullptr)
+    {
         bounds.removeFromTop (ChromeBar::kBarHeight);
-
-    if (chromeBar_ != nullptr)
         chromeBar_->setBounds (getLocalBounds().removeFromTop (ChromeBar::kBarHeight));
+    }
 
     if (browser_ != nullptr)
     {
-        // Both surfaces get the same rectangle, below the persistent bar. The
-        // section A3.1c inset diagnostic needs this to be unconditional, and
-        // it is: the bar is always present, so the shell's rectangle is the
-        // same on every call.
-        auto area = bounds;
+        // THE SHELL'S RECTANGLE IS WHAT SAYS WHICH SURFACE IS IN CHARGE.
+        //
+        // Under HTML chrome the shell can never be hidden, so what changes is
+        // how much room it gets: the whole area for the library, a strip when
+        // the site is up. Under the native bar both surfaces get the same
+        // rectangle and visibility decides, which is what this used to do
+        // unconditionally.
+        auto shellArea = bounds;
+        auto siteArea  = bounds;
+
+        if (siteVisible_ && ! kNativeChrome)
+        {
+            shellArea = bounds.withHeight (stripHeight_);
+            siteArea  = bounds.withTrimmedTop (stripHeight_);
+        }
+
+        auto area = shellArea;
 
         if (site_ != nullptr)
-            site_->setBounds (bounds);
+            site_->setBounds (siteArea);
 
 #if KROMOSYNTH_BROWSER_INSET > 0
         // §A3.1c occlusion test — DIAGNOSTIC ONLY, not a kept workaround.
@@ -1069,7 +1242,10 @@ void KromosynthAudioProcessorEditor::navigateSiteTo (const juce::String& path)
 
 void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
 {
-    if (site_ == nullptr || chromeBar_ == nullptr || browser_ == nullptr)
+    // chromeBar_ is DELIBERATELY NOT IN THIS GUARD. It is null whenever the nav
+    // is HTML, and requiring it here would silently turn every tab into a
+    // no-op -- the failure would look like the page, not like this line.
+    if (site_ == nullptr || browser_ == nullptr)
         return;
 
     siteVisible_ = shouldShowSite;
@@ -1110,21 +1286,29 @@ void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
 
     site_->setVisible (shouldShowSite);
 
-    // PROBE ANSWERED (section A3.2, 2026-09-10): two WKWebViews DO composite
-    // simultaneously in an AUv3 -- the shell's header rendered in a strip with
-    // synth.is live below it. So the nav can live in the shell's own document
-    // as HTML, shared with the web app, and WP_UNIFIED_CHROME section 4's
-    // objection does not reach that design.
+    // THE STRIP, which is what the A3.2 probe was for (2026-09-10): two
+    // WKWebViews DO composite simultaneously in an AUv3 -- the shell's header
+    // rendered in a strip with synth.is live below it, no blank and no memory
+    // kill. So the nav lives in the shell's own document, shared in substance
+    // with the web app, and WP_UNIFIED_CHROME section 4's objection never
+    // reached this option.
     //
-    // Reverted to one-at-a-time because the probe was not a layout: it stacked
-    // three chromes and looked it. The strip returns when the nav actually
-    // moves into the shell page.
-    browser_->setVisible (! shouldShowSite);
+    // The shell therefore STAYS VISIBLE. Hiding it would take the chrome with
+    // it, which is the one thing this design cannot do. resized() gives it a
+    // strip instead, and the page's own body.strip clears everything below its
+    // nav so the strip shows a bar and not the top of a list.
+    //
+    // The probe was reverted on the day because it was not a layout -- it
+    // stacked three chromes and looked it. This is the layout.
+    if (kNativeChrome)
+        browser_->setVisible (! shouldShowSite);
 
     // The bar is NOT hidden with the site any more -- it is the persistent
     // chrome and hiding it is what made this a mode switch. It only needs
-    // telling which destination now reads as current.
-    chromeBar_->setActiveDestination (shouldShowSite ? activeSiteDestination_ : 0);
+    // telling which destination now reads as current. Null under HTML chrome,
+    // where the page tracks this itself: it is the initiator, so it knows.
+    if (chromeBar_ != nullptr)
+        chromeBar_->setActiveDestination (shouldShowSite ? activeSiteDestination_ : 0);
 
     proc_.logEvent (shouldShowSite ? "surface_site" : "surface_shell");
 

@@ -13,6 +13,9 @@
 
 #include "PluginProcessor.h"
 #include "ArtifactAcquisition.h"
+// For kStripHeight, which seeds stripHeight_ below. The page owns that number;
+// this header only needs its fallback.
+#include "ShellPage.h"
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
@@ -218,6 +221,20 @@ private:
     void navigateSiteTo (const juce::String& path);
 
     bool siteVisible_ = false;
+
+    /** The strip's height in logical pixels, AS REPORTED BY THE PAGE.
+
+        Not a constant, because the page's own bar is kStripHeight plus
+        env(safe-area-inset-top) and neither this process nor this platform can
+        tell us the second term for the rectangle we actually occupy. Measured
+        2026-09-11: 62pt in the standalone on an iPhone 17 Pro, expected 0 in
+        an AUv3 whose view sits inside a host frame.
+
+        Seeded with kStripHeight so a page that never reports degrades to a
+        strip that is too short -- the bug this replaces -- rather than to one
+        of zero height, which would hide the chrome completely.
+    */
+    int stripHeight_ = kromosynth::shell::kStripHeight;
 
     // Which SITE destination the bar should light when the site is up. Kept on
     // the editor rather than in the bar because the editor is what knows where

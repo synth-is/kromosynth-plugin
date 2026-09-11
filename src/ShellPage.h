@@ -39,13 +39,77 @@
 
 namespace kromosynth::shell
 {
+/** The height the shell collapses to when the site is up, in logical pixels.
+
+    ONE source. The editor lays the webview out at this height and the CSS
+    below draws the bar at this height, via the STRIPH placeholder comment the
+    resource provider substitutes next to the palette's. A literal in both places
+    would be two numbers obliged to agree, which is the drift Palette.h's C26
+    note is about.
+
+    34 for the tabs and 16 for the status line, matching what ChromeBar
+    measured against GarageBand's 736x242 letterbox: 192 left for content is
+    four rows at 44 against a criterion of three.
+*/
+inline constexpr int kStripHeight = 50;
+
+/** The logo, served by the resource provider rather than fetched.
+
+    The no-images rule below is about EXTERNAL references, because those are
+    network requests on the one surface justified by working without a network.
+    This is compiled into the binary and handed over by the same provider that
+    serves the page, so the rule holds.
+
+    Byte-for-byte `packages/web/src/assets/synthis_S_logo.svg` minus its XML
+    prolog, so the plugin and the web app cannot show different marks. The
+    `fill:#ffffff` is the file's own -- the web app uses the white logo on its
+    dark chrome too, and this chrome is darker still.
+*/
+inline constexpr const char* kLogoSvg = R"SVG(<svg
+   version="1.1"
+   width="174.02478"
+   height="246.08557"
+   viewBox="0 0 174.02478 246.08557"
+   xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <clipPath clipPathUnits="userSpaceOnUse" id="clipPath4">
+      <path d="M 0,0 H 1920 V 1080 H 0 Z" transform="translate(-994.1677,-454.81691)" />
+    </clipPath>
+  </defs>
+  <g transform="translate(-1180.6406,-596.95721)">
+    <path d="m 0,0 v 0 c 0,-3.92 -3.178,-7.099 -7.099,-7.099 h -83.42 c -3.921,0 -7.099,3.179 -7.099,7.099 0,3.92 3.178,7.099 7.099,7.099 h 83.42 C -3.178,7.099 0,3.92 0,0"
+       style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+       transform="matrix(1.3333333,0,0,-1.3333333,1325.5569,833.57747)"
+       clip-path="url(#clipPath4)" />
+    <path d="m 0,0 v 0 c 0,-3.921 -3.178,-7.099 -7.099,-7.099 h -40.069 c -3.921,0 -7.099,3.179 -7.099,7.099 0,3.92 3.178,7.099 7.099,7.099 H -7.099 C -3.178,7.099 0,3.92 0,0"
+       style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+       transform="matrix(1.3333333,0,0,-1.3333333,1339.9089,757.85907)" />
+    <path d="m 0,0 v 0 c 0,-3.921 -3.178,-7.099 -7.099,-7.099 h -18.363 c -3.92,0 -7.098,3.178 -7.098,7.099 0,3.92 3.178,7.099 7.098,7.099 H -7.099 C -3.178,7.099 0,3.92 0,0"
+       style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+       transform="matrix(1.3333333,0,0,-1.3333333,1289.3669,719.99987)" />
+    <path d="m 0,0 v 0 c 0,-3.921 -3.178,-7.099 -7.099,-7.099 h -72.755 c -3.921,0 -7.099,3.178 -7.099,7.099 0,3.92 3.178,7.099 7.099,7.099 H -7.099 C -3.178,7.099 0,3.92 0,0"
+       style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+       transform="matrix(1.3333333,0,0,-1.3333333,1354.6667,795.71827)" />
+    <path d="m 0,0 v 0 c 0,3.92 3.178,7.099 7.099,7.099 h 83.42 c 3.921,0 7.099,-3.179 7.099,-7.099 0,-3.92 -3.178,-7.099 -7.099,-7.099 H 7.099 C 3.178,-7.099 0,-3.92 0,0"
+       style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+       transform="matrix(1.3333333,0,0,-1.3333333,1209.7516,606.42253)" />
+    <path d="m 0,0 v 0 c 0,3.921 3.178,7.099 7.099,7.099 h 39.975 c 3.921,0 7.099,-3.178 7.099,-7.099 0,-3.92 -3.178,-7.099 -7.099,-7.099 H 7.099 C 3.178,-7.099 0,-3.92 0,0"
+       style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+       transform="matrix(1.3333333,0,0,-1.3333333,1195.4059,682.14093)" />
+    <path d="m 0,0 v 0 c 0,3.92 3.178,7.099 7.099,7.099 h 72.755 c 3.92,0 7.099,-3.179 7.099,-7.099 v 0 c 0,-3.92 -3.179,-7.099 -7.099,-7.099 H 7.099 C 3.178,-7.099 0,-3.92 0,0"
+       style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none"
+       transform="matrix(1.3333333,0,0,-1.3333333,1180.642,644.2816)" />
+  </g>
+</svg>
+)SVG";
+
 // The page. `%%STATUS%%` is not templated -- everything is fetched through the
 // bridge after load, so the HTML is static and can be served from a constant.
 inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Synth.is</title>
 <style>
 /*PALETTE*/
@@ -55,6 +119,15 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     background: var(--surface-deep); color: var(--text-primary);
     font: 14px/1.5 var(--font-stack);
     height: 100vh; display: flex; flex-direction: column;
+    /* MEASURED 2026-09-11: with viewport-fit=cover the layout viewport is the
+       full webview (874pt, not the 812 the default gave), so the bottom inset
+       is now ours to respect as well -- 34pt on this device. box-sizing:
+       border-box above keeps the total at 100vh.
+
+       Left and right are NOT handled. In landscape on a notched phone they are
+       non-zero and the list will run under the rounded corner. Named rather
+       than silently left out. */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   header {
     padding: 14px 18px; border-bottom: 1px solid var(--border-subtle);
@@ -190,16 +263,205 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   }
   footer.warn { color: var(--warning); }
   footer.err { color: var(--danger); }
+
+  /* ── The chrome strip ──────────────────────────────────────────────────────
+
+     This replaces ChromeBar, which was hand-rolled JUCE buttons and looked it.
+
+     It is WP_UNIFIED_CHROME section 4's unconsidered third option: not
+     injected into synth.is, and not a bar maintained in two documents. The
+     nav lives in THIS document, which never navigates, and the site fills the
+     rectangle beneath it. The A3.2 probe measured that two WKWebViews do
+     composite simultaneously in an AUv3, so the risk was already retired.
+
+     The BAR is kStripHeight tall. The ELEMENT is taller than that by the
+     status bar, which is why C++ cannot hold the number alone -- see below. */
+  nav#chrome {
+    /* MEASURED 2026-09-11. Under the default viewport-fit the layout viewport
+       came back 62pt shorter than the webview -- innerHeight 812 against
+       editor_resized h=874 -- with navTop 0 and scrollTop 0. So the VIEWPORT
+       was inset; the content was not scrolled. The bar sat 62pt down inside a
+       50pt strip and was clipped out of it entirely.
+
+       viewport-fit=cover hands back the full viewport and makes the inset
+       readable here instead. The bar keeps kStripHeight and the status bar
+       becomes padding above it -- which is what the shrunken viewport was doing
+       for free in library mode, and what it could not do in strip mode.
+
+       So this element's height varies with the device AND with the host: 62pt
+       of inset in the standalone, and 0 expected in an AUv3 whose view sits
+       inside a host frame rather than against the top of the screen. The page
+       reports offsetHeight through chromeHeight() and the editor sizes the
+       strip to what it is told. The AUv3 figure is an expectation, UNVERIFIED
+       in a host. */
+    flex: 0 0 auto;
+    /* AUTO HEIGHT, MEASURED AFTER LAYOUT rather than computed up front.
+
+       CORRECTION, 2026-09-11. This said "no env() inside calc(), and that is
+       measured rather than stylistic", on the evidence that the page reported
+       its nav as 50 tall while an inline env() read 62 in the same document. I
+       blamed calc. That was WRONG: the next reading added getComputedStyle and
+       showed the stylesheet resolving env perfectly -- paddingTop 62px, height
+       113px. The real cause was timing. env(safe-area-inset-top) is 0 at first
+       layout and becomes 62 shortly after, so every report fired before the
+       inset existed, and the inset arriving does not raise a window resize.
+       See the ResizeObserver comment in the script below.
+
+       The auto height stays, because it is the better shape for a different
+       reason than the one I gave: the rows below carry their own heights, so
+       the total falls out of layout and the number the page reports is what it
+       actually LAID OUT rather than what it was told to be. But calc was never
+       at fault and this comment claimed it was. */
+    height: auto;
+    padding-top: env(safe-area-inset-top, 0px);
+    display: flex; flex-direction: column;
+    background: var(--surface-base);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  /* 34, which with the 16px status line below is kStripHeight. Explicit rather
+     than `flex: 1 1 auto`: the nav's height is auto now, so a row that sized
+     itself from its parent and a parent that sized itself from its rows would
+     have nothing to stand on. */
+  nav#chrome .tabs {
+    flex: 0 0 auto; min-width: 0; height: calc(/*STRIPH*/px - 16px);
+    display: flex; align-items: center; gap: 2px; padding: 0 6px;
+  }
+  /* The real mark, which is the visible half of why this moved into HTML.
+
+     Ruled off from the tabs rather than sitting flush against them: the S is
+     four horizontal bars and lucide's `library` is four vertical ones, and at
+     18px side by side they read as two icons in a row instead of a mark and a
+     tab. */
+  nav#chrome .brand {
+    flex: 0 0 auto; display: flex; align-items: center;
+    height: 100%; padding: 0 6px 0 3px; margin-right: 7px;
+    border-right: 1px solid var(--border-subtle);
+  }
+  nav#chrome .brand img { height: 18px; width: auto; display: block; }
+
+  nav#chrome button {
+    flex: 0 1 auto; min-width: 0;
+    display: flex; align-items: center; gap: 6px;
+    background: transparent; color: var(--text-secondary);
+    border: 1px solid transparent; border-radius: 6px;
+    padding: 4px 9px; font: inherit; font-size: 12.5px; font-weight: 500;
+    cursor: pointer; white-space: nowrap;
+  }
+  nav#chrome button svg { flex: 0 0 auto; width: 15px; height: 15px; }
+  nav#chrome button:hover {
+    background: var(--surface-raised); color: var(--text-primary);
+  }
+  /* The web app's own current-tab treatment: `bg-blue-600 text-white`, which
+     Palette.h records is teal rather than blue. */
+  nav#chrome button.current { background: var(--accent); color: var(--on-accent); }
+
+  nav#chrome button.panic {
+    margin-left: auto; flex: 0 0 auto;
+    color: var(--success); border-color: var(--success-glow);
+  }
+  nav#chrome button.panic:hover {
+    background: var(--danger-surface-dim); color: var(--danger);
+    border-color: var(--danger-border);
+  }
+
+  /* LABELS DROP AT THE FIRST WIDTH THAT CANNOT HOLD THEM, which is the fix for
+     "Instrume…". The native bar had no way to do this: it measured a string
+     against a rectangle and truncated, so the longest label decided what every
+     tab looked like.
+
+     639px because Tailwind's `sm` is 640 and the web app's rule is
+     `hidden sm:inline`. This said 560 when it was written and claimed to mirror
+     that rule, which the number did not support. At 402pt both give icon-only,
+     so no screenshot could have caught it. */
+  @media (max-width: 639px) {
+    nav#chrome button .lbl { display: none; }
+    nav#chrome button { padding: 4px 8px; }
+    nav#chrome .brand { padding: 0 5px 0 2px; margin-right: 5px; }
+  }
+
+  /* The status line, folded into the bar rather than sitting above it -- the
+     same 16px ChromeBar reserved, for the same reason. A download starts while
+     the user is on the site, so the shell's own footer is not on screen when
+     there is something to report. */
+  nav#chrome .line {
+    flex: 0 0 auto; height: 16px; line-height: 16px; padding: 0 11px;
+    font-size: 11px; color: var(--text-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  nav#chrome .line.warn { color: var(--warning); }
+  nav#chrome .line.err { color: var(--danger); }
+
+  /* STRIP MODE — the site is up and owns everything below the bar.
+
+     The rest of the document is REMOVED, not clipped. A 50px viewport showing
+     the top of a taller document is still scrollable, and one stray gesture
+     would drag the instrument list up into the chrome. */
+  body.strip { height: auto; overflow: hidden; }
+  body.strip > :not(nav#chrome) { display: none; }
 </style>
 </head>
 <body>
+
+<!-- The chrome. First child of <body> and the only element strip mode keeps.
+
+     `data-path` empty means the PLUGIN'S OWN LIBRARY, which is not a site page
+     -- the same reason ChromeBar called it "Library" and not "Instruments":
+     the web app's /instruments is the account's rendered instruments, this is
+     what is on the device. Labels and order are ChromeBar's, unchanged, so this
+     is a like-for-like replacement and can be compared as one.
+
+     /instruments over /instrument even though the router redirects: it is what
+     NavigationBar.jsx:93 lists, and matching that file is the invariant. The
+     redirect costs one navigation.
+
+     Icons are lucide 0.454.0's own path data, lifted from the same package the
+     web app imports (ISC), with lucide's default attributes. Nothing is
+     fetched -- see kLogoSvg on why that matters here. -->
+<nav id="chrome">
+  <div class="tabs">
+    <span class="brand"><img src="logo.svg" alt="Synth.is"></span>
+
+    <button class="tab current" data-dest="0" data-path="" title="Instruments downloaded to this device">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>
+      <span class="lbl">Library</span>
+    </button>
+
+    <button class="tab" data-dest="1" data-path="/network" title="Discover sounds from the community">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z"/><circle cx="12" cy="12" r="10"/></svg>
+      <span class="lbl">Feed</span>
+    </button>
+
+    <button class="tab" data-dest="2" data-path="/collection" title="Your liked sounds collection">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+      <span class="lbl">Garden</span>
+    </button>
+
+    <button class="tab" data-dest="3" data-path="/instruments" title="Download rendered virtual instruments">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+      <span class="lbl">Instruments</span>
+    </button>
+
+    <button class="tab" data-dest="4" data-path="/tree" title="Explore evolutionary sound lineages">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 14 3 3.3a1 1 0 0 1-.7 1.7H4.7a1 1 0 0 1-.7-1.7L7 14h-.3a1 1 0 0 1-.7-1.7L9 9h-.2A1 1 0 0 1 8 7.3L12 3l4 4.3a1 1 0 0 1-.8 1.7H15l3 3.3a1 1 0 0 1-.7 1.7H17Z"/><path d="M12 22v-3"/></svg>
+      <span class="lbl">Biomes</span>
+    </button>
+
+    <!-- id="panic" moved HERE from the header rather than added alongside it.
+         The header's copy was unreachable the moment the site filled the view,
+         which is why ChromeBar drew a second one -- and two Panic buttons 30px
+         apart is the duplication that made the old bar look hand-rolled. One
+         button, and the existing handler finds it unchanged. -->
+    <button class="panic" id="panic" title="Reinitialise all voices">Panic</button>
+  </div>
+  <div class="line" id="navline"></div>
+</nav>
+
 <header>
   <h1>Instruments</h1>
   <span class="count" id="count"></span>
   <button id="browse">Browse synth.is</button>
   <button id="refresh">Refresh</button>
   <button id="testnote">Test note</button>
-  <button id="panic">Panic</button>
 </header>
 <div class="toolbar">
   <input id="filter" type="search" autocomplete="off"
@@ -258,6 +520,17 @@ function setStatus (text, kind) {
   const el = document.getElementById('status');
   el.textContent = text;
   el.className = kind || '';
+
+  // Mirrored into the strip, which is the ONLY status surface while the site is
+  // up -- the footer this just wrote to is display:none in strip mode.
+  // ChromeBar folded a 16px row into itself for exactly this reason, and its
+  // comment is the argument: a download STARTS on the site, so nothing in the
+  // library is on screen when there is something to report.
+  const line = document.getElementById('navline');
+  if (line) {
+    line.textContent = text;
+    line.className = 'line' + (kind ? ' ' + kind : '');
+  }
 }
 
 function call (name, ...args) {
@@ -667,7 +940,12 @@ function render () {
         const params = 'run=' + encodeURIComponent(src.evolutionRunId)
           + '&view=tree&highlight=' + encodeURIComponent(src.soundId);
 
+        // Biomes' tab lights, because /tree is where this goes. A deep link
+        // that left Library current would be the bar lying about the surface.
+        setStrip(true, 4);
+
         call('openSitePath', '/tree?' + params).catch(function (err) {
+          setStrip(false, 0);
           setStatus(String(err), 'err');
         });
       });
@@ -1103,11 +1381,116 @@ setInterval(async () => {
   } catch (e) { /* editor closing */ }
 }, 500);
 
-// The only way into the site surface. The site cannot put the user back here --
-// it has no bridge -- so the return trip is the plugin's own strip, drawn in
-// C++ above the site component.
+// ── The chrome strip ──────────────────────────────────────────────────────
+//
+// THERE IS NO C++ -> JS CHANNEL HERE, and that is a consequence rather than an
+// omission. showSite is reachable only from this page's own native calls --
+// openSite, openSitePath, showLibrary -- so the shell is always the initiator
+// and already knows which surface is up. The editor is reconstructed with the
+// library showing on every window open, so there is no state to restore on
+// load either. If a future caller raises the site from C++, this stops being
+// true and the bar starts lying; that caller has to tell the page.
+function setStrip (on, dest) {
+  document.body.classList.toggle('strip', on);
+
+  const tabs = document.querySelectorAll('nav#chrome .tab');
+  for (let i = 0; i < tabs.length; i++)
+    tabs[i].classList.toggle('current', tabs[i].dataset.dest === String(dest));
+}
+
+// THE STRIP'S HEIGHT IS MEASURED, NOT ASSUMED.
+//
+// kStripHeight is the bar; the element is that plus env(safe-area-inset-top),
+// which is 62pt in the standalone on this device and expected to be 0 in an
+// AUv3 sitting inside a host frame. C++ cannot compute either one, and the
+// version that assumed 50pt clipped the bar out of its own strip entirely.
+//
+// Reported on load and on resize, because the inset moves with orientation and
+// with whatever rectangle a host hands us. The editor defaults to kStripHeight
+// until the first report, so a page that never answers degrades to the old
+// wrong-but-bounded behaviour rather than to a zero-height strip.
+let lastReportedChromeHeight = 0;
+
+function reportChromeHeight () {
+  const nav = document.getElementById('chrome');
+  if (!nav || !backend) return;
+
+  const h = Math.ceil(nav.getBoundingClientRect().height);
+  if (h <= 0 || h === lastReportedChromeHeight) return;
+
+  lastReportedChromeHeight = h;
+  call('chromeHeight', h).catch(function () { /* editor closing */ });
+}
+
+// A ResizeObserver, because ON LOAD IS TOO EARLY and that is measured.
+//
+// The version before this called on script end, on requestAnimationFrame and
+// on window resize, and all three reported 51 -- the bar with no inset above
+// it. The probe, three seconds later, read the same element at 113 with
+// paddingTop 62px. So env(safe-area-inset-top) is 0 at first layout and
+// becomes 62 shortly after, and the inset arriving does NOT fire a window
+// resize. Three observations inside the wrong window are still one
+// observation.
+//
+// I had blamed env() inside calc() for the earlier reading and restructured
+// this rule accordingly. That was wrong -- getComputedStyle showed the
+// stylesheet resolving env perfectly. The restructure stands because an auto
+// height measured after layout is the better shape anyway, not because the
+// reason given for it held.
+//
+// An observer on the element itself cannot miss the change whatever causes it:
+// the inset landing, an orientation change, the 639px label breakpoint, or a
+// host handing over a different rectangle.
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(reportChromeHeight);
+  const navEl = document.getElementById('chrome');
+  if (navEl) ro.observe(navEl);
+}
+
+window.addEventListener('resize', reportChromeHeight);
+
+// Still called eagerly, as a floor rather than as the answer. Without
+// ResizeObserver this is all there is, and a strip one inset too short beats a
+// strip of nothing.
+reportChromeHeight();
+
+const navTabs = document.querySelectorAll('nav#chrome .tab');
+for (let i = 0; i < navTabs.length; i++) {
+  navTabs[i].addEventListener('click', function () {
+    const path = this.dataset.path;
+
+    // Empty path is the plugin's own library: no navigation, just give the
+    // shell the whole rectangle back.
+    if (!path) {
+      setStrip(false, 0);
+      call('showLibrary').catch(function (e) { setStatus(String(e), 'err'); });
+      return;
+    }
+
+    // Class flip FIRST, navigation second. The flip is local and instant where
+    // the load is neither, and the other order leaves the tap looking like it
+    // never registered for as long as the site takes to answer. Undone if the
+    // call is refused, which openSitePath does for anything not site-relative.
+    setStrip(true, this.dataset.dest);
+
+    call('openSitePath', path).catch(function (e) {
+      setStrip(false, 0);
+      setStatus(String(e), 'err');
+    });
+  });
+}
+
+// The other way into the site surface, kept because it is the one that does
+// NOT navigate -- openSite resumes wherever the user had got to, including a
+// half-completed sign-in, which is the whole reason showSite loads lazily and
+// once. Feed's tab lights because showSite's first load is the app root, and
+// that is a feed.
 document.getElementById('browse').addEventListener('click', function () {
-  call('openSite').catch(function (e) { setStatus(String(e), 'err'); });
+  setStrip(true, 1);
+  call('openSite').catch(function (e) {
+    setStrip(false, 0);
+    setStatus(String(e), 'err');
+  });
 });
 
 // Downloads are polled, not pushed. They run on a pool thread owned by the
