@@ -1450,7 +1450,27 @@ function reportChromeHeight () {
 if (window.ResizeObserver) {
   const ro = new ResizeObserver(reportChromeHeight);
   const navEl = document.getElementById('chrome');
-  if (navEl) ro.observe(navEl);
+
+  // BORDER-BOX, NOT THE DEFAULT.
+  //
+  // ResizeObserver observes the CONTENT box unless told otherwise, and the
+  // safe-area inset arrives as padding-top -- which does not change the content
+  // box at all. Tabs 34 plus line 16 is 50 whether the padding is 0 or 62, so a
+  // content-box observer is structurally blind to the one event it exists to
+  // catch.
+  //
+  // Measured 2026-09-11: with the default box the report stayed at 51 through
+  // load even though the bar was visibly sitting at 62pt, and 113 only arrived
+  // 585ms AFTER the first tab tap -- fired by the webview's WIDTH changing when
+  // C++ resized it to the (wrong, too short) strip, not by the inset. That left
+  // a window where the strip was 51pt and clipped the bar out of itself.
+  //
+  // This was hidden for several builds by the strip inset diagnostic in
+  // kProbeScript, which read getComputedStyle three seconds after load. Whether
+  // that read was what forced the earlier runs to report 113 in time is NOT
+  // established -- I have no timestamps from those runs. What is established is
+  // the box, and the box is enough to explain it.
+  if (navEl) ro.observe(navEl, { box: 'border-box' });
 }
 
 window.addEventListener('resize', reportChromeHeight);
