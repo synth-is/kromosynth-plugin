@@ -48,6 +48,82 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C36. THE AUv3 INSET IS ZERO, and the strip clears its budget (2026-09-11)
+
+**Device, not simulator.** iPhone 13 Pro Max `00008110-000120D9228A801E`, AUM,
+`build/ios-auv3` at `e393a5f`, log pulled to
+`build/device-logs/20260911-154844-stage0-Synth-AUv3.log`.
+
+C35 left one number unmeasured and said the design turned on it. This is that
+number.
+
+```
+chrome_height reported=51  using=51  was=50     ← once; no second report
+probe (shell):  navPadTop "0px"  navCssH "51px"  navH 51  navTop 0  envTop 0
+probe (site):   navH -1  envTop 0               ← control, no nav#chrome there
+```
+
+**`env(safe-area-inset-top)` is 0 in the AUv3.** The strip is 51pt against 113
+in the standalone. Two independent sources agree, and the `ResizeObserver` never
+fired a second time because there was nothing to land — which is itself a
+reading: the single report is the evidence of absence, not a missing one.
+
+51 rather than 50 is the `border-bottom`. Recorded because someone will read it
+as an off-by-one otherwise.
+
+So the reasoning behind the design — a host-framed view does not touch the top
+of the screen, so there is nothing to inset — holds. C35 was explicit that this
+was an expectation and named the standalone as the only measured target. It is
+not an expectation now.
+
+## What this does to the GarageBand budget
+
+The worry in C35 §1 was 113 out of GarageBand's 736×242 letterbox, leaving 129
+for content against a budget of four rows at 44. At 51 it leaves **191**, which
+is that budget exactly. **GarageBand is now a look-and-feel check, not a
+viability gate**, and `ChromeBar` can go.
+
+## AUM resizes the plugin view constantly
+
+Unprompted, from one session:
+
+```
+428×926   428×879   428×280   409×524   428×574
+```
+
+428×280 is the tight one — 51pt of chrome is 18% of it, which is fine. Worth
+knowing for anything that sizes against the editor: a single `editor_resized`
+reading is not representative, and AUM hands over at least five rectangles
+including one narrower than the screen (409).
+
+At 428pt the 639px label breakpoint never trips, so AUM is icon-only throughout.
+
+## Two things the screenshots showed that the log did not
+
+**The site session survives in the AUv3's webview container.** Björn's Feed
+screenshot has the notification bell at 3 and his avatar, signed in, inside the
+appex. Relevant to the account question in `NEXT_SESSION_PROMPT_IOS` §3.4:
+whatever is decided about `hideNav`, the session itself is not the problem.
+
+**The two bars are complementary, not redundant — seen side by side.** ~20pt
+apart, same S mark, same four glyphs, same teal current-tab. Ours adds Library
+and Panic; the site's adds the bell and the avatar. **The destinations are the
+only duplicated part.** That is an argument for narrowing `hideNav` to hide the
+destination items and keep the user section, rather than hiding the whole `<nav>`
+— and it is an argument from the rendered result rather than from reading
+`NavigationBar.jsx`.
+
+## Still not measured
+
+GarageBand (look only, now), orientation change, landscape (left/right insets
+are deliberately unhandled), and `viewport-fit=cover` against a host that DOES
+report an inset — the `ResizeObserver` path is written for that case and has
+never seen it outside the standalone.
+
+No instrument was loaded in this session, so nothing here bears on audio.
+
+---
+
 # C35. THE NAV MOVED INTO HTML, and the strip took four readings to find its own height (2026-09-11)
 
 **Simulator, not device.** `AC0AA08E` iPhone 17 Pro, runtime 27.0, Standalone

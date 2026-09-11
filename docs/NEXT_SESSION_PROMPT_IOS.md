@@ -9,25 +9,26 @@ is the record. Do not re-derive it from commit messages.
 
 ## 1. The single most useful thing to know
 
-**The HTML nav works, and one unmeasured number could still invalidate it.**
+**The HTML nav is measured in a host and it clears its budget. `ChromeBar` can
+go.**
 
-The strip is 113pt on the simulator: 50 of bar plus 62 of safe-area inset. That
-is fine on a 874pt phone screen. **GarageBand gives the AUv3 a 736×242
-letterbox.** 113 out of 242 leaves 129 for content, and the four-rows-at-44
-budget every earlier sizing decision rests on assumed 50.
+This section said, for one day, that everything turned on one unmeasured number
+— the safe-area inset in an AUv3. C36 has it: **0**. The strip is 51pt in AUM
+(50 of bar plus the border) against 113 in the standalone, confirmed by two
+independent sources, and the `ResizeObserver` never fired twice because there
+was nothing to land.
 
-The design's answer is that a host-framed view does not touch the top of the
-screen, so `env(safe-area-inset-top)` should be 0 there and the strip should be
-50. **That is an expectation, not a measurement.** The site's own webview
-corroborates it — starting at y=150 it showed ~8pt of offset against the
-shell's 62 — and the `ResizeObserver` path absorbs any value without code
-changes. But no host has been measured.
+So GarageBand's 736×242 leaves 191pt for content, which is the four-rows-at-44
+budget exactly. **GarageBand is a look-and-feel check now, not a viability
+gate.** Start at §3.
 
-So: **§3.1 before anything else, and it needs the phone.** Everything about
-whether this design ships turns on one number in one log line.
+The useful thing to carry forward instead: **AUM hands the plugin at least five
+different rectangles in a single session** — 428×926, 428×879, 428×280, 409×524,
+428×574, including one narrower than the screen. Anything that sizes against the
+editor cannot read one `editor_resized` line and call it the layout.
 
-The simulator loop from yesterday holds and is still the right tool for UI work
-— same `cmake` invocation below, unchanged. Three corrections to how to drive it:
+The simulator loop is still the right tool for UI work — same `cmake` invocation
+below. Three corrections to how to drive it:
 
 - **Poll the log for `page_finished_loading`; do not sleep.** It lands ~6.8s
   after launch. I shot a screenshot at 10s, got a pure white frame, and nearly
@@ -41,6 +42,11 @@ The simulator loop from yesterday holds and is still the right tool for UI work
   are unavailable — compute tap coordinates from the CSS box. `t 80 79` hit
   Feed first try that way. Sessions expire after a couple of calls; restart
   rather than debug.
+
+For the device: `ios-log.sh`'s retrieval path **WORKS** and its header still says
+otherwise. `appDataContainer` / `is.synth.plugin.pluginAUv3` answered and
+produced `stage0-Synth-AUv3.log`. Its C16 warning should be rewritten to say
+which domain was right rather than left as a probe.
 
 ```
 cmake -S . -B build/ios-sim -G Xcode \
@@ -180,36 +186,42 @@ log lives in `appDataContainer` / `is.synth.plugin.pluginAUv3` under
 
 ## 3. Open, in order
 
-1. **MEASURE THE AUv3 INSET ON THE PHONE.** §1 is why. Load the appex in AUM
-   and in GarageBand and read one line from the log:
-   `chrome_height reported=…`. 50 means the design is sound as built. Anything
-   near 113 means the strip eats half of GarageBand's letterbox and the bar
-   needs a mode that drops the status row, or a shorter tab row, or both.
+**§3.1 of the previous rotation — measure the AUv3 inset — PASSED. See C36.**
 
-   Nothing else in this list should be started first. The answer either confirms
-   `e393a5f` or sends part of it back.
+1. **Delete `ChromeBar`, and the disposable probe block with it.** Now
+   unblocked: the inset reading was the condition, and the native bar is no
+   longer needed as a fallback. `kNativeChrome` in `PluginEditor.cpp` is the
+   switch; the strip inset diagnostic in `kProbeScript` goes at the same time,
+   as does `/*STRIPH*/`'s justification if `kStripHeight` stops earning its
+   place.
 
 2. **Update `WP_UNIFIED_CHROME` §4.** It rejects HTML chrome on the grounds of
    injecting into synth.is or maintaining the bar twice. Neither happens — the
    nav is in the shell's own document, which never navigates. Its argument never
-   reached this option. Carried over from yesterday's prompt, where it was also
-   listed and not done.
+   reached this option. Listed in the last two rotations and not done either
+   time.
 
-3. **Delete `ChromeBar`, and the disposable probe block with it.** Deliberately
-   deferred one build so the two bars could be compared rather than swapped
-   sight-unseen. `kNativeChrome` in `PluginEditor.cpp` is the switch; the strip
-   inset diagnostic in `kProbeScript` goes at the same time. **Do not do this
-   before §3.1** — if the AUv3 inset is wrong, the native bar is the fallback.
+3. **Narrow `hideNav` and then deploy `kromosynth-desktop`.** C36 settles the
+   shape from the rendered result rather than from reading the file: the two
+   bars are ~20pt apart with the same S mark and the same four glyphs, and the
+   **destinations are the only duplicated part** — ours adds Library and Panic,
+   the site's adds the bell and the avatar. So hide the destination items and
+   keep the user section.
 
-4. **The account decision, which now gates the DESKTOP DEPLOY.** `chrome=host`
-   is sent to a site that cannot read it: the deployed bundle has
-   `synthis_host_draws_chrome` zero times, so `efe5386` is committed and not
-   deployed and the plugin currently shows two navigation bars. When it deploys,
-   `NavigationBar.jsx:174` hides the whole `<nav>` — including Sign In, Create
-   Account, notifications and tier. There is no `/login` route, so a deep link
-   is not available; the cheap option is narrowing `hideNav` to hide the
-   destinations and keep the user section. **Björn's call, and I had the
-   dependency backwards for a session** — I said this gated the nav work.
+   Sign-in is reachable either way — `useRequireRegistered.gate()` raises
+   `RegisterPromptModal` from five components, and both the `show-login-modal`
+   listener and `LoginModal` sit outside the `{!hideNav &&` block. What the full
+   stand-down costs is the two direct entry points at
+   `NavigationBar.jsx:272,387`, so discoverability, not access. The session
+   itself survives in the appex's webview container — C36 has him signed in
+   inside AUM. **That reachability trace is a code read, not a run**; the dev
+   server check (`?chrome=host`, then like something) was never performed.
+
+4. **GarageBand, for the look only.** 191pt of content at 51pt of chrome. Worth
+   one pass to see whether the strip reads correctly in a letterbox, and to find
+   out whether GarageBand reports an inset AUM does not — the `ResizeObserver`
+   path is written for that case and has still never seen it outside the
+   standalone.
 
 5. **The Output and Release panel** (WP §9). Still the only fix for something
    audible: `#MKV9X` distorts on a chord and its preview did not. The mechanism
