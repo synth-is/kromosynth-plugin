@@ -1,19 +1,46 @@
-# Next session: the chrome, and a loop that no longer needs the phone
+# Next session: the strip is built, and only the phone can approve it
 
-Rotated 2026-09-10. Previous: `NEXT_SESSION_PROMPT_IOS.2026-09-09.md`.
+Rotated 2026-09-11. Previous: `NEXT_SESSION_PROMPT_IOS.2026-09-10.md`.
 
-Read `docs/AUV3_IOS_FINDINGS.md` first — C0 through C34, newest first. That file
+Read `docs/AUV3_IOS_FINDINGS.md` first — C0 through C35, newest first. That file
 is the record. Do not re-derive it from commit messages.
 
 ---
 
 ## 1. The single most useful thing to know
 
-**There is now a simulator path, and UI work should not touch the phone.**
+**The HTML nav works, and one unmeasured number could still invalidate it.**
 
-Yesterday's loop was: build, ask Björn to force-quit AUM, install, ask him to
-look, discover nothing installed, repeat. It cost most of a session and he said
-so plainly. The simulator removes all of it.
+The strip is 113pt on the simulator: 50 of bar plus 62 of safe-area inset. That
+is fine on a 874pt phone screen. **GarageBand gives the AUv3 a 736×242
+letterbox.** 113 out of 242 leaves 129 for content, and the four-rows-at-44
+budget every earlier sizing decision rests on assumed 50.
+
+The design's answer is that a host-framed view does not touch the top of the
+screen, so `env(safe-area-inset-top)` should be 0 there and the strip should be
+50. **That is an expectation, not a measurement.** The site's own webview
+corroborates it — starting at y=150 it showed ~8pt of offset against the
+shell's 62 — and the `ResizeObserver` path absorbs any value without code
+changes. But no host has been measured.
+
+So: **§3.1 before anything else, and it needs the phone.** Everything about
+whether this design ships turns on one number in one log line.
+
+The simulator loop from yesterday holds and is still the right tool for UI work
+— same `cmake` invocation below, unchanged. Three corrections to how to drive it:
+
+- **Poll the log for `page_finished_loading`; do not sleep.** It lands ~6.8s
+  after launch. I shot a screenshot at 10s, got a pure white frame, and nearly
+  filed the launch screen as a broken stylesheet.
+- **Re-derive the data container after every `install`.** Each one produced a
+  fresh UUID.
+- **`xcode-27-headless` `DeviceInteractionSynthesize` does drive the
+  simulator**, despite `skillToTrigger` insisting on a subagent, and despite
+  reporting `applicationState: "NotRun"` while the hierarchy dump beside it
+  shows the pid running. Web content is a `RemotePlaceholder`, so DOM positions
+  are unavailable — compute tap coordinates from the CSS box. `t 80 79` hit
+  Feed first try that way. Sessions expire after a couple of calls; restart
+  rather than debug.
 
 ```
 cmake -S . -B build/ios-sim -G Xcode \
@@ -34,11 +61,12 @@ sfizz both compile for the simulator. Then:
 
 ```
 cmake --build build/ios-sim --config Release --target KromosynthPlugin_Standalone
-SIM=AC0AA08E-1F64-4E5D-931D-9D505753118B          # iPhone 17 Pro, 27.0, booted
-xcrun simctl install $SIM build/ios-sim/src/KromosynthPlugin_artefacts/Release/Standalone/Synth.is.app
-xcrun simctl launch $SIM is.synth.plugin
-xcrun simctl io $SIM screenshot /tmp/shot.png
-xcrun simctl get_app_container $SIM is.synth.plugin data   # the log lives under Library/Logs/Synth.is
+# iPhone 17 Pro, 27.0, booted: AC0AA08E-1F64-4E5D-931D-9D505753118B
+# Literal UDID, NOT a shell variable -- see §6 on local-terminal and bare null.
+xcrun simctl install <udid> build/ios-sim/src/KromosynthPlugin_artefacts/Release/Standalone/Synth.is.app
+xcrun simctl launch <udid> is.synth.plugin
+xcrun simctl io <udid> screenshot /Users/bjornpjo/Developer/shot.png
+xcrun simctl get_app_container <udid> is.synth.plugin data   # re-derive EVERY install; the UUID changes
 ```
 
 **Seeing the screenshot yourself, economically.** A full frame is too large to
@@ -58,15 +86,50 @@ GarageBand's 736x242 letterbox all need the phone. Those are measurement and
 host-integration questions. Everything about appearance and navigation is
 simulator work.
 
-**Unfinished plumbing, and it is the first thing to do.** The app was installed
-and launched once (pid 77509) but the screenshot showed a launch/home texture
-rather than our UI, and subsequent `simctl launch` calls started returning
-empty. Get the app frontmost and confirm the chrome bar renders before building
-anything else. This is one round of plumbing, not an obstacle.
+**Unfinished plumbing — CLEARED 2026-09-11.** The app was installed and launched
+once (pid 77509) but the screenshot showed a launch/home texture rather than our
+UI. It was not a plumbing fault: the app needed `terminate` then `launch` to
+come frontmost, and the texture was the LAUNCH SCREEN, caught because
+`page_finished_loading` lands ~6.8s after launch and the screenshot went at 10s
+with the animation still up. Poll the log, do not sleep. Verified end to end:
+the UI renders, and the screenshot economics above hold — a full frame at 300px
+wide is ~10 KB, a bar strip at 700px ~7.5 KB.
 
 ---
 
-## 2. What landed on 2026-09-10
+## 2. What landed on 2026-09-11
+
+Two commits, both here.
+
+**`e393a5f` — the nav is in the shell's document.** ChromeBar's hand-rolled JUCE
+buttons are replaced by a `<nav>` in the page the shell already serves. Real S
+mark on a `/logo.svg` resource route, lucide 0.454.0 path data inline, labels
+dropping below 639px instead of truncating to "Instrume…", one Panic instead of
+two. `showSite` resizes the shell rather than hiding it — hiding it would take
+the chrome with it — and `body.strip` removes everything below the nav rather
+than clipping it.
+
+Both taps verified in the log, not inferred: Feed gives `surface_site` then
+`/network`; Library gives `surface_shell`. The composite renders with synth.is
+live below the strip, `rootChildren:1`, no blank and no memory kill. A3.2's
+probe result holds as a layout.
+
+The strip's height is **reported by the page**, via `chromeHeight` and a
+`ResizeObserver`. `kStripHeight` is only the bar and only a fallback seed. See
+§1 for the number that is still missing.
+
+`kNativeChrome` restores the old bar in one character; both paths compile.
+
+**`081a4fd` — C35.** The four readings that placed the empty strip, the `calc()`
+misattribution recorded next to the claim it corrects, the two instruments of
+mine that were wrong before the code was, and the deploy skew.
+
+Nothing was touched in `kromosynth-desktop`, so its genome-inspector WIP is
+still unstaged.
+
+---
+
+## 2b. What landed on 2026-09-10
 
 Twenty-three commits here, one in `kromosynth-render`, one in
 `kromosynth-desktop`. In rough order of consequence:
@@ -117,36 +180,43 @@ log lives in `appDataContainer` / `is.synth.plugin.pluginAUv3` under
 
 ## 3. Open, in order
 
-1. **Confirm the simulator shows our UI**, per §1. Everything below assumes it.
+1. **MEASURE THE AUv3 INSET ON THE PHONE.** §1 is why. Load the appex in AUM
+   and in GarageBand and read one line from the log:
+   `chrome_height reported=…`. 50 means the design is sound as built. Anything
+   near 113 means the strip eats half of GarageBand's letterbox and the bar
+   needs a mode that drops the status row, or a shorter tab row, or both.
 
-2. **Move the nav into HTML, shared with the web app.** The A3.2 probe
-   (`0f79e16`, reverted in `5521287`) **answered yes**: two WKWebViews composite
-   simultaneously in an AUv3 — the shell's header rendered in a 72px strip with
-   synth.is live below it, no blank, no memory kill. Most of the risk was
-   already retired, since both browsers have always used
-   `withKeepPageLoadedWhenBrowserIsHidden` and two content processes coexist in
-   every shipped build.
+   Nothing else in this list should be started first. The answer either confirms
+   `e393a5f` or sends part of it back.
 
-   So the design is: **the bar lives in the shell's own document**, which never
-   navigates, sized to a strip while the site fills the rest. WP §4 rejects HTML
-   chrome because it would mean injecting into synth.is or maintaining the bar
-   in two documents — it never considered this third option, and its argument
-   does not reach it. **Update §4 when this lands.**
+2. **Update `WP_UNIFIED_CHROME` §4.** It rejects HTML chrome on the grounds of
+   injecting into synth.is or maintaining the bar twice. Neither happens — the
+   nav is in the shell's own document, which never navigates. Its argument never
+   reached this option. Carried over from yesterday's prompt, where it was also
+   listed and not done.
 
-   That buys the real logo SVG (`synthis_S_logo.svg`), the lucide icons, Funnel
-   Sans and the web app's own metrics, and it fixes the truncated
-   "Instrume…" that icon-only-below-`sm` handles properly.
+3. **Delete `ChromeBar`, and the disposable probe block with it.** Deliberately
+   deferred one build so the two bars could be compared rather than swapped
+   sight-unseen. `kNativeChrome` in `PluginEditor.cpp` is the switch; the strip
+   inset diagnostic in `kProbeScript` goes at the same time. **Do not do this
+   before §3.1** — if the AUv3 inset is wrong, the native bar is the fallback.
 
-   Björn asked for this directly. The current native buttons are hand-rolled
-   and look it.
+4. **The account decision, which now gates the DESKTOP DEPLOY.** `chrome=host`
+   is sent to a site that cannot read it: the deployed bundle has
+   `synthis_host_draws_chrome` zero times, so `efe5386` is committed and not
+   deployed and the plugin currently shows two navigation bars. When it deploys,
+   `NavigationBar.jsx:174` hides the whole `<nav>` — including Sign In, Create
+   Account, notifications and tier. There is no `/login` route, so a deep link
+   is not available; the cheap option is narrowing `hideNav` to hide the
+   destinations and keep the user section. **Björn's call, and I had the
+   dependency backwards for a session** — I said this gated the nav work.
 
-3. **The Output and Release panel** (WP §9). Still the only fix for something
+5. **The Output and Release panel** (WP §9). Still the only fix for something
    audible: `#MKV9X` distorts on a chord and its preview did not. The mechanism
    is documented in `PluginProcessor.cpp`'s own comment — one note at full
    velocity reaches full scale, *that is* preview parity, so chords do not fit.
    The control exists as a host parameter with no UI, buried in AUM's generic
-   list. **Do the nav first** so this is built once, in whichever technology
-   wins.
+   list. The nav is built now, so build this in HTML in the shell.
 
    Two candidates for the distortion and one test separates them: one note
    clean and two distorted means summing; two clean and three distorted means
@@ -208,14 +278,44 @@ plain build. Overwrite it on the next install.
 
 ---
 
-## 5. Things I got wrong yesterday, so you do not repeat them
+## 5. Things I got wrong, so you do not repeat them
 
 Recorded because every one cost real time and each has a recognisable shape.
+Dated, because some are older than the last rotation.
 
-**I asserted `chrome=host` was already working**, several times, because the
-code existed and WP §2 said so. Nothing failed loudly, because a nav appearing
-is what a nav does. *Check that the trigger fires, not just that the handler
-exists.*
+**2026-09-11: I blamed `env()` inside `calc()` on one obvious reading.** The
+page reported its nav as 50 tall under `height: calc(50px + env(…))`, which is
+exactly the first term, so the `env()` term looked unsupported. I wrote that
+into the CSS as measured and restructured the rule around it. The next reading
+added `getComputedStyle` and showed `paddingTop: "62px"` — the stylesheet had
+been resolving `env` correctly all along, `calc()` included. The real cause was
+timing. **0 is what an absent inset and a broken function both look like.**
+*Report the state of the thing, not just the number it produced.*
+
+**2026-09-11: two of my own instruments were wrong before the code was.**
+`chrome_height` logged only when the value changed, which made "the page never
+called" and "the page reported the seed value" identically silent — precisely
+the pair I then had to distinguish. And a pure white screenshot nearly became a
+finding when it was the launch screen. *Fix the instrument before reasoning
+about the reading.*
+
+**2026-09-11: I reported a landed commit as having a visible effect it did not
+have.** The session prompt said `5521287` made the site's nav stand down; I
+repeated it, and then also asserted a consequence — that the plugin had lost its
+account affordance. Both were wrong: `efe5386` is not deployed, so the site's
+nav is still drawn and Sign In is still on screen. *A commit in one repo is not
+a behaviour in production.* Same shape as the `chrome=host` entry below, one
+layer further out.
+
+**2026-09-11: I used a name grep for process discovery** — `pgrep -fl "Synth.is"`
+— which matched Xcode's background index-build clang invocations and dumped
+thousands of lines of compiler flags into the session. The convention says
+`lsof -nP -iTCP` and not name grep, and this is why.
+
+**2026-09-10: I asserted `chrome=host` was already working**, several times,
+because the code existed and WP §2 said so. Nothing failed loudly, because a nav
+appearing is what a nav does. *Check that the trigger fires, not just that the
+handler exists.*
 
 **I over-tightened the install gate on my own inference.** A comment I wrote
 claimed a suspended host is still a refusal because C15's crash was inside
@@ -258,3 +358,12 @@ throw it away.*
   ~100 s and poll a log file in a second call rather than waiting inline.
 - `local-terminal` returns a bare `null` when a command hangs. That is not an
   empty result and it means nothing — the same trap as devicectl's `null`.
+- **`local-terminal` also returns a bare `null` for multi-line commands
+  carrying a shell variable assignment**, in seconds rather than after a hang.
+  It looks identical to the trap above and is not it. Single-line literals work.
+  Confirmed twice on 2026-09-11.
+- **`timeout` and `gtimeout` DO exist on the laptop** (`/opt/homebrew/bin`),
+  unlike the Mac Studio. And `grep -c` returning 0 matches exits non-zero, which
+  the MCP surfaces as an error; it is not a failure.
+- Corrections go where the wrong claim was written, not only where it was
+  noticed. `ShellPage.h`'s `nav#chrome` comment carries its own retraction.
