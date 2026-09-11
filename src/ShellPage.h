@@ -39,17 +39,31 @@
 
 namespace kromosynth::shell
 {
-/** The height the shell collapses to when the site is up, in logical pixels.
+/** THE BAR'S OWN HEIGHT, in logical pixels. NOT the strip's.
 
-    ONE source. The editor lays the webview out at this height and the CSS
-    below draws the bar at this height, via the STRIPH placeholder comment the
-    resource provider substitutes next to the palette's. A literal in both places
-    would be two numbers obliged to agree, which is the drift Palette.h's C26
-    note is about.
+    This said "the height the shell collapses to when the site is up" and that
+    was the wrong claim by the time it was written. The shell collapses to
+    `stripHeight_`, which is what the PAGE reports: this number plus whatever
+    `env(safe-area-inset-top)` turns out to be. Measured 2026-09-11 at 51 in an
+    AUv3 (this plus the border, no inset) and 113 in the standalone (plus 62 of
+    status bar). Neither is here, and neither could be.
 
-    34 for the tabs and 16 for the status line, matching what ChromeBar
-    measured against GarageBand's 736x242 letterbox: 192 left for content is
-    four rows at 44 against a criterion of three.
+    What this number still is, and why it stays:
+
+      - the CSS's own bar height, substituted at the STRIPH placeholder the
+        resource provider fills next to the palette's -- 34 for the tabs plus
+        16 for the status line. One source, so the rule and this constant
+        cannot become two numbers obliged to agree, which is the drift
+        Palette.h's C26 note is about.
+      - the seed for `stripHeight_`, so a page that never reports degrades to a
+        strip that is merely too short rather than to one of zero height.
+      - the floor of the clamp in `chromeHeight`, with six times it as the
+        ceiling.
+
+    The GarageBand arithmetic that justified 50: 736x242 leaves 191 for content
+    at the measured 51, which is four rows at 44 against WP section 11's
+    criterion of three. The original note credited that measurement to
+    ChromeBar, which no longer exists; the budget it established does.
 */
 inline constexpr int kStripHeight = 50;
 
