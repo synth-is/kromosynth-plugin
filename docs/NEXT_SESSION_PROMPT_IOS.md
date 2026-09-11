@@ -186,47 +186,37 @@ log lives in `appDataContainer` / `is.synth.plugin.pluginAUv3` under
 
 ## 3. Open, in order
 
-**§3.1 of the previous rotation — measure the AUv3 inset — PASSED (C36). The
-deletion it unblocked is DONE (`21f438a`), and it exposed a defect that C37
-records: the strip's `ResizeObserver` was watching the content box, so it could
-not see the inset land. Fixed in `7928b41`.**
+**Previous rotation's §3.1 (measure the AUv3 inset) PASSED — C36. The deletion it
+unblocked is DONE (`21f438a`), and it exposed a defect C37 records: the strip's
+`ResizeObserver` was watching the content box, so it could not see the inset
+land. Fixed in `7928b41`.**
 
-1. **Update `WP_UNIFIED_CHROME` §4.** It rejects HTML chrome on the grounds of
-   injecting into synth.is or maintaining the bar twice. Neither happens — the
-   nav is in the shell's own document, which never navigates. Its argument never
-   reached this option. Listed in the last two rotations and not done either
-   time. `ChromeBar` no longer exists, so §4 now argues against something that
-   shipped.
+**Also done since: `WP_UNIFIED_CHROME` §4 turned over (`0f8eab7` in
+`kromosynth-projects`, with §2, §3, §8 and §11 moved with it); `kStripHeight`'s
+comment corrected (`3da5a1c`); `hideNav` narrowed (`2db74a9` in
+`kromosynth-desktop`).**
 
-2. **`kStripHeight` earns a second look.** It is the bar height, substituted
-   into the CSS at `/*STRIPH*/` and seeding `stripHeight_`. Still justified, but
-   the real number is measured now and the constant's comment is written as
-   though it were the authority.
+1. **DEPLOY `kromosynth-desktop`.** This is the only thing standing between the
+   plugin and one navigation bar. `efe5386` and `2db74a9` are both committed and
+   neither is live — the deployed bundle has `synthis_host_draws_chrome` zero
+   times, so `chrome=host` is being sent to a site that cannot read it and the
+   plugin shows two bars. Björn drives this; I do not know the deploy path.
 
-3. **Narrow `hideNav` and then deploy `kromosynth-desktop`.** C36 settles the
-   shape from the rendered result rather than from reading the file: the two
-   bars are ~20pt apart with the same S mark and the same four glyphs, and the
-   **destinations are the only duplicated part** — ours adds Library and Panic,
-   the site's adds the bell and the avatar. So hide the destination items and
-   keep the user section.
+   **One thing to look at first, which needs a browser I could not get:**
+   `localhost:5173/?chrome=host` with the dev server running — destinations
+   gone, bell and avatar present. `2db74a9` is verified by eslint and a clean
+   vite HMR only. It has never been rendered.
 
-   Sign-in is reachable either way — `useRequireRegistered.gate()` raises
-   `RegisterPromptModal` from five components, and both the `show-login-modal`
-   listener and `LoginModal` sit outside the `{!hideNav &&` block. What the full
-   stand-down costs is the two direct entry points at
-   `NavigationBar.jsx:272,387`, so discoverability, not access. The session
-   itself survives in the appex's webview container — C36 has him signed in
-   inside AUM. **That reachability trace is a code read, not a run**; the dev
-   server check (`?chrome=host`, then like something) was never performed.
+2. **GarageBand, for the look.** 51pt of chrome leaves 191 of 242, which is four
+   rows at 44 against WP §11's criterion of three, so this is no longer a
+   viability gate. Two things to find out: whether the strip reads correctly in
+   a 3:1 letterbox, and whether GarageBand reports a safe-area inset AUM does
+   not. The reporting path handles either, and outside the standalone it has
+   only ever seen zero.
 
-4. **GarageBand, for the look only.** 191pt of content at 51pt of chrome. Worth
-   one pass to see whether the strip reads correctly in a letterbox, and to find
-   out whether GarageBand reports an inset AUM does not — the `ResizeObserver`
-   path is written for that case and has still never seen it outside the
-   standalone.
-
-5. **The Output and Release panel** (WP §9). Still the only fix for something
-   audible: `#MKV9X` distorts on a chord and its preview did not. The mechanism
+3. **The Output and Release panel** (WP §9). Now the biggest piece of unstarted
+   work here, and still the only fix for something audible: `#MKV9X` distorts
+   on a chord and its preview did not. The mechanism
    is documented in `PluginProcessor.cpp`'s own comment — one note at full
    velocity reaches full scale, *that is* preview parity, so chords do not fit.
    The control exists as a host parameter with no UI, buried in AUM's generic
