@@ -227,8 +227,12 @@ private:
         Not a constant, because the page's own bar is kStripHeight plus
         env(safe-area-inset-top) and neither this process nor this platform can
         tell us the second term for the rectangle we actually occupy. Measured
-        2026-09-11: 62pt in the standalone on an iPhone 17 Pro, expected 0 in
-        an AUv3 whose view sits inside a host frame.
+        2026-09-11: 62pt in the standalone on an iPhone 17 Pro simulator, and
+        0 in the AUv3 under AUM on an iPhone 13 Pro Max. BOTH ENDS MEASURED --
+        the AUv3 figure was an expectation for one build and is not any more:
+        `chrome_height reported=51` once, with no second report, because there
+        was no inset to land. A host-framed view does not touch the top of the
+        screen. 51 not 50 is the border-bottom.
 
         Seeded with kStripHeight so a page that never reports degrades to a
         strip that is too short -- the bug this replaces -- rather than to one

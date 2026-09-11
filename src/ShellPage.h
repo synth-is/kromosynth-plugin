@@ -288,12 +288,18 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
        becomes padding above it -- which is what the shrunken viewport was doing
        for free in library mode, and what it could not do in strip mode.
 
-       So this element's height varies with the device AND with the host: 62pt
-       of inset in the standalone, and 0 expected in an AUv3 whose view sits
-       inside a host frame rather than against the top of the screen. The page
-       reports offsetHeight through chromeHeight() and the editor sizes the
-       strip to what it is told. The AUv3 figure is an expectation, UNVERIFIED
-       in a host. */
+       So this element's height varies with the device AND with the host.
+       BOTH ENDS ARE NOW MEASURED, 2026-09-11: 62pt of inset in the standalone
+       on an iPhone 17 Pro simulator, and 0 in the AUv3 under AUM on an iPhone
+       13 Pro Max -- `navPadTop "0px"`, `navCssH "51px"`, `envTop 0`, against a
+       page report of 51. A host-framed view does not touch the top of the
+       screen, so there is nothing to inset, which is what the reasoning said
+       and is no longer only what it said. The page reports offsetHeight
+       through chromeHeight() and the editor sizes the strip to what it is
+       told.
+
+       51 rather than 50 because of the border-bottom. Worth knowing before
+       someone reads 51 as an off-by-one. */
     flex: 0 0 auto;
     /* AUTO HEIGHT, MEASURED AFTER LAYOUT rather than computed up front.
 
@@ -1401,9 +1407,9 @@ function setStrip (on, dest) {
 // THE STRIP'S HEIGHT IS MEASURED, NOT ASSUMED.
 //
 // kStripHeight is the bar; the element is that plus env(safe-area-inset-top),
-// which is 62pt in the standalone on this device and expected to be 0 in an
-// AUv3 sitting inside a host frame. C++ cannot compute either one, and the
-// version that assumed 50pt clipped the bar out of its own strip entirely.
+// which is MEASURED at 62pt in the standalone and 0 in the AUv3 under AUM
+// (2026-09-11, both ends). C++ cannot compute either one, and the version that
+// assumed 50pt clipped the bar out of its own strip entirely.
 //
 // Reported on load and on resize, because the inset moves with orientation and
 // with whatever rectangle a host hands us. The editor defaults to kStripHeight
