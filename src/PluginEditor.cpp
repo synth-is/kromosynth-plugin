@@ -31,19 +31,14 @@ using namespace kromosynth;
   #define KROMOSYNTH_BROWSER_INSET 0
 #endif
 
-// ── Which bar draws ─────────────────────────────────────────────────────────
+// ── Where the chrome lives ──────────────────────────────────────────────────
 //
-// TEMPORARY, and it goes away with ChromeBar itself.
-//
-// The nav moved into the shell's own document -- WP_UNIFIED_CHROME section 4's
-// third option, which its argument against HTML chrome never reached, because
-// the shell neither injects into synth.is nor keeps a second copy of the bar.
-//
-// Both bars stay COMPILABLE for one build so they can be compared rather than
-// swapped sight-unseen, but only one is CONSTRUCTED: two bars drawn at once is
-// not a comparison, it is the three stacked chromes the A3.2 probe looked like.
-// Flip to true to get the native bar back.
-static constexpr bool kNativeChrome = false;
+// REMOVED 2026-09-11: `kNativeChrome`, the one-build switch that kept the
+// native ChromeBar compilable alongside the HTML nav so the two could be
+// compared rather than swapped sight-unseen. C36 measured the AUv3 inset at 0,
+// which was the condition for keeping the fallback, so both the switch and the
+// bar are gone. `git show e393a5f` has the comparison state if it is ever
+// wanted again.
 
 // ── Stage 0 environment probe ────────────────────────────────────────────────
 //
@@ -136,55 +131,6 @@ static const char* kProbeScript = R"JS(
   } catch (e) { r.webgl = 'ERR ' + e; }
   try { r.serviceWorker = ('serviceWorker' in navigator) ? 'present' : 'absent'; } catch (e) { r.serviceWorker = 'ERR ' + e; }
   try { r.rootChildren = document.getElementById('root') ? document.getElementById('root').childElementCount : -1; } catch (e) { r.rootChildren = -1; }
-  // ── STRIP INSET DIAGNOSTIC ─ DISPOSABLE, delete once the strip height is settled.
-  //
-  // nav#chrome's background begins at device y 185 on a 3x screen, so the bar
-  // sits about 61.7pt down inside its own webview while the strip is 50pt --
-  // the bar is clipped out entirely and the strip shows bare --surface-deep.
-  //
-  // JUCE's iOS WebBrowserComponent is juce_WebBrowserComponent_mac.mm and it
-  // mentions neither contentInsetAdjustmentBehavior nor safeArea nor
-  // scrollView, so WKWebView's default automatic adjustment is the suspect.
-  // That is a reading of JUCE's source, not of this runtime, which is why
-  // these numbers exist: they say WHICH layer moved instead of leaving it to a
-  // colour boundary in a screenshot. C34's rule -- observe the failure rather
-  // than eliminate causes on a guessed layer.
-  //
-  //   innerHeight against the `editor_resized h=` on the preceding log line
-  //       equal    -> layout viewport is full height, content is SCROLL-INSET
-  //       smaller  -> the layout viewport itself was inset
-  //   navTop      nav#chrome's top in viewport coords; -1 on the site page,
-  //               which is the control -- that webview does not touch the top
-  //               of the screen and showed only ~8pt of offset
-  //   scrollTop   a contentInset leaves this at 0 with content visually down
-  //   envTop      resolved env(safe-area-inset-top). Expected 0 here, because
-  //               the meta viewport has no viewport-fit=cover yet. If it IS 0
-  //               and innerHeight matches, cover is the documented lever and
-  //               the next build tests it.
-  try {
-    var navEl = document.getElementById('chrome');
-    r.innerHeight = window.innerHeight;
-    r.clientHeight = document.documentElement.clientHeight;
-    r.navTop = navEl ? Math.round(navEl.getBoundingClientRect().top * 10) / 10 : -1;
-    r.navH = navEl ? Math.round(navEl.getBoundingClientRect().height * 10) / 10 : -1;
-    // WHICH DECLARATION RESOLVED. The reported height came back 50 with an
-    // inline env() reading 62 in the same document, so these say whether the
-    // stylesheet's padding-top saw the inset at all -- rather than leaving me
-    // to pick between calc, the stylesheet and cascade order by guessing.
-    if (navEl) {
-      var cs = getComputedStyle(navEl);
-      r.navPadTop = cs.paddingTop;
-      r.navCssH = cs.height;
-    }
-    var se = document.scrollingElement || document.documentElement;
-    r.scrollTop = se ? se.scrollTop : -1;
-    var pr = document.createElement('div');
-    pr.style.cssText = 'position:absolute;top:0;left:0;width:1px;'
-                     + 'height:env(safe-area-inset-top,0px);visibility:hidden';
-    document.body.appendChild(pr);
-    r.envTop = pr.offsetHeight;
-    document.body.removeChild(pr);
-  } catch (e) { r.inset = 'THREW ' + e; }
   return JSON.stringify(r);
 })();
 )JS";
@@ -664,8 +610,8 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
         {
             // The way back, which the page could not ask for until the nav was
-            // in it. ChromeBar held this as a `showShell` callback; the strip's
-            // Library tab needs it as a call.
+            // in it -- the native bar held it as a `showShell` callback; the
+            // strip's Library tab needs it as a call.
             //
             // The site is NOT navigated away from and NOT unloaded -- it keeps
             // `withKeepPageLoadedWhenBrowserIsHidden`, so coming back resumes
@@ -765,30 +711,6 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
         Options{}.withKeepPageLoadedWhenBrowserIsHidden(), proc_);
     site_->interceptsSentinels = true;
     addChildComponent (*site_);
-
-    // CONSTRUCTED ONLY WHEN THE NATIVE BAR IS THE ONE THAT DRAWS. Left null
-    // otherwise, and everything downstream null-checks it -- see the note on
-    // kNativeChrome at the top of this file, and mind that showSite's guard
-    // used to include chromeBar_, which would have made a null bar disable
-    // surface switching entirely.
-    if (kNativeChrome)
-    {
-        chromeBar_ = std::make_unique<ChromeBar> (
-            proc_,
-            [this] { showSite (false); },
-            [this] (const juce::String& path)
-            {
-                // Navigate FIRST, then raise the surface. The other order
-                // shows the page the user was last on for however long the load
-                // takes, which reads as the tap having gone to the wrong place.
-                navigateSiteTo (path);
-                showSite (true);
-            });
-
-        // Visible from the start, unlike the site bar it replaces. It is chrome
-        // now, so there is no state in which it should be absent.
-        addAndMakeVisible (*chromeBar_);
-    }
 #endif
 
     // Resizable with a wide range, because "does it resize" is a gate
@@ -879,34 +801,23 @@ void KromosynthAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
 
-    // PERSISTENT, and this one line is what "seamless instead of switching"
-    // means. It used to be `siteVisible_ ? 32 : 0`, so the bar existed only
-    // over the site and the shell covered the whole rectangle including the
-    // strip -- which made going between them a full-view mode change rather
-    // than a change of content. Now the chrome stays put and the surface swaps
-    // beneath it.
-    //
-    // Null whenever the nav is HTML, in which case there is nothing to reserve:
-    // the chrome is inside the shell's own rectangle.
-    if (chromeBar_ != nullptr)
-    {
-        bounds.removeFromTop (ChromeBar::kBarHeight);
-        chromeBar_->setBounds (getLocalBounds().removeFromTop (ChromeBar::kBarHeight));
-    }
-
     if (browser_ != nullptr)
     {
         // THE SHELL'S RECTANGLE IS WHAT SAYS WHICH SURFACE IS IN CHARGE.
         //
-        // Under HTML chrome the shell can never be hidden, so what changes is
-        // how much room it gets: the whole area for the library, a strip when
-        // the site is up. Under the native bar both surfaces get the same
-        // rectangle and visibility decides, which is what this used to do
-        // unconditionally.
+        // The shell can never be hidden, because the chrome is inside its
+        // document. So what changes is how much room it gets: the whole area
+        // for the library, a strip when the site is up.
+        //
+        // Nothing is reserved at the top any more. The native bar used to take
+        // kBarHeight off here, and before THAT it took `siteVisible_ ? 32 : 0`,
+        // which made moving between surfaces a full-view mode change rather
+        // than a change of content. Both are gone: the chrome is in the shell's
+        // own rectangle and cannot go out of step with it.
         auto shellArea = bounds;
         auto siteArea  = bounds;
 
-        if (siteVisible_ && ! kNativeChrome)
+        if (siteVisible_)
         {
             shellArea = bounds.withHeight (stripHeight_);
             siteArea  = bounds.withTrimmedTop (stripHeight_);
@@ -976,256 +887,9 @@ void KromosynthAudioProcessorEditor::StubContent::paint (juce::Graphics&) {}
 
 // ── Lifecycle hooks ──────────────────────────────────────────────────────────
 
-KromosynthAudioProcessorEditor::ChromeBar::ChromeBar (
-    KromosynthAudioProcessor& proc,
-    std::function<void()> onShowShell,
-    std::function<void (const juce::String&)> onNavigate)
-    : proc_ (proc)
-{
-    for (int i = 0; i < kNumDestinations; ++i)
-    {
-        const auto& d = kDestinations[i];
-        auto* b = tabs_.add (new juce::TextButton (d.label));
-
-        // FLAT. TextButton's default is a rounded filled control, and five of
-        // them in a row reads as a toolbar of unrelated actions rather than as
-        // one nav. The web app draws these as text that gains a filled pill
-        // only when current, so the colours are set per state below and the
-        // background of an inactive tab is transparent.
-        b->setColour (juce::TextButton::buttonColourId,   juce::Colours::transparentBlack);
-        b->setColour (juce::TextButton::buttonOnColourId, palette::colour (palette::accent));
-        b->setColour (juce::TextButton::textColourOffId,  palette::colour (palette::textSecondary));
-        b->setColour (juce::TextButton::textColourOnId,   palette::colour (palette::onAccent));
-        b->setClickingTogglesState (false);
-
-        // Path captured by value. An empty path is the plugin's own library and
-        // is not a navigation at all -- see Destination.
-        const juce::String path (d.path);
-
-        b->onClick = [path, onShowShell, onNavigate]
-        {
-            if (path.isEmpty())
-            {
-                if (onShowShell) onShowShell();
-            }
-            else if (onNavigate)
-            {
-                onNavigate (path);
-            }
-        };
-
-        addAndMakeVisible (b);
-    }
-
-    // Here rather than only in the shell, because a stuck drone is exactly the
-    // thing you cannot fix by navigating -- and until now the panic button was
-    // on the one surface a user leaves in order to browse.
-    panic.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
-    panic.setColour (juce::TextButton::textColourOffId, palette::colour (palette::textMuted));
-    panic.onClick = [&proc] { proc.panic(); };
-    addAndMakeVisible (panic);
-
-    setActiveDestination (0);
-}
-
-void KromosynthAudioProcessorEditor::ChromeBar::setActiveDestination (int index)
-{
-    active_ = juce::jlimit (0, kNumDestinations - 1, index);
-
-    for (int i = 0; i < tabs_.size(); ++i)
-        tabs_[i]->setToggleState (i == active_, juce::dontSendNotification);
-
-    repaint();
-}
-
-void KromosynthAudioProcessorEditor::ChromeBar::visibilityChanged()
-{
-    // PERSISTENT NOW, so this is effectively always on -- kept because a host
-    // that hides the whole editor should still stop the timer.
-    //
-    // The old comment said two timers asking the same question is one too many,
-    // and that reasoning stood while this bar appeared only over the site. It
-    // is now above both surfaces, so it is the one thing that never stops
-    // reporting, and the shell's own polling is the duplicate rather than this.
-    if (isVisible())
-    {
-        timerCallback();      // paint now rather than after one tick
-        startTimer (250);
-    }
-    else
-    {
-        stopTimer();
-    }
-}
-
-juce::String KromosynthAudioProcessorEditor::ChromeBar::describe (
-    const std::vector<AcquisitionRunner::Status>& jobs, bool measuring, bool& anyFailed)
-{
-    anyFailed = false;
-
-    int active = 0;
-    double worstProgress = 1.0;
-
-    for (const auto& j : jobs)
-    {
-        if (j.finished)
-            continue;
-
-        ++active;
-
-        if (j.progress >= 0.0)
-            worstProgress = juce::jmin (worstProgress, j.progress);
-    }
-
-    if (active > 0)
-    {
-        // No artefact id in the text. It is a UUID, it means nothing to the
-        // person reading it, and it is the widest thing that could go into a
-        // strip that also has to hold a button.
-        juce::String what = active == 1
-            ? juce::String ("Downloading instrument")
-            : "Downloading " + juce::String (active) + " instruments";
-
-        if (worstProgress < 1.0)
-            what << "  " << juce::roundToInt (worstProgress * 100.0) << "%";
-
-        return what;
-    }
-
-    // Nothing running. Report failures in preference to successes: a silent
-    // failure is the case where the user returns to the library, finds nothing
-    // new, and has no way to find out why.
-    for (const auto& j : jobs)
-    {
-        if (! j.ok)
-        {
-            anyFailed = true;
-            return j.message;
-        }
-    }
-
-    // MEASURING, and ahead of "ready" because "ready" is FALSE while it runs.
-    //
-    // C21. An acquired instrument autoloads in about half a second and the
-    // audio path is then suspended for as long as the keyboard measurement
-    // takes -- 8.9 s on an A15 under wasm3, against the "one to three seconds"
-    // the barrier's own comment was written for. This bar said "Installed -
-    // ready in Library" for every one of those seconds, so the user taps the
-    // instrument, finds the measurement cached and instant, and concludes the
-    // tap is what activated it. It is not, and the bar taught them that.
-    //
-    // Same failure as C20's badges: an internal state printed as a user-facing
-    // fact. Saying so costs nothing and is strictly more true than "ready".
-    //
-    // The wait itself is ARCHITECTURAL and this does not shorten it. Not
-    // suspending would open the barrier while the measuring render still owns
-    // the engine, which is the race that produced a raw peak of 23182060. This
-    // makes the wait legible and claims nothing about its length.
-    //
-    // BEFORE the empty-jobs case below, because the shell clears finished
-    // acquisitions and can do it while the site is still open -- leaving a
-    // measurement running with no job left to describe it.
-    if (measuring)
-        return "Measuring levels across the keyboard - a few seconds";
-
-    if (jobs.empty())
-        return {};
-
-    return jobs.size() == 1
-         ? juce::String ("Installed - ready in Library")
-         : "Installed " + juce::String ((int) jobs.size()) + " instruments";
-}
-
-void KromosynthAudioProcessorEditor::ChromeBar::timerCallback()
-{
-    bool failed = false;
-    const auto text = describe (proc_.acquisitions().snapshot(),
-                                proc_.isMeasuring(), failed);
-
-    // Repaint only on change. This runs four times a second for as long as the
-    // site is open, and a webview is already the expensive thing on screen.
-    if (text == status_ && failed == failed_)
-        return;
-
-    status_ = text;
-    failed_ = failed;
-    repaint();
-}
-
-// Deliberately does NOT call clearFinished(). The shell does that, and exactly
-// one consumer may: if both cleared, whichever surface polled first would
-// swallow the outcome and the other would never show it. Leaving finished
-// entries in place means this bar keeps reporting the last result until the
-// user returns to the library, which is the moment it stops being useful.
-void KromosynthAudioProcessorEditor::ChromeBar::paint (juce::Graphics& g)
-{
-    // The web app's own chrome surface, from Palette.h. Was a hardcoded
-    // #1a1d21 -- GitHub-dark, matching nothing on the site.
-    g.fillAll (palette::colour (palette::surfaceBase));
-
-    g.setColour (palette::colour (palette::border));
-    g.drawHorizontalLine (getHeight() - 1, 0.0f, (float) getWidth());
-
-    if (status_.isEmpty())
-        return;
-
-    g.setColour (failed_ ? palette::colour (palette::danger)
-                         : palette::colour (palette::textMuted));
-    g.setFont (juce::FontOptions (11.0f));
-
-    // The STATUS ROW, under the tabs rather than beside them. It used to sit to
-    // the right of one button; five tabs leave no room, and a sentence about a
-    // download is not competing with navigation for the same line.
-    g.drawText (status_, getLocalBounds().removeFromBottom (kStatusHeight).reduced (8, 0),
-                juce::Justification::centredLeft, true);
-}
-
-void KromosynthAudioProcessorEditor::ChromeBar::resized()
-{
-    auto bounds = getLocalBounds();
-
-    // Reserved unconditionally, so the tabs do not jump by a few pixels the
-    // moment a download starts. An empty status row is cheaper than a moving
-    // one.
-    bounds.removeFromBottom (kStatusHeight);
-
-    panic.setBounds (bounds.removeFromRight (54).reduced (2, 4));
-
-    // Equal widths, and they will truncate before they overlap. GarageBand's
-    // 736 x 242 letterbox is the acceptance viewport (section 8) and five tabs
-    // fit it; a narrower host truncates the labels rather than dropping any,
-    // because a nav that silently loses destinations is worse than one with
-    // short words.
-    const auto each = bounds.getWidth() / juce::jmax (1, tabs_.size());
-
-    for (auto* b : tabs_)
-        b->setBounds (bounds.removeFromLeft (each).reduced (1, 4));
-}
-
 void KromosynthAudioProcessorEditor::navigateSiteTo (const juce::String& path)
 {
     if (site_ == nullptr) return;
-
-    // WHICH TAB THIS IS, matched before the query string is appended. Recorded
-    // here rather than in the bar's own click handler because deep links reach
-    // this function too -- the tree button on an instrument row calls it with
-    // /tree and a run id, and the bar should light Biomes for that just as it
-    // would for a tap on the tab itself.
-    //
-    // startsWith rather than equality, since a deep link carries parameters and
-    // /tree?run=... is still Biomes. Index 0 is the library and is never a
-    // site path, so the search starts at 1.
-    for (int i = 1; i < ChromeBar::kNumDestinations; ++i)
-    {
-        if (path.startsWith (ChromeBar::kDestinations[i].path))
-        {
-            activeSiteDestination_ = i;
-            break;
-        }
-    }
-
-    if (chromeBar_ != nullptr)
-        chromeBar_->setActiveDestination (activeSiteDestination_);
 
     // Same ?client marker showSite appends, so the app still knows where it is
     // -- a deep link that lost it would render the browser presentation inside
@@ -1242,9 +906,6 @@ void KromosynthAudioProcessorEditor::navigateSiteTo (const juce::String& path)
 
 void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
 {
-    // chromeBar_ is DELIBERATELY NOT IN THIS GUARD. It is null whenever the nav
-    // is HTML, and requiring it here would silently turn every tab into a
-    // no-op -- the failure would look like the page, not like this line.
     if (site_ == nullptr || browser_ == nullptr)
         return;
 
@@ -1286,29 +947,23 @@ void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
 
     site_->setVisible (shouldShowSite);
 
-    // THE STRIP, which is what the A3.2 probe was for (2026-09-10): two
-    // WKWebViews DO composite simultaneously in an AUv3 -- the shell's header
-    // rendered in a strip with synth.is live below it, no blank and no memory
-    // kill. So the nav lives in the shell's own document, shared in substance
-    // with the web app, and WP_UNIFIED_CHROME section 4's objection never
-    // reached this option.
+    // THE SHELL IS NOT HIDDEN HERE, and there is no line doing it.
     //
-    // The shell therefore STAYS VISIBLE. Hiding it would take the chrome with
-    // it, which is the one thing this design cannot do. resized() gives it a
+    // That is the whole design. The nav lives in the shell's own document, so
+    // hiding the shell would take the chrome with it. resized() gives it a
     // strip instead, and the page's own body.strip clears everything below its
     // nav so the strip shows a bar and not the top of a list.
     //
-    // The probe was reverted on the day because it was not a layout -- it
-    // stacked three chromes and looked it. This is the layout.
-    if (kNativeChrome)
-        browser_->setVisible (! shouldShowSite);
-
-    // The bar is NOT hidden with the site any more -- it is the persistent
-    // chrome and hiding it is what made this a mode switch. It only needs
-    // telling which destination now reads as current. Null under HTML chrome,
-    // where the page tracks this itself: it is the initiator, so it knows.
-    if (chromeBar_ != nullptr)
-        chromeBar_->setActiveDestination (shouldShowSite ? activeSiteDestination_ : 0);
+    // The A3.2 probe (2026-09-10) established that two WKWebViews DO composite
+    // simultaneously in an AUv3. It was reverted on the day because it was not
+    // a layout -- it stacked three chromes and looked it. C35 is the layout,
+    // and C36 measured it in AUM.
+    //
+    // WHICH TAB READS AS CURRENT IS THE PAGE'S BUSINESS. It is always the
+    // initiator -- showSite is reachable only from openSite, openSitePath and
+    // showLibrary -- so it already knows, and there is nothing to tell it. The
+    // native bar needed telling, which is why a destination index used to be
+    // kept on the editor.
 
     proc_.logEvent (shouldShowSite ? "surface_site" : "surface_shell");
 

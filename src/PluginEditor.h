@@ -91,124 +91,6 @@ private:
     // follow a sign-in redirect.
     std::unique_ptr<InstrumentedBrowser> site_;
 
-    /** The way back from the site, and the only place a download is visible
-        while the user is on it.
-
-        The site has no bridge, so it cannot call the plugin to return to the
-        library and the plugin cannot call the site to report progress. That is
-        the WP section 12 pairing working as intended, not a gap to patch: the
-        bridge is off so that off-origin navigation is safe for sign-in.
-
-        The consequence is that download status has nowhere to live except here.
-        The shell's status line is hidden precisely when a download is running,
-        because the user is on the site when they start one.
-
-        Drawn by the process that actually knows. Anything the web app could
-        show would only mean "a ticket was handed over" -- not that the archive
-        arrived, not that it held a usable SFZ, not that it installed.
-    */
-    class ChromeBar : public juce::Component,
-                      private juce::Timer
-    {
-    public:
-        /** One row for every destination the bar can reach.
-
-            `path` empty means the PLUGIN'S OWN LIBRARY, which is not a site
-            page and is why the shell is called "Library" and not
-            "Instruments": the web app already has an /instruments, and it is a
-            different thing -- the account's rendered instruments rather than
-            what is on this device. Those two are the halves
-            WP_UNIFIED_CHROME section 7.2 would merge, so carrying both here is
-            honest about the split rather than pretending it away.
-
-            Labels and paths are taken from NavigationBar.jsx:77-119 so the two
-            cannot drift in naming. Sound Feed's path is /network, which is that
-            file's own default when no feed tab is current.
-        */
-        struct Destination
-        {
-            const char* label;
-            const char* path;
-        };
-
-        static constexpr Destination kDestinations[] = {
-            { "Library",     ""             },
-            { "Feed",        "/network"     },
-            { "Garden",      "/collection"  },
-            { "Instruments", "/instruments" },
-            { "Biomes",      "/tree"        },
-        };
-
-        static constexpr int kNumDestinations = 5;
-
-        // 34 for the tabs, 16 for the status row beneath them. Section 8's
-        // acceptance viewport is GarageBand's 736 x 242 letterbox, which leaves
-        // 192 for content -- four rows at 44, against a criterion of at least
-        // three. It passes with room, where the earlier sketch that put a
-        // separate 22px status strip above a 40px bar passed by a third of a
-        // row. Folding the status INTO the bar is what bought that.
-        static constexpr int kTabHeight = 34;
-        static constexpr int kStatusHeight = 16;
-        static constexpr int kBarHeight = kTabHeight + kStatusHeight;
-
-        /** NOTHING IS DISABLED HERE, and that is a correction.
-
-            An earlier design greyed Biomes and locked Sound Garden. Both were
-            wrong. NavigationBar.jsx has exactly one disabled branch,
-            `requiresAuth && !isAuthenticated`, so Sound Garden is the only item
-            that can ever dim and Biomes never does -- and /tree is already the
-            one deep link the plugin ships, via the tree button on each row.
-
-            Sound Garden is not gated here either, because this process cannot
-            know: section 7.1, measured in C2, is that the AUv3's WKWebView
-            storage is per-container with no way to share a WKWebsiteDataStore
-            across an App Group, so the session does not cross the process
-            boundary. A lock drawn from a state we cannot read would be the same
-            failure as the "8 voices" badge -- an internal guess printed as a
-            fact. The site knows, and shows its own sign-in.
-        */
-        ChromeBar (KromosynthAudioProcessor& proc,
-                   std::function<void()> onShowShell,
-                   std::function<void (const juce::String&)> onNavigate);
-
-        void paint (juce::Graphics&) override;
-        void resized() override;
-        void visibilityChanged() override;
-
-        /** Which destination reads as current. The editor owns the truth about
-            which surface is up, so it tells the bar rather than the bar
-            guessing.
-        */
-        void setActiveDestination (int index);
-
-    private:
-        void timerCallback() override;
-
-        /** Renders the runner's snapshot into one line.
-
-            `measuring` is passed in rather than read off the processor so this
-            stays a pure function of what it reports. It is not optional:
-            without it the bar says "ready in Library" throughout the eight to
-            nine seconds the keyboard measurement holds the audio path
-            suspended, which is not silence about the wait but a false claim
-            about it. See AUV3_IOS_FINDINGS C21.
-        */
-        static juce::String describe (const std::vector<AcquisitionRunner::Status>&,
-                                      bool measuring,
-                                      bool& anyFailed);
-
-        KromosynthAudioProcessor& proc_;
-        juce::OwnedArray<juce::TextButton> tabs_;
-        juce::TextButton panic { "Panic" };
-        int active_ = 0;
-        juce::String status_;
-        bool failed_ = false;
-
-        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChromeBar)
-    };
-
-    std::unique_ptr<ChromeBar> chromeBar_;
-
     /** Swaps which surface is visible. */
     void showSite (bool shouldShowSite);
 
@@ -239,13 +121,6 @@ private:
         of zero height, which would hide the chrome completely.
     */
     int stripHeight_ = kromosynth::shell::kStripHeight;
-
-    // Which SITE destination the bar should light when the site is up. Kept on
-    // the editor rather than in the bar because the editor is what knows where
-    // the site actually went -- including via deep links that never touch a
-    // tab. Defaults to Feed: index 0 is the library, and showSite's own lazy
-    // first load goes to the app root, which is a feed.
-    int activeSiteDestination_ = 1;
 
     // WebBrowserComponent has no URL getter in JUCE 9 -- goToURL only, no
     // getCurrentURL -- so "has the site been navigated yet" is tracked here
