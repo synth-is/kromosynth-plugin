@@ -48,6 +48,87 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C38. A DEPLOY REACHES A RUNNING PLUGIN LATE, NOT NEVER (2026-09-11)
+
+`kromosynth-desktop` deployed (`efe5386`, `2db74a9`, `7f9e848`). Verified in the
+served bundle before looking at any screen: `index-By5LI93m.js` →
+`index-WgfWSRPx.js`, `synthis_host_draws_chrome` 0 → 1, and
+`w-full px-2 md:px-4 py-2` from `7f9e848` present once.
+
+**The first run after the deploy still showed two navigation bars.** The site
+drew its full nav — logo, four destinations, Sign In, Create Account — under
+ours, on a server that was serving the stand-down.
+
+## A cached `index.html`, demonstrated by an A/B
+
+| step | probe's `persist` | site nav |
+|---|---|---|
+| `simctl install` over the existing app | `SURVIVED age=…` | full nav, TWO bars |
+| `simctl uninstall` then install | `created` | stands down, ONE bar |
+
+The uninstall is the only thing that changed. A plain reinstall leaves WebKit
+state behind, including the HTTP cache, so the webview kept serving the previous
+`index.html` — the pointer to the OLD content-hashed bundle. The new code was on
+the server and unreachable from the client.
+
+```
+/                    cache-control ABSENT   etag ABSENT   cf-cache-status DYNAMIC
+/assets/index-*.js   cache-control: max-age=31536000
+                     cache-control: public, immutable      (two headers)
+                     etag present          cf-cache-status HIT
+```
+
+Cloudflare is not caching the HTML, so the CDN is not the problem. With neither
+`cache-control` nor `etag`, WebKit applies heuristic freshness from
+`last-modified` — conventionally about a tenth of the document's age — and
+revalidation has only `If-Modified-Since` to work with. `index.html` is the one
+file that must never be cached, because it is the pointer to everything that is
+hash-named. The assets are already right, apart from carrying two
+`Cache-Control` headers, which suggests two layers both setting it.
+
+## CORRECTION, same day, before this was committed
+
+I wrote a prediction into the draft of this entry: the phone loaded synth.is
+before the deploy, so it should still show two bars **until its cache expires**,
+and I framed the consequence as "a user does not get the fix when it ships and
+has no way to force it".
+
+**Björn's phone showed ONE bar**, in AUM at 23:55, having loaded the site around
+15:46. No uninstall, no reinstall. It revalidated on its own in about eight
+hours.
+
+So the effect is real — the A/B above is a clean pair — but the consequence was
+overstated. The accurate claim is narrower and less dramatic:
+
+> A deploy reaches already-running clients after an **unpredictable delay** set
+> by heuristic freshness, which scales with how old the PREVIOUS `index.html`
+> was. Minutes if you redeploy often, more than a day if you do not.
+
+That still argues for `Cache-Control: no-cache` on `/` plus an `ETag`, but for
+**predictability**, not for rescue. Worth keeping as a shape: the mechanism was
+right and the magnitude was invented, and only a second instance with different
+history could tell them apart. One simulator was not a population.
+
+## What the clean runs confirmed
+
+One bar, on both the simulator and the phone. The strip on top; synth.is beneath
+with no logo and no destinations — Sign In and Create Account on the simulator,
+the notification bell and avatar on Björn's signed-in phone — right-aligned with
+padding. So `7f9e848`'s `justify-end` and the `NavigationChrome` wrapper behave
+as claimed, rendered rather than read, after two commits in a row that asserted
+layout from the source and were wrong.
+
+§3.1 of `NEXT_SESSION_PROMPT_IOS` is closed. The plugin shows one navigation bar
+and keeps its account controls.
+
+## Also
+
+A tap synthesised 3.5s before `page_finished_loading` does nothing and looks
+exactly like a broken handler — the page is up, the bar is drawn, the listeners
+are not attached yet. Poll the log.
+
+---
+
 # C37. THE INSTRUMENT WAS HIDING THE BUG IT WAS INSTALLED TO FIND (2026-09-11)
 
 `ChromeBar` and the strip inset diagnostic are deleted (`21f438a`) — C36's

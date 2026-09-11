@@ -196,16 +196,24 @@ land. Fixed in `7928b41`.**
 comment corrected (`3da5a1c`); `hideNav` narrowed (`2db74a9` in
 `kromosynth-desktop`).**
 
-1. **DEPLOY `kromosynth-desktop`.** This is the only thing standing between the
-   plugin and one navigation bar. `efe5386` and `2db74a9` are both committed and
-   neither is live — the deployed bundle has `synthis_host_draws_chrome` zero
-   times, so `chrome=host` is being sent to a site that cannot read it and the
-   plugin shows two bars. Björn drives this; I do not know the deploy path.
+**The deploy is DONE and verified on both the simulator and the phone — one
+navigation bar, account controls kept (C38). `efe5386`, `2db74a9`, `7f9e848` are
+all live.**
 
-   **One thing to look at first, which needs a browser I could not get:**
-   `localhost:5173/?chrome=host` with the dev server running — destinations
-   gone, bell and avatar present. `2db74a9` is verified by eslint and a clean
-   vite HMR only. It has never been rendered.
+1. **`Cache-Control: no-cache` and an `ETag` on `/`.** New, from C38, and it
+   affects every future deploy rather than one screen. synth.is serves
+   `index.html` with **neither** header, so WebKit falls back to heuristic
+   freshness from `last-modified` — roughly a tenth of the document's age. The
+   first run after this deploy still showed two bars from a cached `index.html`;
+   the phone caught up on its own about eight hours later.
+
+   So the cost is an unpredictable delay between deploying and clients seeing
+   it, scaling with how long the previous `index.html` had been up. Not
+   permanent staleness — that was the overstatement C38 corrects. `/assets/` is
+   already right (hash-named, `immutable`), though it carries two
+   `Cache-Control` headers, which suggests two layers both setting it.
+   Cloudflare reports `DYNAMIC` on the HTML, so this is likely settable there
+   rather than in nginx.
 
 2. **GarageBand, for the look.** 51pt of chrome leaves 191 of 242, which is four
    rows at 44 against WP §11's criterion of three, so this is no longer a
