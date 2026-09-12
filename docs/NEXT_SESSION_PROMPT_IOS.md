@@ -1,34 +1,105 @@
-# Next session: the strip is built, and only the phone can approve it
+# Next session: the chrome is done, the page it sits on is not
 
-Rotated 2026-09-11. Previous: `NEXT_SESSION_PROMPT_IOS.2026-09-10.md`.
+Rotated 2026-09-12. Previous: `NEXT_SESSION_PROMPT_IOS.2026-09-11.md`.
 
-Read `docs/AUV3_IOS_FINDINGS.md` first — C0 through C35, newest first. That file
+Read `docs/AUV3_IOS_FINDINGS.md` first — C0 through C39, newest first. That file
 is the record. Do not re-derive it from commit messages.
 
 ---
 
 ## 1. The single most useful thing to know
 
-**The HTML nav is measured in a host and it clears its budget. `ChromeBar` can
-go.**
+**The strip is 51pt and it was never the problem. The shell page's own furniture
+is 172pt, and the instrument list gets 20.**
 
-This section said, for one day, that everything turned on one unmeasured number
-— the safe-area inset in an AUv3. C36 has it: **0**. The strip is 51pt in AUM
-(50 of bar plus the border) against 113 in the standalone, confirmed by two
-independent sources, and the `ResizeObserver` never fired twice because there
-was nothing to land.
+Measured in GarageBand's 736×242 letterbox, off a 3x screenshot, C39:
 
-So GarageBand's 736×242 leaves 191pt for content, which is the four-rows-at-44
-budget exactly. **GarageBand is a look-and-feel check now, not a viability
-gate.** Start at §3.
+| band | pt | what |
+|---|---|---|
+| 0–51 | **51** | the chrome strip |
+| 51–107 | **56** | shell header |
+| 107–149 | **42** | filter + sort row |
+| 149–169 | **20** | **the instrument list**, for four instruments |
+| 169–206 | **37** | footer status |
+| 206–242 | **37** | load line |
 
-The useful thing to carry forward instead: **AUM hands the plugin at least five
-different rectangles in a single session** — 428×926, 428×879, 428×280, 409×524,
-428×574, including one narrower than the screen. Anything that sizes against the
-editor cannot read one `editor_resized` line and call it the layout.
+The previous rotation said 51pt of chrome leaves 191 for content and called that
+four rows at 44. It counted everything below the strip as content. WP §11's
+criterion of three rows fails by about six times.
 
-The simulator loop is still the right tool for UI work — same `cmake` invocation
-below. Three corrections to how to drive it:
+**BEFORE WRITING ANY OF THE LAYOUT WORK, READ §2.** The loop cannot see the
+viewport the work is for.
+
+## 2. The loop cannot test the acceptance viewport
+
+Everything verified on 2026-09-11 was at 402×874 (simulator standalone) or
+428×926 (AUM on device). **736×242 has only ever existed on Björn's phone, in
+GarageBand.** The standalone simulator fills the screen; there is no way to
+letterbox it. So a layout change aimed at §8's acceptance viewport currently
+cannot be checked before it reaches him — and "I could not see it" is how three
+separate wrong claims got made in one day (C35's `calc()`, C38's cache
+magnitude, C39's 191).
+
+**Close this first.** Cheapest option: serve `kIndexHtml` to a desktop browser
+sized to 242pt tall. It tests the CSS with no plugin, no build and no device. It
+needs browser access, and `chrome-devtools`' profile is held by a stale
+automation Chrome — **pid 31346, running since 2026-09-08 with Puppeteer flags**.
+Ask Björn to quit it; it is not a browser he is using.
+
+Other options, untried: a compile flag forcing the standalone editor to 736×242,
+in the spirit of `KROMOSYNTH_EDITOR_STUB`; or an AUv3 host on the simulator, if
+one exists.
+
+## 3. Open, in order
+
+1. **The letterbox layout**, per C39's proposal. In this order, because the first
+   two are deletions of redundancy and the last two are new responsive
+   behaviour:
+
+   1. **Drop the footer's `#status`.** "Nothing loaded yet — pick an
+      instrument." is currently on screen TWICE — in the strip and in the
+      footer — costing 37pt, nearly twice the whole list. Self-inflicted by the
+      `setStatus` mirroring in `e393a5f`: right in strip mode, redundant in
+      library mode. −37pt.
+   2. **Fold the load line into the strip's 16pt status row.** −37pt.
+   3. **Compact the header** under `@media (max-height: 320px)`. 56 → ~36pt.
+   4. **Hide the filter row** at short heights or when the list is short.
+      −42pt.
+
+   1 and 2 alone take the list from 20 → 94pt. All four reach ~155, which is
+   three rows at 44 with room.
+
+2. **`Cache-Control: no-cache` and an `ETag` on `/`** (C38). synth.is serves
+   `index.html` with neither, so WebKit falls back to heuristic freshness and a
+   deploy reaches running clients after an unpredictable delay — minutes to more
+   than a day. Not permanent staleness; that was the overstatement C38 corrects.
+   `/assets/` is already right, though it carries two `Cache-Control` headers.
+   Cloudflare reports `DYNAMIC` on the HTML, so likely settable there.
+
+3. **Rebuild the device against HEAD.** The phone's binary dates from 14:20 on
+   2026-09-11, before `21f438a` and `7928b41`. Neither the ChromeBar deletion
+   nor the border-box fix has ever run on hardware. Nothing is known to be
+   wrong; it is simply untested there.
+
+4. **The Output and Release panel** (WP §9). The biggest piece of unstarted work
+   and still the only fix for something audible: `#MKV9X` distorts on a chord
+   and its preview did not. One note at full velocity reaches full scale — that
+   IS preview parity — so chords do not fit. The control exists as a host
+   parameter with no UI, buried in AUM's generic list.
+
+   Two candidates, one test: one note clean and two distorted means summing; two
+   clean and three distorted means voice stealing on the 2-voice cap. Not run.
+
+
+## 4. The loop, and how to drive it
+
+**AUM hands the plugin at least five different rectangles in a single session**
+— 428×926, 428×879, 428×280, 409×524, 428×574, including one narrower than the
+screen. GarageBand adds 926×428, 242×736 and 736×242. Anything that sizes
+against the editor cannot read one `editor_resized` line and call it the layout.
+
+The simulator loop is still the right tool for everything except the letterbox
+(§2) — same `cmake` invocation below. Corrections to how to drive it:
 
 - **Poll the log for `page_finished_loading`; do not sleep.** It lands ~6.8s
   after launch. I shot a screenshot at 10s, got a pure white frame, and nearly
@@ -103,9 +174,17 @@ wide is ~10 KB, a bar strip at 700px ~7.5 KB.
 
 ---
 
-## 2. What landed on 2026-09-11
+## 5. What landed on 2026-09-11
 
-Two commits, both here.
+Nine more commits after the two below, across three repos. In brief:
+`21f438a` deleted ChromeBar and the disposable probe block; `7928b41` fixed the
+`ResizeObserver` box (C37); `3da5a1c` corrected `kStripHeight`'s comment;
+`0f8eab7` in `kromosynth-projects` turned over `WP_UNIFIED_CHROME` §4 with §2,
+§3, §8 and §11 moved to match; `2db74a9` and `7f9e848` in `kromosynth-desktop`
+narrowed `hideNav` and fixed where it left the user section; `c101d55`,
+`33e12d3` and the C39 commit are the record.
+
+The two that started it:
 
 **`e393a5f` — the nav is in the shell's document.** ChromeBar's hand-rolled JUCE
 buttons are replaced by a `<nav>` in the page the shell already serves. Real S
@@ -135,7 +214,7 @@ still unstaged.
 
 ---
 
-## 2b. What landed on 2026-09-10
+## 5b. What landed on 2026-09-10
 
 Twenty-three commits here, one in `kromosynth-render`, one in
 `kromosynth-desktop`. In rough order of consequence:
@@ -184,83 +263,7 @@ log lives in `appDataContainer` / `is.synth.plugin.pluginAUv3` under
 
 ---
 
-## 3. Open, in order
-
-**Previous rotation's §3.1 (measure the AUv3 inset) PASSED — C36. The deletion it
-unblocked is DONE (`21f438a`), and it exposed a defect C37 records: the strip's
-`ResizeObserver` was watching the content box, so it could not see the inset
-land. Fixed in `7928b41`.**
-
-**Also done since: `WP_UNIFIED_CHROME` §4 turned over (`0f8eab7` in
-`kromosynth-projects`, with §2, §3, §8 and §11 moved with it); `kStripHeight`'s
-comment corrected (`3da5a1c`); `hideNav` narrowed (`2db74a9` in
-`kromosynth-desktop`).**
-
-**The deploy is DONE and verified on both the simulator and the phone — one
-navigation bar, account controls kept (C38). `efe5386`, `2db74a9`, `7f9e848` are
-all live.**
-
-1. **`Cache-Control: no-cache` and an `ETag` on `/`.** New, from C38, and it
-   affects every future deploy rather than one screen. synth.is serves
-   `index.html` with **neither** header, so WebKit falls back to heuristic
-   freshness from `last-modified` — roughly a tenth of the document's age. The
-   first run after this deploy still showed two bars from a cached `index.html`;
-   the phone caught up on its own about eight hours later.
-
-   So the cost is an unpredictable delay between deploying and clients seeing
-   it, scaling with how long the previous `index.html` had been up. Not
-   permanent staleness — that was the overstatement C38 corrects. `/assets/` is
-   already right (hash-named, `immutable`), though it carries two
-   `Cache-Control` headers, which suggests two layers both setting it.
-   Cloudflare reports `DYNAMIC` on the HTML, so this is likely settable there
-   rather than in nginx.
-
-2. **GarageBand, for the look.** 51pt of chrome leaves 191 of 242, which is four
-   rows at 44 against WP §11's criterion of three, so this is no longer a
-   viability gate. Two things to find out: whether the strip reads correctly in
-   a 3:1 letterbox, and whether GarageBand reports a safe-area inset AUM does
-   not. The reporting path handles either, and outside the standalone it has
-   only ever seen zero.
-
-3. **The Output and Release panel** (WP §9). Now the biggest piece of unstarted
-   work here, and still the only fix for something audible: `#MKV9X` distorts
-   on a chord and its preview did not. The mechanism
-   is documented in `PluginProcessor.cpp`'s own comment — one note at full
-   velocity reaches full scale, *that is* preview parity, so chords do not fit.
-   The control exists as a host parameter with no UI, buried in AUM's generic
-   list. The nav is built now, so build this in HTML in the shell.
-
-   Two candidates for the distortion and one test separates them: one note
-   clean and two distorted means summing; two clean and three distorted means
-   voice stealing on the 2-voice cap. Not yet run.
-
-4. **Resolve the load slope** (C32), then and only then touch `capForRtf`.
-
-5. **`p50 <= 0.5` has a user-visible corollary worth recording**: a 1-voice cap
-   makes an instrument monophonic, which is a categorical loss rather than a
-   conservative one. Björn hit this. The asymmetry — occasional overruns AUM may
-   absorb, against no chords at all — is not captured by C31's bar.
-
-6. **Deploy `94e7471`** in `kromosynth-render` whenever the hub next restarts.
-   Committed, not pushed. New artefacts keep being minted with ladder caps until
-   it ships.
-
-7. **Finish consolidating `capForRtf`** (C26). All three copies agree
-   numerically; there are still two of them. Giving it a headroom parameter
-   touches `FaustEngine.cpp` and sits behind the 120/120 null test.
-
-8. **`WP_EXTRACTION_QUOTA.md` OQ7** — entry or sound. **Not urgent, and I said
-   otherwise for most of a session before correcting it.** §7.2's mandated
-   implementation, re-download the same entry and never re-render, avoids the
-   hazard OQ7 describes. It gates the single-shot surface, which does not exist.
-
-9. **The desktop signed-out test** (C11, C14). Still costs nothing.
-
-10. **Stage D** — the ticket across the process boundary (C2).
-
----
-
-## 4. The icon: do not pick this up casually
+## 6. The icon: do not pick this up casually
 
 C34 records five dead hypotheses. **Do not propose a sixth bundle hypothesis.**
 Everything checkable is checked: 30 catalog renditions at scales 1, 2 and 3,
@@ -290,10 +293,29 @@ plain build. Overwrite it on the next install.
 
 ---
 
-## 5. Things I got wrong, so you do not repeat them
+## 7. Things I got wrong, so you do not repeat them
 
 Recorded because every one cost real time and each has a recognisable shape.
 Dated, because some are older than the last rotation.
+
+**2026-09-12: arithmetic stood in for looking, three times in one day.** C35's
+`calc()` — a real reading with an obvious interpretation I took instead of
+testing. C38's cache magnitude — a real mechanism with a severity I invented,
+disproved by one phone with different history. C39's 191 — a correct subtraction
+of the wrong quantity, treating everything below the strip as content when
+172pt of it is page furniture. *The common shape is a real measurement applied
+to a quantity nobody checked was the one that mattered.*
+
+**2026-09-11: I asserted layout from source twice and was wrong both times.**
+`2db74a9` claimed `justify-between` would leave the user section where it sat;
+it puts a lone child at the START. eslint passed and vite HMR'd cleanly both
+times. *Those checks say nothing about where flexbox puts things, and passing
+them is not evidence about layout.*
+
+**2026-09-11: I skipped the `dryRun` pass twice** and the second one closed
+`showSite` with `}` while two statements still followed. Caught before building.
+The convention exists so it does not get that far; used on every edit afterwards,
+it caught a duplicated pair of list items in this file.
 
 **2026-09-11: I blamed `env()` inside `calc()` on one obvious reading.** The
 page reported its nav as 50 tall under `height: calc(50px + env(…))`, which is
@@ -355,7 +377,7 @@ throw it away.*
 
 ---
 
-## 6. Conventions that held
+## 8. Conventions that held
 
 - Explicit pathspec on every `git add` and `git commit`. `kromosynth-desktop`
   has unrelated genome-inspector WIP; never stage it.

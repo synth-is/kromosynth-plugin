@@ -48,6 +48,100 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C39. THE STRIP WAS NEVER THE PROBLEM — measured in GarageBand (2026-09-12)
+
+Device, GarageBand, `736×242` letterbox. Screenshot measured at 3x against a
+panel of exactly 2208×726px, so the figures below are points, not estimates.
+
+**`chrome_height reported=51`**, twice, both instances. Probe agrees:
+`navH 51`, `navPadTop "0px"`, `innerHeight 242`, `envTop 0`. So GarageBand
+reports no safe-area inset either, and C36's AUv3 reading now has two hosts
+behind it rather than one.
+
+## The band table, and what it corrects
+
+| band | pt | what |
+|---|---|---|
+| 0–51 | **51** | the chrome strip |
+| 51–107 | **56** | shell header — Instruments / 4 instruments / Browse / Refresh / Test note |
+| 107–149 | **42** | filter + sort row |
+| 149–169 | **20** | **the instrument list** |
+| 169–206 | **37** | footer status — "Nothing loaded yet — pick an instrument." |
+| 206–242 | **37** | load line |
+
+**CORRECTION.** C36, the WP §8 edit and the last two prompt rotations all say
+"51pt of chrome leaves 191 for content, which is four rows at 44 against §11's
+criterion of three". That counted **everything below the strip as content**. It
+is not: the shell's own furniture takes a further 172pt. The list gets **20pt,
+8% of the viewport**, for four instruments. §11's criterion fails by a factor of
+about six.
+
+The number 191 was correct and measured the wrong thing. Third instance in one
+day of arithmetic standing in for looking — see C35's `calc()` and C38's cache
+magnitude. The common shape: a real measurement, applied to a quantity nobody
+had checked was the one that mattered.
+
+**The strip is the SMALLEST band on screen.** A whole session went into whether
+it would be 51 or 113 while 172pt of page furniture sat unmeasured.
+
+## The worst offender is self-inflicted
+
+"Nothing loaded yet — pick an instrument." is on screen **twice** — in the strip
+at ~40pt and in the footer at ~175pt. That duplicate costs 37pt, **nearly twice
+the entire list area**.
+
+It is a direct consequence of the `setStatus` mirroring added in `e393a5f`:
+correct in strip mode, where the footer is off-screen and the bar is the only
+place a download can be reported, and pure redundancy in library mode where both
+are visible. Introduced and then never looked at on a short viewport.
+
+## Proposed, not implemented
+
+1. Drop the footer's `#status`. The strip carries it in both modes. −37pt, and
+   it is a deletion of redundancy rather than new behaviour.
+2. Fold the load line into the strip's 16pt status row. −37pt.
+3. Compact the header under `@media (max-height: 320px)`. 56 → ~36pt.
+4. Hide the filter row at short heights, or when the list is short. −42pt.
+
+1 and 2 alone: list 20 → 94pt. All four: ~155pt, three rows at 44 with room.
+
+## THE LOOP CANNOT TEST THIS, and that is the blocker
+
+Everything verified today was at 402×874 (simulator standalone) or 428×926 (AUM
+on device). **The 736×242 acceptance viewport has only ever been seen on the
+phone, in GarageBand.** The standalone simulator fills the screen and there is
+no way to letterbox it, so a layout change aimed at §8's acceptance viewport
+cannot be checked before it reaches Björn.
+
+That gap should be closed before the layout work, not during it. Options, none
+tried:
+
+- a compile flag or env var forcing the standalone editor to 736×242, in the
+  spirit of `KROMOSYNTH_EDITOR_STUB`
+- serving `kIndexHtml` to a desktop browser at a 242pt-tall viewport, which
+  tests the CSS without the plugin at all and is the cheapest of the three
+- an AUv3 host on the simulator, if one exists
+
+The second is blocked only by browser access — `chrome-devtools`' profile is held
+by a stale automation Chrome, pid 31346, running since 2026-09-08 with Puppeteer
+flags.
+
+## Also
+
+**The log cannot tell hosts apart.** Every line reads `host=Synth`, which is the
+appex's own name, not the DAW. AUM and GarageBand both append to one
+`stage0-Synth-AUv3.log`; today's two sessions were separated by timestamp. I had
+stated in-session that the logs were per-host. They are not.
+
+**The phone is a commit behind.** The device binary dates from 14:20, before
+`21f438a` and `7928b41`, which the probe fields in its log confirm — that
+diagnostic no longer exists at HEAD. The GarageBand reading is a statement about
+`e393a5f`. It stands, because the content-box observer bug only bites where
+there is an inset to miss and `envTop` is 0, but nothing since has run on
+hardware.
+
+---
+
 # C38. A DEPLOY REACHES A RUNNING PLUGIN LATE, NOT NEVER (2026-09-11)
 
 `kromosynth-desktop` deployed (`efe5386`, `2db74a9`, `7f9e848`). Verified in the
