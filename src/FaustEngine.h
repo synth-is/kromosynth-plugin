@@ -433,11 +433,19 @@ public:
         must move the signal OUT of limiting, not merely make the limited result
         quieter.
 
-        It is the visible half of a conflict that cannot be resolved silently.
-        Matching the preview means one note at full velocity reaches full scale,
-        which means two notes do not fit. A default with headroom and a control
-        that reaches unity gives both, and lets the person choose which they
-        want rather than having a constant chosen for them.
+        It is the visible half of a conflict that cannot be resolved silently:
+        one note at the audition level leaves room for about three, not for a
+        held chord of eight. A control lets the person choose rather than having
+        a constant chosen for them.
+
+        WHAT THIS DOC USED TO CLAIM, AND WHY IT WAS WRONG. It said "matching the
+        preview means one note at full velocity reaches full scale". It does
+        not. That was parity with renderFaustGenome's output buffer, and the web
+        app plays that buffer through 0.25, an 0.8 master and a compressor --
+        9.0 dB down, measured over 12 elites spanning 26 dB of raw peak
+        (render-socket/src/measure-audition-parity.js, 2026-09-13). The
+        parameter's default in PluginProcessor.cpp carries that 9 dB; see there
+        for why the trim ceiling cannot.
     */
     void setOutputLevel (float linearGain) noexcept;
 

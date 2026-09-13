@@ -149,18 +149,47 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
         juce::NormalisableRange<float> { 0.005f, 10.0f, 0.001f, 0.4f }, 1.5f,
         juce::AudioParameterFloatAttributes().withLabel ("s")));
 
-    // Output level is the visible half of a conflict that cannot be settled
-    // silently. Matching the site's preview means one note at full velocity
-    // reaches full scale -- that IS the preview's level -- and two notes
-    // therefore do not fit. Every fixed compromise is wrong for somebody:
-    // 0 dB clips chords, -12 dB quietly contradicts the audition the user just
-    // heard. Default 0 dB, which is preview parity, because that is the promise
-    // the site makes.
+    // Output level, and the default is -9 dB because that is what the audition
+    // actually delivers.
+    //
+    // THIS COMMENT USED TO SAY 0 dB, ON A CLAIM THAT WAS FALSE. It read:
+    // "Matching the site's preview means one note at full velocity reaches full
+    // scale -- that IS the preview's level", and rejected a -12 dB default as
+    // one that "quietly contradicts the audition the user just heard". Both
+    // halves are backwards. The claim was parity with renderFaustGenome's
+    // OUTPUT BUFFER, and the web app never plays that buffer at its own peak: a
+    // card's PLAY button puts it through 0.25 (usePreviewAudio's
+    // DEFAULT_PREVIEW_VOLUME), then an 0.8 master, then a DynamicsCompressor
+    // at -24/30/12. So 0 dB was levelled to a number nobody hears, and the
+    // comment asserted an outcome this layer does not observe.
+    //
+    // MEASURED, 2026-09-13, by render-socket's measure-audition-parity.js over
+    // 12 gate0 elites spanning 26 dB of raw peak: the plugin is 9.0 dB louder
+    // than the card's PLAY button, median, with a spread of 0.7 dB
+    // peak-to-peak. Both rules pre-registered before the run passed -- one
+    // constant fixes it, and the difference does not depend on how loud the
+    // genome is.
+    //
+    // NOT kFaustCeiling, which was the first proposal and is structurally
+    // unable to carry this. trim is min(1, kFaustCeiling / reference), so
+    // lowering the ceiling moves only genomes whose reference EXCEEDS it; half
+    // that table sits below 0.354 and would have been left exactly where it
+    // was. Attenuate-only is the point of that clamp. setOutputLevel applies
+    // unconditionally and lands before the limiter, which is what this needs.
+    //
+    // -9 dB also lifts a single note off the 0.95 limiter, which every trimmed
+    // genome previously rode on every key.
+    //
+    // The RANGE still reaches +6, so someone who wants the old behaviour has
+    // it. The conflict the parameter exists for is real -- one note at the
+    // audition level leaves room for roughly three, not for a held chord of
+    // eight -- and a control is still the right answer to it. Only the default
+    // was wrong.
     addParameter (outputLevelDb_ = new juce::AudioParameterFloat (
         juce::ParameterID { "output", 1 },
         "Output",
         juce::NormalisableRange<float> { -36.0f, 6.0f, 0.1f },
-        0.0f,
+        -9.0f,
         juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
     // EXPERIMENT, last so it cannot disturb the indices above. With legacy

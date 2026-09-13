@@ -83,9 +83,22 @@ one exists.
 
 4. **The Output and Release panel** (WP §9). The biggest piece of unstarted work
    and still the only fix for something audible: `#MKV9X` distorts on a chord
-   and its preview did not. One note at full velocity reaches full scale — that
-   IS preview parity — so chords do not fit. The control exists as a host
-   parameter with no UI, buried in AUM's generic list.
+   and its preview did not. The control exists as a host parameter with no UI,
+   buried in AUM's generic list.
+
+   **The premise of this item was wrong and is fixed.** It said one note at full
+   velocity reaching full scale *IS* preview parity. It is not. That was parity
+   with `renderFaustGenome`'s output buffer, and the web app never plays that
+   buffer at its peak — a card's PLAY button sends it through 0.25, an 0.8
+   master and a DynamicsCompressor. Measured 2026-09-13 over 12 elites spanning
+   26 dB of raw peak: **the plugin was 9.0 dB louder than the audition**, median,
+   spread 0.7 dB peak-to-peak. Both pre-registered rules passed. The Output
+   default is now −9 dB, which also lifts single notes off the 0.95 limiter they
+   previously rode on every key. See `render-socket/src/measure-audition-parity.js`.
+
+   So this item is now only about the UI, not about the level. Whether `#MKV9X`
+   still distorts on a chord at −9 dB is unmeasured and is the thing to check
+   first — 9 dB of headroom may have removed the symptom the panel was for.
 
    Two candidates, one test: one note clean and two distorted means summing; two
    clean and three distorted means voice stealing on the 2-voice cap. Not run.
