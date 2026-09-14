@@ -1162,21 +1162,40 @@ strips it is untested.
 
 ---
 
-# C23. FINDING — the per-note gain can clip the quiet end of the keyboard
+# C23. FINDING — RETRACTED. The mechanism named here did not exist when it was written
+
+**Retracted 2026-09-14.** The measurement below is real. The explanation is not,
+and the original text is kept rather than deleted so the error stays visible.
 
 Reported as "a bit distorted in the upper half" on `#DDJ9Y`. Its measurement:
 
     c3=1.1160  a4=0.6847  a5=0.2743  spread_db=12.2  trim=1.0000
 
-`trim=1.0` means **no attenuation was taken at all**, while the per-note gain
-equalises every key to the a4 reference. So notes near a5 are boosted by
-0.6847/0.2743 = **2.5x** with no headroom in hand, and any moment where the true
-signal exceeds the short measured peak clips.
+What this finding claimed: `trim=1.0` means no attenuation was taken at all,
+while the per-note gain equalises every key to the a4 reference, so notes near
+a5 are boosted by 0.6847/0.2743 = **2.5x** with no headroom in hand, and any
+moment where the true signal exceeds the short measured peak clips.
 
-Mechanism only. The fix is a real decision -- clamp the boost, or take trim
-headroom when the spread is large -- and is deliberately not made here. Note
-that a 12.2 dB spread is mild for this substrate: `FaustEngine.h` records 29.1 dB
-on one archive genome.
+**There is no boost.** `FaustEngine.cpp` sets `compTarget` to
+`jmin(1.0f, referencePeak / here)` — attenuate-only, and the comment above it
+calls that the load-bearing rule. It landed in `249cb4a` on 2026-09-03. This
+finding is newer than C22, which is dated 2026-09-09, so the boost it blames had
+been gone for most of a week before the sentence was written. Under the real
+code a5 takes gain 1.0 and delivers 0.2743, c3 takes 0.6135 and delivers 0.6847,
+and nothing reaches full scale.
+
+How it happened: the numbers were read off a log line, a ratio between two of
+them was computed, and the code path was never opened. A ratio present in a
+measurement is not evidence that anything applies it.
+
+**The report is still unexplained.** One candidate, explicitly not a mechanism:
+`estimatePeakAt` interpolates between table entries, so a pitch whose true peak
+exceeds a low estimate takes a gain near 1.0, and `#DDJ9Y` has a raw c3 peak of
+1.116. That would clip without any boost. Unverified. It stays a candidate until
+someone opens the table and checks — which is the step this finding skipped.
+
+The −9 dB Output default did NOT incidentally fix this. There was no headroom
+problem of this kind to fix.
 
 ---
 

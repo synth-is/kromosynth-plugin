@@ -81,10 +81,18 @@ one exists.
    nor the border-box fix has ever run on hardware. Nothing is known to be
    wrong; it is simply untested there.
 
-4. **The Output and Release panel** (WP §9). The biggest piece of unstarted work
-   and still the only fix for something audible: `#MKV9X` distorts on a chord
-   and its preview did not. The control exists as a host parameter with no UI,
-   buried in AUM's generic list.
+4. **The Output and Release panel** (WP §9). The control exists as a host
+   parameter with no UI, buried in AUM's generic list.
+
+   **`#MKV9X` DOES NOT EXIST.** Checked 2026-09-14 against nine device logs:
+   instrument labels come from `acquisition_sentinel` as
+   `Virtual Instrument #XXXXX`, and the full set ever seen is DDJ9Y HPG05 MBDZW
+   NE1ZR RE89N WMSEM XKBRY YKK21 RPGW9 VDJTF EWBVW TCSG1 APB30 CPRZX HCR3Z
+   HXMA3 WDQMJ YVC37 8F9V2 6PKTV G3A0B T9CC2 5302Z Z222F. `MKV9X` is in none of
+   them. It was mistranscribed on 2026-09-10 and copied through three prompt
+   rotations, so "the only fix for something audible" rested on an instrument
+   nobody could load. Do not reintroduce the label; if the chord report is
+   chased again, get the id off the log.
 
    **The premise of this item was wrong and is fixed.** It said one note at full
    velocity reaching full scale *IS* preview parity. It is not. That was parity
@@ -112,9 +120,9 @@ one exists.
      Not separately confirmed by ear. If these did *not* move with the loud
      ones, the unconditional-vs-attenuate-only reasoning is wrong and
      everything above needs revisiting before anything is built on it.
-   - **`#MKV9X` on a chord.** Whether 9 dB of headroom removed the distortion
-     is still unknown, so the audible half of this item is neither confirmed
-     dead nor alive.
+   - **the chord report.** Cannot be rechecked as written, because the
+     instrument it names does not exist. The audible half of this item is
+     neither confirmed dead nor alive, and now has no subject either.
 
    Do not let "seems to be an improvement" harden into "parity confirmed" on a
    later reading of this file. It is not the same claim.
