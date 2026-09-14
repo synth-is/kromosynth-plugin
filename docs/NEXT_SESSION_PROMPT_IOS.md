@@ -96,9 +96,28 @@ one exists.
    default is now −9 dB, which also lifts single notes off the 0.95 limiter they
    previously rode on every key. See `render-socket/src/measure-audition-parity.js`.
 
-   So this item is now only about the UI, not about the level. Whether `#MKV9X`
-   still distorts on a chord at −9 dB is unmeasured and is the thing to check
-   first — 9 dB of headroom may have removed the symptom the panel was for.
+   So this item is now only about the UI, not about the level.
+
+   **On device, 2026-09-13, and the verdict is soft.** Installed to the phone
+   (container `56CE498F`) and auditioned: "seems to be an improvement — perhaps
+   we will revisit". Recorded at that strength deliberately. It is one listener,
+   one sitting, no A/B against the site open alongside, and it is consistent
+   with the 9.0 dB being right without being evidence that it is. Three specific
+   checks were asked for and only the general impression came back, so these two
+   remain genuinely open:
+
+   - **the quiet-genome case.** Genomes measuring ~22 dB below full scale were
+     also 9 dB loud, and a trim-ceiling change would never have reached them
+     — that is the whole reason the fix went on the Output default instead.
+     Not separately confirmed by ear. If these did *not* move with the loud
+     ones, the unconditional-vs-attenuate-only reasoning is wrong and
+     everything above needs revisiting before anything is built on it.
+   - **`#MKV9X` on a chord.** Whether 9 dB of headroom removed the distortion
+     is still unknown, so the audible half of this item is neither confirmed
+     dead nor alive.
+
+   Do not let "seems to be an improvement" harden into "parity confirmed" on a
+   later reading of this file. It is not the same claim.
 
    Two candidates, one test: one note clean and two distorted means summing; two
    clean and three distorted means voice stealing on the 2-voice cap. Not run.
