@@ -605,6 +605,30 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
 
             done (juce::var (clamped));
         })
+        .withNativeFunction ("getAuthState",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // WHAT THE SITE LAST SAID, labelled as such.
+            //
+            // `kind` is "unknown" until the first sentinel arrives, and the
+            // page renders nothing for it. That is deliberate: the bar showing
+            // "signed out" before it has been told anything would be asserting
+            // a state it has not observed, which is the failure C40 lists as
+            // this codebase's most repeated.
+            //
+            // Anonymous is its OWN kind, not folded into either neighbour.
+            // Signing out on the web app silently creates an anonymous
+            // identity and likes attach to it; it looked identical to being
+            // signed in until this existed, which is the defect this whole
+            // path was written for.
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("kind",   kromosynth::auth::toWire (authState_.kind));
+            o->setProperty ("label",  authState_.label);
+            o->setProperty ("unread", authState_.unread);
+
+            done (juce::var (o));
+        })
         .withNativeFunction ("showLibrary",
                              [this] (const juce::Array<juce::var>&,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
@@ -710,6 +734,12 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     site_ = std::make_unique<InstrumentedBrowser> (
         Options{}.withKeepPageLoadedWhenBrowserIsHidden(), proc_);
     site_->interceptsSentinels = true;
+
+    // Stored, not acted on. The editor holds the last thing the site said and
+    // hands it to the page when asked; nothing here changes what the plugin
+    // does, only what the bar can show.
+    site_->onAuthState = [this] (const kromosynth::auth::State& s) { authState_ = s; };
+
     addChildComponent (*site_);
 #endif
 
@@ -980,6 +1010,35 @@ bool KromosynthAudioProcessorEditor::InstrumentedBrowser::pageAboutToLoad (const
     // have treated the sentinel as an off-origin navigation and handed it to
     // launchInDefaultBrowser -- leaking the ticket to whatever the OS opens
     // with it. Neither is recoverable after the fact.
+    // AUTH BEFORE ACQUISITION, and the order is load-bearing.
+    //
+    // `acquisition::isSentinel` matches ANY synthis:// URL and parseSentinel
+    // then answers nullopt for an unknown verb. So an auth sentinel reaching
+    // the branch below would be blocked (right) and logged as
+    // `acquisition_sentinel_malformed` (wrong, and it would send the next
+    // reader of the log looking for a broken download).
+    if (interceptsSentinels && kromosynth::auth::isAuthSentinel (url))
+    {
+        if (auto s = kromosynth::auth::parse (url))
+        {
+            // No token in an auth sentinel, so the whole URL is loggable --
+            // unlike acquisition's, which carries a ticket and needs
+            // redactForLog. See the note at the top of AuthSentinel.h.
+            proc_.logEvent ("auth_sentinel " + kromosynth::auth::toWire (s->kind)
+                            + (s->label.isNotEmpty() ? " label=" + s->label : juce::String())
+                            + (s->unread ? " unread" : ""));
+
+            if (onAuthState != nullptr)
+                onAuthState (*s);
+        }
+        else
+        {
+            proc_.logEvent ("auth_sentinel_malformed");
+        }
+
+        return false;
+    }
+
     if (interceptsSentinels && kromosynth::acquisition::isSentinel (url))
     {
         proc_.logEvent ("acquisition_sentinel "

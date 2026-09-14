@@ -13,6 +13,7 @@
 
 #include "PluginProcessor.h"
 #include "ArtifactAcquisition.h"
+#include "AuthSentinel.h"
 // For kStripHeight, which seeds stripHeight_ below. The page owns that number;
 // this header only needs its fallback.
 #include "ShellPage.h"
@@ -35,6 +36,8 @@ private:
     class InstrumentedBrowser : public juce::WebBrowserComponent
     {
     public:
+        std::function<void (const kromosynth::auth::State&)> onAuthState;
+
         InstrumentedBrowser (const Options& options, KromosynthAudioProcessor& p)
             : juce::WebBrowserComponent (options), proc_ (p) {}
 
@@ -121,6 +124,17 @@ private:
         of zero height, which would hide the chrome completely.
     */
     int stripHeight_ = kromosynth::shell::kStripHeight;
+
+    /** Who the site last said you are.
+
+        NOT AUTHORITATIVE, and the page is told so. This is the last thing the
+        site volunteered over a sentinel; the site's own session remains the
+        only source of truth. Starts `unknown` rather than `none`, because
+        "signed out" is a claim and "I have not been told" is not -- a bar that
+        asserts signed-out before the first sentinel arrives is lying during
+        every cold start.
+    */
+    kromosynth::auth::State authState_;
 
     // WebBrowserComponent has no URL getter in JUCE 9 -- goToURL only, no
     // getCurrentURL -- so "has the site been navigated yet" is tracked here

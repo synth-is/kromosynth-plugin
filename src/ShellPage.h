@@ -416,6 +416,26 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     border-color: var(--danger-border);
   }
 
+  /* The account control. Sits to the right of Panic, after the auto margin, so
+     the two ride the right edge together. */
+  nav#chrome button.acct {
+    flex: 0 0 auto; margin-left: 6px;
+    border-color: var(--border-subtle);
+  }
+  nav#chrome button.acct[hidden] { display: none; }
+  /* ANONYMOUS LOOKS DIFFERENT FROM REGISTERED, and that is the whole point.
+     Signing out creates an anonymous identity silently and likes attach to it;
+     it was indistinguishable from a real account until this rule existed. */
+  nav#chrome button.acct.anon { color: var(--warning); border-color: var(--warning); }
+  nav#chrome button.acct.none { color: var(--accent); border-color: var(--accent); }
+  /* A DOT, NOT A COUNT. The number changes server-side with no navigation to
+     carry a sentinel, so it would be stale far more often than right. */
+  nav#chrome #acctdot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--danger); display: none; flex: 0 0 auto;
+  }
+  nav#chrome button.acct.unread #acctdot { display: block; }
+
   /* LABELS DROP AT THE FIRST WIDTH THAT CANNOT HOLD THEM, which is the fix for
      "Instrume…". The native bar had no way to do this: it measured a string
      against a rectangle and truncated, so the longest label decided what every
@@ -530,6 +550,19 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
          apart is the duplication that made the old bar look hand-rolled. One
          button, and the existing handler finds it unchanged. -->
     <button class="panic" id="panic" title="Reinitialise all voices">Panic</button>
+
+    <!-- WHO YOU ARE, in the bar rather than in a band.
+
+         The site's own user section cost 74pt of VERTICAL for two controls,
+         measured on device -- more than this entire bar, and comparable to the
+         whole instrument list in GarageBand's 242pt letterbox. Horizontal is
+         the abundant axis here and vertical is the scarce one, so this moves
+         across axes rather than adding.
+
+         Hidden until the first auth sentinel arrives. An account control that
+         appears only once the site has spoken is honest about not knowing;
+         one that renders "Sign in" on a cold start is guessing. -->
+    <button class="acct" id="acct" hidden><span id="acctdot"></span><span id="acctlbl"></span></button>
   </div>
   <div class="line"><span id="navline"></span><span id="navload"></span></div>
 </nav>
@@ -1472,6 +1505,72 @@ function setStrip (on, dest) {
     tabs[i].classList.toggle('current', tabs[i].dataset.dest === String(dest));
 }
 
+// ── Who you are ─────────────────────────────────────────────────────────────
+//
+// Polled rather than pushed, on the loop that already runs. A push would need
+// a C++ -> JS channel that does not otherwise exist, and the note above
+// explains why there isn't one.
+//
+// THE BAR RENDERS ONLY WHAT IT HAS BEEN TOLD. `unknown` hides the control
+// entirely rather than defaulting to signed-out, because the plugin cannot see
+// the site's session -- different origins, no shared storage -- and a bar that
+// guessed would be wrong on every cold start until the first navigation.
+let lastAuthWire = '';
+
+function renderAuth (a) {
+  const btn = document.getElementById('acct');
+  const lbl = document.getElementById('acctlbl');
+  if (!btn || !lbl) return;
+
+  const wire = a.kind + '|' + (a.label || '') + '|' + (a.unread ? 1 : 0);
+  if (wire === lastAuthWire) return;
+  lastAuthWire = wire;
+
+  if (a.kind === 'unknown') { btn.hidden = true; return; }
+
+  btn.hidden = false;
+  btn.classList.toggle('anon', a.kind === 'anonymous');
+  btn.classList.toggle('none', a.kind === 'none');
+  btn.classList.toggle('unread', !!a.unread);
+
+  // Three states, three strings. "Guest" is NOT cosmetic: signing out on the
+  // web app creates an anonymous identity silently and likes attach to it, and
+  // it was indistinguishable from a real account in the plugin until this said
+  // so out loud.
+  lbl.textContent = a.kind === 'registered' ? (a.label || 'Account')
+                  : a.kind === 'anonymous'  ? 'Guest'
+                  :                           'Sign in';
+
+  btn.title = a.kind === 'registered' ? 'Signed in' + (a.label ? ' as ' + a.label : '')
+            : a.kind === 'anonymous'  ? 'Browsing as a guest \u2014 likes are not on your account'
+            :                           'Not signed in';
+}
+
+function pollAuth () {
+  call('getAuthState').then(renderAuth).catch(function () { /* editor closing */ });
+}
+
+document.getElementById('acct').addEventListener('click', function () {
+  // Navigates the SITE to its own account surface. The plugin does not open a
+  // sign-in of its own and holds no credential -- the site is the only thing
+  // that knows the session, so it is the only thing that can act on it.
+  //
+  // dest -1 marks no tab current, because /account is not one of the five.
+  setStrip(true, -1);
+
+  call('openSitePath', '/account').then(function (ok) {
+    if (ok === false) {
+      setStrip(false, 0);
+      setStatus('Refused: /account', 'err');
+    }
+  }).catch(function (e) {
+    setStrip(false, 0);
+    setStatus(String(e), 'err');
+  });
+});
+
+pollAuth();
+
 // THE STRIP'S HEIGHT IS MEASURED, NOT ASSUMED.
 //
 // kStripHeight is the bar; the element is that plus env(safe-area-inset-top),
@@ -1645,7 +1744,11 @@ async function pollAcquisitions () {
   } catch (e) { /* a poll that fails is not worth a visible error */ }
 }
 
+// Auth rides the acquisition poll rather than the engine one: it changes at
+// human speed, not per block, and 1s is already generous for something that
+// only moves when the user signs in or out.
 setInterval(pollAcquisitions, 1000);
+setInterval(pollAuth, 1000);
 refresh();
 </script>
 </body>
