@@ -177,8 +177,10 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
        across the whole panel needs interpolation, and a browser that chose
        nearest-neighbour would draw visible blocks. */
     image-rendering: auto;
-    /* Fades into the footer instead of ending on a hard edge, which read as a
-       misplaced image rather than as backdrop. */
+    /* Fades out at the bottom instead of ending on a hard edge, which read as a
+       misplaced image rather than as backdrop. This said "fades into the
+       footer"; the footers were deleted 2026-09-14 and it now fades into the
+       bottom of the panel. The soft edge is still the point. */
     -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 55%, rgba(0,0,0,0) 100%);
     mask-image: linear-gradient(to bottom, rgba(0,0,0,1) 55%, rgba(0,0,0,0) 100%);
   }
@@ -271,12 +273,17 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     background: var(--surface-base); border-radius: 6px; font-size: 12px;
     color: var(--text-secondary); user-select: text; word-break: break-all;
   }
-  footer {
-    flex: 0 0 auto; padding: 9px 18px; border-top: 1px solid var(--border-subtle);
-    color: var(--text-muted); font-size: 12px; min-height: 34px;
-  }
-  footer.warn { color: var(--warning); }
-  footer.err { color: var(--danger); }
+  /* The <footer> pair that used to live here is GONE, 2026-09-14.
+
+     One carried the status and one the engine readout. Both sat below the
+     instrument list at 37pt each, and the status one rendered the SAME string
+     the strip was already showing -- "Nothing loaded yet -- pick an
+     instrument." twice on screen at once. Measured in GarageBand's 736x242
+     (C39): 74pt of the two of them against 20pt for the list itself.
+
+     Both moved into the strip's existing 16px row, which was already there and
+     usually idle. The duplication was mine, from the setStatus mirroring added
+     for strip mode and never looked at on a short viewport. */
 
   /* ── The chrome strip ──────────────────────────────────────────────────────
 
@@ -424,17 +431,43 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     nav#chrome .brand { padding: 0 5px 0 2px; margin-right: 5px; }
   }
 
-  /* The status line, folded into the bar rather than sitting above it -- the
-     same 16px ChromeBar reserved, for the same reason. A download starts while
-     the user is on the site, so the shell's own footer is not on screen when
-     there is something to report. */
+  /* TWO READOUTS, ONE 16px ROW. Status on the left, engine on the right.
+
+     The 16px was ChromeBar's, reserved because a download STARTS on the site,
+     so nothing in the library is on screen when there is something to report.
+     That still holds; what changed is that this row is now the only status
+     surface rather than a mirror of a footer.
+
+     Status grows and the engine line gives way, because status is event-driven
+     and worth reading while the engine readout is continuous and diagnostic.
+     Both ellipsise rather than wrap -- the row is a fixed 16px and a second
+     line would silently cost the list another row of height. */
   nav#chrome .line {
     flex: 0 0 auto; height: 16px; line-height: 16px; padding: 0 11px;
+    display: flex; align-items: center; gap: 10px;
     font-size: 11px; color: var(--text-muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  nav#chrome .line.warn { color: var(--warning); }
-  nav#chrome .line.err { color: var(--danger); }
+  nav#chrome .line span {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  nav#chrome #navline { flex: 1 1 auto; }
+  /* Shrink factor 8, not the default 1. At the default they gave way in
+     proportion to their content and the engine readout is the longer string,
+     so the STATUS was truncated just as hard.
+
+     MEASURED, and honestly: at 402pt the visible difference is almost nil,
+     because the overflow is only two or three characters and there is nothing
+     much to reallocate. It matters as the disparity grows -- a long
+     acquisition message against a long engine line -- and at 736pt in the
+     letterbox both fit outright. Kept because it is right, not because it was
+     seen to work.
+
+     Deliberately NOT hidden below some width: the engine readout is how the
+     load figure gets read on the phone, which is the device it is most needed
+     on. */
+  nav#chrome #navload { flex: 0 8 auto; margin-left: auto; opacity: 0.72; }
+  nav#chrome #navline.warn { color: var(--warning); }
+  nav#chrome #navline.err { color: var(--danger); }
 
   /* STRIP MODE — the site is up and owns everything below the bar.
 
@@ -498,7 +531,7 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
          button, and the existing handler finds it unchanged. -->
     <button class="panic" id="panic" title="Reinitialise all voices">Panic</button>
   </div>
-  <div class="line" id="navline"></div>
+  <div class="line"><span id="navline"></span><span id="navload"></span></div>
 </nav>
 
 <header>
@@ -524,8 +557,6 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   <canvas id="spectro" class="empty"></canvas>
   <div id="list"></div>
 </main>
-<footer id="status">Loading&hellip;</footer>
-<footer id="voices"></footer>
 
 <script>
 // The bridge. JUCE injects window.__JUCE__.backend when native integration is
@@ -562,20 +593,18 @@ if (backend) {
 }
 
 function setStatus (text, kind) {
-  const el = document.getElementById('status');
-  el.textContent = text;
-  el.className = kind || '';
-
-  // Mirrored into the strip, which is the ONLY status surface while the site is
-  // up -- the footer this just wrote to is display:none in strip mode.
-  // ChromeBar folded a 16px row into itself for exactly this reason, and its
-  // comment is the argument: a download STARTS on the site, so nothing in the
-  // library is on screen when there is something to report.
+  // THE STRIP IS THE ONLY STATUS SURFACE.
+  //
+  // This also wrote to a <footer> until 2026-09-14, and both were visible in
+  // library mode -- the same string rendered twice, the footer copy costing
+  // 37pt of a 242pt letterbox. The mirroring was added for strip mode, where
+  // the footer is off-screen and the bar is the only place a download can be
+  // reported, and it was never looked at on a short viewport.
   const line = document.getElementById('navline');
-  if (line) {
-    line.textContent = text;
-    line.className = 'line' + (kind ? ' ' + kind : '');
-  }
+  if (!line) return;
+
+  line.textContent = text;
+  line.className = kind || '';
 }
 
 function call (name, ...args) {
@@ -1397,12 +1426,12 @@ setInterval(async () => {
       : '';
 
     if (!st.faust) {
-      document.getElementById('voices').textContent = load;
+      document.getElementById('navload').textContent = load;
       return;
     }
 
     const stuck = st.notesOn - st.notesOff;
-    document.getElementById('voices').textContent =
+    document.getElementById('navload').textContent =
       st.activeVoices + ' voices \u00b7 on ' + st.notesOn + ' / off ' + st.notesOff
       + (st.rawPeak > 0 ? ' \u00b7 trim ' + st.trimDb.toFixed(1) + ' dB (raw peak '
                           + st.rawPeak.toFixed(3) + ')' : '')
