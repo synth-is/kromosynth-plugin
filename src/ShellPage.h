@@ -337,6 +337,31 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     display: flex; flex-direction: column;
     background: var(--surface-base);
     border-bottom: 1px solid var(--border-subtle);
+
+    /* NO DOUBLE-TAP ZOOM ON THE CHROME.
+
+       Reproduced 2026-09-14 in AUM, on device, by double-tapping the LOGO --
+       and only there, after several attempts elsewhere. That fits: double-tap
+       zoom targets the tapped element's block and scales it to the viewport
+       width, so a ~13pt image asks for an enormous factor, while the text
+       buttons around it barely move. Once zoomed, the visual viewport pans
+       independently of CSS overflow and the bar can be dragged out of its own
+       strip.
+
+       `manipulation` kills double-tap zoom and keeps pinch. Deliberately NOT
+       `user-scalable=no` on the viewport meta: that would disable zoom for the
+       whole document, and in library mode this document is the instrument
+       list, which is content someone may legitimately want to magnify -- more
+       so in a 242pt letterbox, not less. Scoped to the chrome, which is the
+       only part that was being zoomed by accident.
+
+       Pinch-zooming the bar is still possible. That is a deliberate gesture,
+       not a stray tap, and left alone. UNVERIFIED HERE: a double-tap cannot be
+       synthesised through the simulator tooling, so this was fixed from a
+       reproduction on Björn's device and not watched working. */
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
   }
   /* 34, which with the 16px status line below is kStripHeight. Explicit rather
      than `flex: 1 1 auto`: the nav's height is auto now, so a row that sized
@@ -1509,11 +1534,27 @@ for (let i = 0; i < navTabs.length; i++) {
 
     // Class flip FIRST, navigation second. The flip is local and instant where
     // the load is neither, and the other order leaves the tap looking like it
-    // never registered for as long as the site takes to answer. Undone if the
-    // call is refused, which openSitePath does for anything not site-relative.
+    // never registered for as long as the site takes to answer.
+    //
+    // This said "undone if the call is refused, which openSitePath does for
+    // anything not site-relative". IT WAS NOT UNDONE -- see below. Corrected
+    // where the claim was made rather than only where it was fixed.
     setStrip(true, this.dataset.dest);
 
-    call('openSitePath', path).catch(function (e) {
+    call('openSitePath', path).then(function (ok) {
+      // A RESOLVED `false` IS A REFUSAL, not a success.
+      //
+      // openSitePath refuses anything that is not site-relative by calling
+      // `done (juce::var (false))`, which RESOLVES the promise. A `.catch()`
+      // alone therefore never ran on the one failure it was written for, and
+      // the strip was left marked current with no site behind it -- the bar
+      // reporting an outcome it did not observe, which is the failure this
+      // codebase keeps rediscovering.
+      if (ok === false) {
+        setStrip(false, 0);
+        setStatus('Refused: ' + path, 'err');
+      }
+    }).catch(function (e) {
       setStrip(false, 0);
       setStatus(String(e), 'err');
     });
