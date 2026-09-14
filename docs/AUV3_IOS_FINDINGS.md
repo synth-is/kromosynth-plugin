@@ -48,6 +48,101 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C40. THE LOGO WAS THE ZOOM TARGET, and a refusal that resolved (2026-09-14)
+
+Two defects in the chrome strip. One reported and reproduced by Björn on device,
+one found while reading the code around it.
+
+## Double-tap zoom, and why only the logo
+
+Björn reported that the bar could be zoomed and then scrolled past. It took him
+several attempts to reproduce, and it finally went **only by double-tapping the
+logo**, in AUM.
+
+That specificity is the explanation. Double-tap zoom scales the tapped element's
+block to the viewport width. The logo is a ~13pt image, so it asks for an
+enormous factor; the text buttons beside it are already near their natural width
+and barely move. Once zoomed, the visual viewport pans independently of CSS
+overflow — `body.strip`'s `overflow: hidden` constrains the layout viewport and
+has no say over a zoomed visual one — so the bar can be dragged out of its own
+strip.
+
+`touch-action: manipulation` on `nav#chrome` kills double-tap zoom and keeps
+pinch.
+
+**Deliberately NOT `user-scalable=no` on the viewport meta.** That would disable
+zoom for the whole document, and in library mode this document is the instrument
+list — content someone may legitimately want to magnify, more so in a 242pt
+letterbox than less. Scoped to the chrome, which is the only part being zoomed by
+accident. Pinch on the bar still works, because that is a deliberate gesture.
+
+**UNVERIFIED.** A double-tap cannot be synthesised through the simulator tooling:
+`t x y` is the only interaction command and two MCP round-trips are seconds
+apart, far outside the double-tap window. So this was fixed from a reproduction
+on hardware and never watched working. What is verified is that the strip still
+lays out unchanged and `chrome_height` still reports 51 then 113.
+
+## A resolved `false` is a refusal
+
+`openSitePath` refuses anything not site-relative with `done (juce::var (false))`
+— which **resolves** the promise. The page had only a `.catch()`, so the one
+failure it was written for never ran it, and a refused path left the strip marked
+current with no site behind it.
+
+Same family as the spinner claiming an attempt had started and the card claiming
+success for a failed handover: a layer reporting an outcome it did not observe.
+The comment above `setStrip` claimed the flip was "undone if the call is
+refused". It was not. Corrected where the claim was made, not only where it was
+fixed.
+
+## Not fixed, and specified instead
+
+Björn's second screenshot showed the shell's filter row and footer rendering
+**inside the strip**, which `body.strip > :not(nav#chrome) { display: none }`
+makes impossible. Zoom does not explain it: in strip mode the document IS only
+the nav, so magnifying it cannot reveal a filter row.
+
+That requires `body.strip` to be absent while C++ still has `siteVisible_` true.
+All three `showSite` callers are page-initiated, so the page cannot be surprised
+by a C++ caller — but it CAN lose its own state, because **the page holds view
+state that C++ owns, with no way to resync**. A shell page reload without editor
+reconstruction leaves the fresh document assuming library layout while the editor
+is still handing it a strip.
+
+The comment in `e393a5f` says "the editor is reconstructed with the library
+showing on every window open, so there is no state to restore on load either".
+True for editor reconstruction. False for a page reload, which an appex under
+memory pressure can do on its own.
+
+Proposed: a `getSurface` native function the page calls at init, so it ASKS
+instead of assuming. To light the right tab it should return the current site
+path rather than a boolean, which needs a `lastSitePath_` set in
+`navigateSiteTo`.
+
+**Searched and not found.** An awk pass over the 2026-09-12 device log for a
+`juce://juce.backend` load between a `surface_site` and a `surface_shell`
+returned nothing — but that log predates the screenshots, so it is inconclusive
+rather than exculpatory.
+
+## Architecture, since it was asked
+
+The site is **not in an iframe**. Two sibling `WKWebView`s, not nested: the shell
+on `juce://juce.backend` with the bridge on, the site on `https://synth.is` with
+the bridge deliberately off so an off-origin sign-in redirect cannot reach
+`window.__JUCE__`. Different origins, so no shared `localStorage` and no
+`postMessage` — the shell genuinely cannot read the site's session.
+
+The channel that does exist is `site_->interceptsSentinels`: the site navigates
+to a URL the plugin catches in `pageAboutToLoad`. Acquisition already uses it. An
+auth sentinel would ride the same rails without turning the bridge on.
+
+If login state is ever surfaced in the strip, the caution is this file's most
+repeated one: a strip that draws an avatar asserts state it cannot observe, and a
+missed sentinel makes it lie confidently. A control reflecting last-known state,
+with the site as source of truth, is the shape that does not.
+
+---
+
 # C39. THE STRIP WAS NEVER THE PROBLEM — measured in GarageBand (2026-09-12)
 
 Device, GarageBand, `736×242` letterbox. Screenshot measured at 3x against a
