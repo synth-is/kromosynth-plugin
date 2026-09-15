@@ -48,6 +48,96 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C41. FILES.APP HIDES AN EMPTY FOLDER, and the library was never lost (2026-09-15)
+
+Four findings, three of which correct something asserted earlier.
+
+## Files.app visibility needs BOTH keys, and something to show
+
+`UIFileSharingEnabled` alone is the older iTunes switch.
+`LSSupportsOpeningDocumentsInPlace` grants the local file provider access to the
+same folder, and both are needed before an app's `Documents` appears in
+Files.app. `juce_add_plugin` has no option for the second — `PLIST_TO_MERGE`
+(`11b791c`).
+
+**And iOS hides the folder entirely while `Documents` is empty.** Verified: with
+both keys shipped, Björn saw nothing. A single file pushed with
+`devicectl device copy to … --destination Documents/README.txt` made
+*On My iPhone → Synth.is* appear immediately.
+
+That is worth keeping, because "folder absent" reads as "entitlement wrong" and
+is not. C8 asserted Files.app visibility twice from the plist key alone; it was
+never visible, because `Documents` has been empty since the library moved to the
+App Group.
+
+I got the second key wrong twice on the way — first as
+`DOCUMENT_BROWSER_ENABLED` (which emits `UISupportsDocumentBrowser`, a different
+feature), then reverted on the reading that it governs opening OTHER apps'
+documents. That is its nominal description; its practical effect is the
+visibility above. Both corrections are in the CMakeLists comment.
+
+## devicectl cannot be trusted about the App Group container
+
+```
+library=appGroup
+root=/private/var/mobile/Containers/Shared/AppGroup/6DB47DBD-…/Instruments
+exists=yes entries=15
+```
+
+The library was exactly where `InstrumentLibrary.cpp:55` says, intact, while
+`devicectl device info files --domain-type appGroupDataContainer
+--domain-identifier group.is.synth.plugin` reported three directories and no
+`Instruments`. Almost certainly a stale group container from an earlier install —
+reinstalls mint new UUIDs and the old ones linger.
+
+Several turns went into treating that listing as ground truth about the app's
+state. **The app is the authority on where the app keeps its files**, which is
+why `processor_constructed` now logs `root=`, `exists=` and `entries=`
+(`8e4d38a`) rather than only which branch resolved.
+
+C8 justifies the App Group choice partly on devicectl still being able to reach
+the container. That justification does not hold.
+
+## A single rendered sound has no delivery path at all
+
+Virtual instruments have one: `watchAndAcquire` → acquire sentinel → App Group,
+wired at two separate entry points with a comment recording that wiring only one
+was the original mistake.
+
+`Download WAV` calls `onDownload(entryId)` with no `isPluginHost()` branch. In
+the plugin that is a browser download with nowhere to go. The web app can save
+it; the plugin cannot.
+
+## The constraint any fix has to survive
+
+**The appex cannot write to the container app's `Documents`.** Separate
+sandboxes — the same wall that put the library in the App Group. So "write
+one-shots to `Documents`" works from the standalone app and not from the AUv3,
+which is the path that matters.
+
+Agreed shape (option 3), not yet implemented:
+
+- single renders land in `<AppGroup>/Renders/`, which the appex CAN write
+- the container app mirrors `<AppGroup>/Renders/` into `Documents/` on launch
+- Files.app shows them, and any iOS DAW imports from there
+
+The cost is staleness: a sound rendered in AUM is not in Files until Synth.is is
+next opened. The alternative for the appex is a document picker in export mode,
+which is per-file and needs UI but has no sync question.
+
+Drag-to-DAW is **desktop only** by decision — `performExternalDragDropOfFiles`,
+no platform negotiation. It is not part of the iOS answer.
+
+## Also
+
+A build after a CMakeLists edit produced a `Synth.is.app` with **no Info.plist
+at all** and contents dated five days earlier. The Xcode-generator staleness this
+repo already documents, presenting as a missing file rather than a stale one.
+Remove `Release/` and rebuild rather than trusting an incremental build after a
+build-file change.
+
+---
+
 # C40. THE LOGO WAS THE ZOOM TARGET, and a refusal that resolved (2026-09-14)
 
 Two defects in the chrome strip. One reported and reproduced by Björn on device,
