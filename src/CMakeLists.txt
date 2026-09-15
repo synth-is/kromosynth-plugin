@@ -61,6 +61,34 @@ endif()
 # deriving it would assert a coupling nothing enforces.
 set(KROMOSYNTH_APP_GROUP_ID "group.is.synth.plugin")
 
+# LSSupportsOpeningDocumentsInPlace, which juce_add_plugin has no option for.
+#
+# BOTH KEYS ARE NEEDED before an app's Documents folder appears in Files.app.
+# UIFileSharingEnabled alone is the older iTunes file-sharing switch; this one
+# grants the local file provider access to the same folder, and Apple's own
+# guidance is to set the pair. Without it the folder is reachable over a cable
+# and invisible on the device, which is a developer's answer and not a user's.
+#
+# CORRECTION, 2026-09-15. This was first attempted as DOCUMENT_BROWSER_ENABLED
+# on the assumption that JUCE's option emitted this key. It does not -- it emits
+# UISupportsDocumentBrowser, which declares the app is built around
+# UIDocumentBrowserViewController, which this is not. The wrong key was caught
+# by reading the BUILT plist, exactly as the trap note below insists.
+#
+# It was then REVERTED on a second wrong reading: that this key governs whether
+# WE can open other apps' documents in place. That is its nominal description;
+# its practical effect is the Files.app visibility above. Reverted correctly,
+# for the wrong reason, and restored here.
+if(KROMOSYNTH_IOS)
+    set(KROMOSYNTH_PLIST_MERGE
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<plist version=\"1.0\"><dict>
+  <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+</dict></plist>")
+else()
+    set(KROMOSYNTH_PLIST_MERGE "")
+endif()
+
 juce_add_plugin(KromosynthPlugin
     PRODUCT_NAME             "Synth.is"
     VERSION                  ${PROJECT_VERSION}
@@ -110,6 +138,7 @@ juce_add_plugin(KromosynthPlugin
     # without a debugger attached.
     BACKGROUND_AUDIO_ENABLED ${KROMOSYNTH_IOS}
     FILE_SHARING_ENABLED     ${KROMOSYNTH_IOS}
+    PLIST_TO_MERGE           "${KROMOSYNTH_PLIST_MERGE}"
     REQUIRES_FULL_SCREEN     ${KROMOSYNTH_IOS}
 
     # The shared container the AUv3 and its container app both read the
