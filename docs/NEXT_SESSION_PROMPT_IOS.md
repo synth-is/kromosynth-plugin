@@ -1,125 +1,163 @@
-# Next session: the chrome is done; delivery and the letterbox are not
+# Next session: deploy the web app, then the letterbox
 
-Rotated 2026-09-15. Previous: `NEXT_SESSION_PROMPT_IOS.2026-09-12.md`.
+Rotated 2026-09-15 (second rotation that day). Previous:
+`NEXT_SESSION_PROMPT_IOS.2026-09-15.md`.
 
-Read `docs/AUV3_IOS_FINDINGS.md` first — C0 through C41, newest first. That file
+Read `docs/AUV3_IOS_FINDINGS.md` first — C0 through C42, newest first. That file
 is the record. Do not re-derive it from commit messages.
 
 ---
 
 ## 1. The single most useful thing to know
 
-**The chrome work is finished, measured and deployed. Two things are not: the
-letterbox layout, and getting a single rendered sound out of the plugin.**
+**Deploying `kromosynth-desktop` fixes a live defect on Björn's phone, and it is
+already committed.** `main` carries `978e432` (the account view) and `56afa5a`
+(the render verb's web half). Neither is deployed. Until they are, tapping
+`Sign in` on `/account` inside the plugin does nothing — see §2.
 
-Verified on hardware: the HTML nav (51pt in AUM *and* in GarageBand — no
-safe-area inset in either), the account control fed by the `synthis://auth`
-sentinel, one navigation bar instead of two, and the two redundancy deletions
-that took the instrument list in GarageBand's 736x242 from **20pt to 93pt**.
+Single-sound delivery (C41 item 1, C42) is **built and committed**: the
+`synthis://render` verb, the `<container>/Renders` outbox, and a drain into
+`Documents/Renders` at container-app launch. 105/105 in `acquire-probe`,
+`build/desk-verify` clean, `vite build` clean.
 
-Not done: WP §11 wants three rows at 44, which is 132pt. C39's remaining two
-items — compact the header under a height media query, hide the filter row at
-short heights — are worth about 62pt and would land it near 155.
+**The drain has never run.** It is gated on `wrapperType_Standalone` and needs
+the phone. And the thing to judge when it runs is not whether it works but
+whether the staleness is tolerable — a render made in AUM does not reach Files
+until Synth.is is opened COLD. That was pre-registered as the question; if it
+feels wrong, the answer is a document picker from the appex, not more sync.
 
-And **a single rendered sound still has nowhere to go** (C41). Virtual
-instruments hand over; `Download WAV` has no plugin branch at all.
+Still not done: the letterbox (C39 items 3 and 4), the desktop VST3/AU rebuild,
+and `unread`.
 
-## 2. Two loops, and what each cannot see
+## 2. The Sign in button, and why "unable to tap" was the wrong description
 
-**The letterbox.** 736x242 exists only on the phone, in GarageBand. The
-standalone simulator fills the screen and cannot be letterboxed, so §3.2's work
-cannot be checked before it reaches Björn. Cheapest fix: serve `kIndexHtml` to a
-desktop browser sized to 242pt tall — CSS only, no plugin, no build, no device.
+Björn reported he could not tap `Sign in` on the plugin's account surface. The
+tap lands. The handler runs. **It dispatches `show-login-modal` into a room with
+no listener.**
 
-**Plugin<->site, which is SOLVED and worth reusing.** Point a simulator build at
-the dev server:
+The deployed `/account` is the OLD `AccountRoute` (`App.jsx` at `2bfa02f`):
 
+```jsx
+<div className="p-8 text-center text-gray-300">
+  <p className="mb-4">Sign in to keep your sounds on your own account.</p>
+  <button className="px-4 py-2 rounded-lg bg-blue-600 text-white"
+          onClick={() => window.dispatchEvent(new Event('show-login-modal'))}>
 ```
-cmake -B build/ios-sim -DKROMOSYNTH_WEB_APP_URL=http://localhost:5173
-```
 
-ATS does not block localhost. The whole auth loop — site emits `synthis://auth`,
-plugin catches it in `pageAboutToLoad`, bar renders — was verified this way with
-no deploy and no phone. **Set it back to `https://synth.is` afterwards.**
+That markup IS the screenshot, down to the colours — `text-gray-300` is light
+green and `bg-blue-600` is teal `#35aaa3` in this palette (`Palette.h`: the
+class names lie). `NavigationBar.jsx:113` is the sole listener for that event,
+and the old route did not render `NavigationChrome`, so `NavigationBar` was
+never mounted on it.
+
+The comment sitting directly above that button asserted the opposite: *"Navigation
+Bar owns the modal and stays mounted even under hideNav, so the dispatch above is
+enough to open it."* Same shape as the spinner that claimed an attempt had
+started and the card that claimed success for a failed handover. **It was broken
+in a plain browser too**, and had simply never had a caller until the plugin got
+an account button.
+
+Fixed by `978e432`, which makes `AccountRoute` render `NavigationChrome` plus
+`AccountView`. Committed, NOT deployed. The screenshot is the evidence for
+"deployed is old" — nobody has fetched the live bundle to confirm it, and
+nobody needs to.
+
+**Sign-in itself should then work in the appex**: `authService.js` posts
+email/password over `fetch` to `/api/auth/login`. No OAuth, no
+`window.location.href`, so `pageAboutToLoad`'s origin block never sees it. If it
+still fails after the deploy, that is a NEW finding, not this one.
 
 ## 3. Open, in order
 
-1. **Single-sound delivery (C41), option 3 as agreed.** The constraint that makes
-   it non-obvious: **the appex cannot write to the container app's `Documents`**
-   — the same wall that put the library in the App Group. So: renders land in
-   `<AppGroup>/Renders/`, and the container app mirrors them to `Documents/` on
-   launch, where Files.app shows them and any iOS DAW imports from there.
+1. **Deploy `kromosynth-desktop`.** Two commits ride on it: the account view
+   (§2) and the render verb's web half. Then, on the phone, in one sitting:
+   - tap `Sign in` and get a modal
+   - tap `Download WAV` on a single render and watch the strip say `Saved …`
+   - open Synth.is cold and look in Files → *On My iPhone → Synth.is → Renders*
+   - double-tap the LOGO in AUM (§3b — thirty seconds, still unverified)
 
-   **Try the staleness before building the mirror.** A sound rendered in AUM is
-   not in Files until Synth.is is next opened. If that feels wrong in use, a
-   document picker in export mode from the appex is the better foundation —
-   per-file and needs UI, but no sync question.
+   The log lines to grep for are `render_queued`, `render_saved` and
+   `renders_drained moved=`.
 
-   Files.app itself is ready: both plist keys ship and *On My iPhone ->
-   Synth.is* appears, **once `Documents` is non-empty** — iOS hides the folder
-   while it is empty, which is why it looked broken.
+2. **The letterbox, C39 items 3 and 4.** Untouched this session. Compact the
+   header under `@media (max-height: 320px)` (56 -> ~36pt) and hide the filter
+   row at short heights (42pt). Worth about 62pt, landing near 155 against WP
+   §11's 132.
 
-   Drag-to-DAW is **desktop only** by decision: `performExternalDragDropOfFiles`,
-   no platform negotiation, independent of all the above.
+   **736x242 exists only on the phone, in GarageBand.** The standalone simulator
+   fills the screen and cannot be letterboxed. Cheapest check: serve
+   `kIndexHtml` to a desktop browser sized to 242pt tall — CSS only, no plugin,
+   no build, no device.
 
-2. **The letterbox, C39 items 3 and 4.** Compact the header under
-   `@media (max-height: 320px)` (56 -> ~36pt) and hide the filter row at short
-   heights (42pt). Read §2 first.
+3. **Rebuild the desktop VST3/AU.** Now ~40 commits behind and still drawing the
+   deleted ChromeBar. `scripts/build.sh install --backup`, then
+   `auval -v aumu Ksyn Bthj` before opening a host. Expect two audible or
+   visible changes that are not regressions: the Output default is -9 dB
+   (`6fc3159`), and single renders now land in `~/Music/Synth.is/Renders`.
 
-3. **Rebuild the desktop VST3/AU.** They are from 2026-09-05 and ~35 commits
-   behind — they have never seen the HTML nav and still draw the deleted
-   ChromeBar. `scripts/build.sh install --backup`, then
-   `auval -v aumu Ksyn Bthj` before opening a host. Expect one audible change
-   that is not a regression: the Output default is now -9 dB (`6fc3159`).
-
-4. **Wire `unread`.** The auth sentinel carries a dot, not a count, and the
-   parameter is not sent at all — the count lives in `NotificationBell`, not
-   `NavigationBar`, so sending one from there would have meant inventing a
-   number. The dot stays dark until this is done.
+4. **Wire `unread`.** Unchanged from the last rotation: the auth sentinel
+   carries a dot, not a count, and the parameter is not sent at all — the count
+   lives in `NotificationBell`, not `NavigationBar`, so sending one from there
+   would mean inventing a number. The dot stays dark until this is done.
 
 ## 3b. Small, and each is one thing
 
 - **The double-tap fix has never been verified.** `touch-action: manipulation`
   on `nav#chrome`, shipped 2026-09-14, reproduced by Björn only by
   double-tapping the LOGO. A double-tap cannot be synthesised through the
-  simulator tooling, so this needs thirty seconds on the phone.
-- **`fcbe75c` in `kromosynth-desktop` swept unrelated units-panel WIP** into a
-  commit about auth. Already pushed; splitting means a force-push.
+  simulator tooling. Thirty seconds on the phone.
 - **The `getSurface` resync (C40)** — the page holds view state C++ owns, with
   no way to resync after a page reload. Specified, not built.
 - **`ios-log.sh`'s header still says its retrieval path is unverified.** It
   works, and has for days. Update the status line but KEEP the probe — C16 was a
   retraction of exactly the confidence that deleting the fallbacks would restore.
-- **A probe `README.txt` sits in the device's `Documents`.** Disposable; the
-  folder will vanish from Files.app once it is empty, which is expected.
+- **A probe `README.txt` sits in the device's `Documents`.** Disposable — and
+  now actually disposable, because `Documents/Renders/` will keep the folder
+  non-empty once a render has been drained.
+- **`fcbe75c` in `kromosynth-desktop` swept unrelated units-panel WIP** into a
+  commit about auth. Already pushed; splitting means a force-push.
+
+## 3c. Outside this repo, and one of these is stale in the OTHER direction
+
+**`kromosynth-recommend` on the hub is FINE.** The previous rotation warned that
+the backtick fix was "still uncommitted there" and would be clobbered by the
+next `git pull`. It is committed, it came from `origin/main` (`c5932c0`, which
+reworded the comment rather than swapping to single quotes), the working tree is
+clean and the service has been up for hours. Nothing on the hub to lose.
+
+**The laptop is the loose end instead.** `kromosynth-recommend` here carries an
+unpushed `969bf05` fixing the same defect a different way, on the same parent,
+so the two have diverged and `git pull` will conflict in that comment block.
+Diffed: the only difference in `RecommendationService.js` is comment wording, no
+behaviour change, so dropping `969bf05` is safe. Björn's call.
+
+**The hub path is `/Users/bthj/Developer/synth.is/…`**, not
+`…/Developer/apps/synth.is/…` as several notes claimed.
 
 ## 4. The loop, and how to drive it
 
-**AUM hands the plugin at least five different rectangles in a single session**
-— 428×926, 428×879, 428×280, 409×524, 428×574, including one narrower than the
-screen. GarageBand adds 926×428, 242×736 and 736×242. Anything that sizes
-against the editor cannot read one `editor_resized` line and call it the layout.
+Unchanged from the last rotation and still correct. In brief, with the
+corrections that cost time:
 
-The simulator loop is still the right tool for everything except the letterbox
-(§2) — same `cmake` invocation below. Corrections to how to drive it:
-
+- **AUM hands the plugin at least five different rectangles in one session** —
+  428×926, 428×879, 428×280, 409×524, 428×574. GarageBand adds 926×428, 242×736
+  and 736×242. Anything that sizes against the editor cannot read one
+  `editor_resized` line and call it the layout.
 - **Poll the log for `page_finished_loading`; do not sleep.** It lands ~6.8s
-  after launch. I shot a screenshot at 10s, got a pure white frame, and nearly
-  filed the launch screen as a broken stylesheet.
-- **Re-derive the data container after every `install`.** Each one produced a
-  fresh UUID.
+  after launch. A screenshot at 10s caught the LAUNCH SCREEN and nearly became a
+  finding about a broken stylesheet.
+- **Re-derive the data container after every `install`.** Each one mints a fresh
+  UUID.
 - **`xcode-27-headless` `DeviceInteractionSynthesize` does drive the
-  simulator**, despite `skillToTrigger` insisting on a subagent, and despite
-  reporting `applicationState: "NotRun"` while the hierarchy dump beside it
-  shows the pid running. Web content is a `RemotePlaceholder`, so DOM positions
-  are unavailable — compute tap coordinates from the CSS box. `t 80 79` hit
-  Feed first try that way. Sessions expire after a couple of calls; restart
-  rather than debug.
-
-For the device: `ios-log.sh`'s retrieval path **WORKS** and its header still says
-otherwise. `appDataContainer` / `is.synth.plugin.pluginAUv3` answered and
-produced `stage0-Synth-AUv3.log`. Its C16 warning should be rewritten to say
-which domain was right rather than left as a probe.
+  simulator**, despite `skillToTrigger` insisting on a subagent and despite
+  reporting `applicationState: "NotRun"` beside a hierarchy dump showing the pid
+  running. Web content is a `RemotePlaceholder`, so compute tap coordinates from
+  the CSS box. Sessions expire after a couple of calls; restart rather than
+  debug.
+- **Plugin<->site is solved and worth reusing.** Point a simulator build at the
+  dev server with `-DKROMOSYNTH_WEB_APP_URL=http://localhost:5173`; ATS does not
+  block localhost. **Set it back to `https://synth.is` afterwards.** This is the
+  cheapest way to test §2 and the render verb without deploying.
 
 ```
 cmake -S . -B build/ios-sim -G Xcode \
@@ -135,9 +173,6 @@ cmake -S . -B build/ios-sim -G Xcode \
   -DKROMOSYNTH_WEBVIEW_PROBE=ON -DKROMOSYNTH_BROWSER_INSET=0
 ```
 
-`build/ios-sim` is already configured this way and builds clean — wasm3 and
-sfizz both compile for the simulator. Then:
-
 ```
 cmake --build build/ios-sim --config Release --target KromosynthPlugin_Standalone
 # iPhone 17 Pro, 27.0, booted: AC0AA08E-1F64-4E5D-931D-9D505753118B
@@ -145,289 +180,186 @@ cmake --build build/ios-sim --config Release --target KromosynthPlugin_Standalon
 xcrun simctl install <udid> build/ios-sim/src/KromosynthPlugin_artefacts/Release/Standalone/Synth.is.app
 xcrun simctl launch <udid> is.synth.plugin
 xcrun simctl io <udid> screenshot /Users/bjornpjo/Developer/shot.png
-xcrun simctl get_app_container <udid> is.synth.plugin data   # re-derive EVERY install; the UUID changes
+xcrun simctl get_app_container <udid> is.synth.plugin data   # re-derive EVERY install
 ```
 
-**Seeing the screenshot yourself, economically.** A full frame is too large to
-pull into context. Crop to the region in question and JPEG it:
+**Compile-check targets, because two of them are not what you would guess.**
+`build/desk-verify` is Ninja and has NO Standalone target — use
+`--target KromosynthPlugin`, which builds the shared code and is enough to catch
+every compile error in `src/`. `build/acquire-probe` is Unix Makefiles, target
+`acquire_probe`, and its selftest is the fastest real check in the repo:
+
+```
+cmake --build build/desk-verify --target KromosynthPlugin
+cmake --build build/acquire-probe --target acquire_probe
+./build/acquire-probe/tools/acquire-probe/acquire_probe_artefacts/Release/acquire_probe \
+    selftest /tmp/acq-scratch
+```
+
+**Seeing a screenshot economically.** Crop to the region and JPEG it:
 
 ```
 magick /tmp/shot.png -crop 1206x230+0+0 +repage -resize 560x -strip -quality 60 /tmp/bar.jpg
 ```
 
-That is about 5,000 base64 characters for the chrome bar strip — cheap enough
-to iterate on. ImageMagick and PIL 10.1.0 are both installed. 35 simulators are
-available including an iPhone 13 matching Björn's device.
+~5,000 base64 characters for the chrome strip. ImageMagick and PIL 10.1.0 are
+both installed. 35 simulators available, including an iPhone 13 matching
+Björn's device.
 
 **What the simulator cannot cover, so do not try:** AUM does not exist there.
-The icon, AUM's 256-frame block delivery, the AU parameter list and
-GarageBand's 736x242 letterbox all need the phone. Those are measurement and
-host-integration questions. Everything about appearance and navigation is
-simulator work.
+The icon, AUM's 256-frame block delivery, the AU parameter list, GarageBand's
+736x242 letterbox and the container-app drain all need the phone.
 
-**Unfinished plumbing — CLEARED 2026-09-11.** The app was installed and launched
-once (pid 77509) but the screenshot showed a launch/home texture rather than our
-UI. It was not a plumbing fault: the app needed `terminate` then `launch` to
-come frontmost, and the texture was the LAUNCH SCREEN, caught because
-`page_finished_loading` lands ~6.8s after launch and the screenshot went at 10s
-with the animation still up. Poll the log, do not sleep. Verified end to end:
-the UI renders, and the screenshot economics above hold — a full frame at 300px
-wide is ~10 KB, a bar strip at 700px ~7.5 KB.
+## 5. What landed on 2026-09-15 (second session)
 
----
+**`3ff9629` — the container, not the instrument root.** `InstrumentLibrary`'s
+resolver answers with the container; `root()` appends `Instruments`;
+`containerRoot()` is public. Same three paths as before. The point is that the
+outbox resolves through the SAME branch — an appex writing renders into its
+private Documents while reading instruments from the App Group would be two
+halves of the plugin disagreeing about which sandbox they occupy.
 
-## 5. What landed on 2026-09-14 and 15
+**`e8f2dac` — C41 item 1.** `synthis://render` as a third verb; `RenderOutbox`
+with the outbox, the naming rule and the drain; `download()` extracted so ONE
+copy of the network contract serves both verbs; both paths refusing each other's
+work before touching disk; the verb carried through `AcquisitionRunner` into
+`Status` and the completion callback; the processor returning early for a render
+rather than asking the library for a directory that does not exist; the shell's
+finished line worded per kind. Seventeen new probe checks.
 
-**Chrome, finished.** `21f438a` deleted ChromeBar and the disposable probe
-block; `7928b41` fixed the `ResizeObserver` box (C37); `94493e1` added
-`touch-action` and made a refused navigation surface (C40); `ddc2c7f` deleted
-the two footers and folded both readouts into the strip's 16px row — 20pt to
-93pt in the letterbox.
+**`9cce564` — C42**, including the correction written next to C41's wrong claim.
 
-**Account control, both halves, deployed.** `bd36c53` (plugin) and `fcbe75c` +
-`003de9a` (web) put who-you-are in the bar over the `synthis://auth` sentinel:
-no token, no user id, three states with anonymous rendered distinctly as
-"Guest", and the control hidden until the site has spoken. `hideNav` went back
-to hiding the whole nav, which removed the site's 74pt account band.
+**`56afa5a` in `kromosynth-desktop`** — `handOverToPlugin(verb)` with
+`acquireIntoPlugin` and `saveRenderToPlugin` as wrappers, the `'wav'` branch in
+`downloadTakeoutEntry`, and the one-line fix that stopped single renders being
+labelled `sfz`.
 
-**Files.app groundwork.** `11b791c` added `LSSupportsOpeningDocumentsInPlace`
-via `PLIST_TO_MERGE`; `8e4d38a` made `processor_constructed` log the library
-path, `exists` and `entries`. `80f9c39` is C41.
+**Not this session, but on `main` and undeployed:** `4e21415`, `978e432`,
+`789a618`, `81d3c9c` — Björn's, committed in another terminal while the above
+was in progress.
 
-**Outside this repo.** `0f8eab7` turned over `WP_UNIFIED_CHROME` §4. On the
-hub, `nginx` now sends `Cache-Control: no-store, no-cache, must-revalidate` on
-`/` — backup at `synth.conf.bak-2026-09-14`. And `kromosynth-recommend` was
-crash-looping for hours on a syntax error: a comment inside a template literal
-contained backticks, which closed the string. Fixed on the hub and **still
-uncommitted there** — the next `git pull` will clobber it and the outage
-returns.
-
----
-
-## 5b. What landed on 2026-09-11
-
-Nine more commits after the two below, across three repos. In brief:
-`21f438a` deleted ChromeBar and the disposable probe block; `7928b41` fixed the
-`ResizeObserver` box (C37); `3da5a1c` corrected `kStripHeight`'s comment;
-`0f8eab7` in `kromosynth-projects` turned over `WP_UNIFIED_CHROME` §4 with §2,
-§3, §8 and §11 moved to match; `2db74a9` and `7f9e848` in `kromosynth-desktop`
-narrowed `hideNav` and fixed where it left the user section; `c101d55`,
-`33e12d3` and the C39 commit are the record.
-
-The two that started it:
-
-**`e393a5f` — the nav is in the shell's document.** ChromeBar's hand-rolled JUCE
-buttons are replaced by a `<nav>` in the page the shell already serves. Real S
-mark on a `/logo.svg` resource route, lucide 0.454.0 path data inline, labels
-dropping below 639px instead of truncating to "Instrume…", one Panic instead of
-two. `showSite` resizes the shell rather than hiding it — hiding it would take
-the chrome with it — and `body.strip` removes everything below the nav rather
-than clipping it.
-
-Both taps verified in the log, not inferred: Feed gives `surface_site` then
-`/network`; Library gives `surface_shell`. The composite renders with synth.is
-live below the strip, `rootChildren:1`, no blank and no memory kill. A3.2's
-probe result holds as a layout.
-
-The strip's height is **reported by the page**, via `chromeHeight` and a
-`ResizeObserver`. `kStripHeight` is only the bar and only a fallback seed. See
-§1 for the number that is still missing.
-
-`kNativeChrome` restores the old bar in one character; both paths compile.
-
-**`081a4fd` — C35.** The four readings that placed the empty strip, the `calc()`
-misattribution recorded next to the claim it corrects, the two instruments of
-mine that were wrong before the code was, and the deploy skew.
-
-Nothing was touched in `kromosynth-desktop`, so its genome-inspector WIP is
-still unstaged.
-
----
-
-## 5c. What landed on 2026-09-10
-
-Twenty-three commits here, one in `kromosynth-render`, one in
-`kromosynth-desktop`. In rough order of consequence:
-
-**The cap question is answered.** `844223d` captures over-budget blocks with
-voices and a reconstructed wall clock; `704bd1e` fixes a denominator that had
-been wrong the whole time (`getBlockSize()` is the host's declared maximum, AUM
-declares 2048 and delivers 256, so every "of 42.67 ms" reading named a deadline
-the host never used — the real regime is 5.33 ms); `cb5e763` and `c5b3bc6`
-measure the load distribution per voice count. C22 → C27 → C30 → C32.
-
-**The verdict is TOO TIGHT, not too generous** (C32), which is the opposite of
-where C22 and C29 pointed for two days. `p50@cap` is 0.3 against a 0.5
-threshold. **How much** too tight is deliberately not claimed: it rests on a
-one-bucket difference at 0.1 resolution.
-
-**`capForRtf` is untouched and should stay that way** until the slope is
-resolved. C32 names what that needs: finer buckets where the distribution
-actually lives (everything measured sits under 0.5, so 21 uniform buckets waste
-most of their range) and readings at 3 and 4 voices, because two points cannot
-tell a linear cost from a flattening one.
-
-**The palette is unified** (`28f106a`). `src/Palette.h` is the single source,
-generating the shell's `:root` block and exposing the same constants as
-`juce::Colour` for native drawing. Read off the web app's actual usage, counted
-across its source. **The class names lie:** `blue-600` is teal `#35aaa3`,
-`gray-300` is light green, `gray-900` is dark blue. The ramp runs green at the
-light end and blue at the dark end.
-
-**One persistent chrome bar** (`8480833`). `SiteBar` → `ChromeBar`, always
-present, content swaps beneath it. Five destinations from `NavigationBar.jsx`.
-Nothing disabled — Björn corrected an earlier design that greyed Biomes and
-locked Garden, and he was right.
-
-**`chrome=host` is finally sent** (`5521287`). `hostDrawsChrome()` tests for
-`?chrome=host`; the plugin had only ever sent `?client=synthis-plugin`, so
-`App.jsx:1450`'s stand-down had **never once fired** and the site drew its own
-nav inside the plugin from the beginning. WP §2 and I both claimed "half of
-this work is already done". The code was. The trigger was not.
-
-**iOS scripts that did not exist** (`6390140`, plus `5ae5d2f` `3535fe2`
-`030a012` `99ed5ed` `25ed3d5` `3a26581`): `ios-build.sh`, `ios-install.sh`,
-`ios-log.sh`, `ios-icon-experiment.sh`. `ios-log.sh` is now **verified** — the
-log lives in `appDataContainer` / `is.synth.plugin.pluginAUv3` under
-`Library/Logs/Synth.is`, and C16's warning did not bite.
-
----
-
-## 6. The icon: do not pick this up casually
-
-C34 records five dead hypotheses. **Do not propose a sixth bundle hypothesis.**
-Everything checkable is checked: 30 catalog renditions at scales 1, 2 and 3,
-both idioms, all four plist icon keys present in both bundles with names that
-resolve, loose PNGs at correct pixel sizes, `AudioComponentBundle` eliminated in
-**both** directions (stripped and pointed at the containing app), and registry
-staleness eliminated by a full delete, reboot and single install.
-
-The pattern in C24 through C28 was five rounds of plausible elimination on the
-wrong layer, and the control test that settled it — *do other vendors' AUv3s
-show icons in this AUM?* — was one glance and came four sessions late. They do.
-
-**The reframe that matters:** the `NEMUR NET EHF.` and `NEMUR NET EHF` entries
-survived a full delete and reboot, so they are separate older builds under their
-own bundle ids, not stale registrations. Three different JUCE-built AUv3s of
-ours across years, none with an icon, while Moog's and Space Mushrooms' work.
-That points at JUCE's iOS plist generation, not at this build.
-
-If picked up: read the system log while AUM draws the row. Console.app with the
-device attached — `log stream --device` is unsupported by this macOS `log`, and
-libimobiledevice is not installed. That would **observe** the failure instead of
-guessing at it.
-
-**The device currently has a modified build** with `AudioComponentBundle`
-pointing at `is.synth.plugin`. Byte-identical in code, harmless, but not the
-plain build. Overwrite it on the next install.
-
----
-
-## 7. Things I got wrong, so you do not repeat them
+## 6. Things I got wrong, so you do not repeat them
 
 Recorded because every one cost real time and each has a recognisable shape.
 Dated, because some are older than the last rotation.
 
+**2026-09-15: I nearly went looking for a hit-testing bug.** "I am unable to tap
+the Sign in button" names a mechanism — touch not landing — and that mechanism
+was wrong. The tap landed; the event had no listener. What settled it was
+matching the rendered markup to source (`text-center text-gray-300`,
+`bg-blue-600`) rather than reasoning about webview z-order. *A reported symptom
+names a mechanism, and the mechanism is a hypothesis, not part of the report.*
+
+**2026-09-15: the repo moved under me.** Four commits landed in
+`kromosynth-desktop` from another terminal mid-session. No overlap and nothing
+lost, but a `vite build` run against a tree containing someone else's
+in-progress edits is weaker evidence than it looks. *Check `git log` at both
+ends of a session, not only the start.*
+
 **2026-09-12: arithmetic stood in for looking, three times in one day.** C35's
-`calc()` — a real reading with an obvious interpretation I took instead of
-testing. C38's cache magnitude — a real mechanism with a severity I invented,
+`calc()` — a real reading with an obvious interpretation taken instead of
+tested. C38's cache magnitude — a real mechanism with an invented severity,
 disproved by one phone with different history. C39's 191 — a correct subtraction
-of the wrong quantity, treating everything below the strip as content when
-172pt of it is page furniture. *The common shape is a real measurement applied
-to a quantity nobody checked was the one that mattered.*
+of the wrong quantity, treating everything below the strip as content when 172pt
+of it is page furniture. *The common shape is a real measurement applied to a
+quantity nobody checked was the one that mattered.*
 
 **2026-09-11: I asserted layout from source twice and was wrong both times.**
 `2db74a9` claimed `justify-between` would leave the user section where it sat;
 it puts a lone child at the START. eslint passed and vite HMR'd cleanly both
-times. *Those checks say nothing about where flexbox puts things, and passing
-them is not evidence about layout.*
+times. *Those checks say nothing about where flexbox puts things.*
 
-**2026-09-11: I skipped the `dryRun` pass twice** and the second one closed
-`showSite` with `}` while two statements still followed. Caught before building.
-The convention exists so it does not get that far; used on every edit afterwards,
-it caught a duplicated pair of list items in this file.
+**2026-09-11: I skipped the `dryRun` pass twice** and the second closed
+`showSite` with `}` while two statements still followed. The convention exists so
+it does not get that far.
 
-**2026-09-11: I blamed `env()` inside `calc()` on one obvious reading.** The
-page reported its nav as 50 tall under `height: calc(50px + env(…))`, which is
-exactly the first term, so the `env()` term looked unsupported. I wrote that
-into the CSS as measured and restructured the rule around it. The next reading
-added `getComputedStyle` and showed `paddingTop: "62px"` — the stylesheet had
-been resolving `env` correctly all along, `calc()` included. The real cause was
-timing. **0 is what an absent inset and a broken function both look like.**
-*Report the state of the thing, not just the number it produced.*
+**2026-09-11: I blamed `env()` inside `calc()` on one obvious reading.** The page
+reported its nav as 50 tall under `height: calc(50px + env(…))`, exactly the
+first term, so the `env()` term looked unsupported. The next reading added
+`getComputedStyle` and showed `paddingTop: "62px"` — the stylesheet had been
+resolving it correctly all along and the real cause was timing. **0 is what an
+absent inset and a broken function both look like.** *Report the state of the
+thing, not just the number it produced.*
 
 **2026-09-11: two of my own instruments were wrong before the code was.**
-`chrome_height` logged only when the value changed, which made "the page never
-called" and "the page reported the seed value" identically silent — precisely
-the pair I then had to distinguish. And a pure white screenshot nearly became a
-finding when it was the launch screen. *Fix the instrument before reasoning
-about the reading.*
+`chrome_height` logged only when the value changed, making "the page never
+called" and "the page reported the seed value" identically silent. And a pure
+white screenshot nearly became a finding when it was the launch screen. *Fix the
+instrument before reasoning about the reading.*
 
 **2026-09-11: I reported a landed commit as having a visible effect it did not
-have.** The session prompt said `5521287` made the site's nav stand down; I
-repeated it, and then also asserted a consequence — that the plugin had lost its
-account affordance. Both were wrong: `efe5386` is not deployed, so the site's
-nav is still drawn and Sign In is still on screen. *A commit in one repo is not
-a behaviour in production.* Same shape as the `chrome=host` entry below, one
-layer further out.
-
-**2026-09-11: I used a name grep for process discovery** — `pgrep -fl "Synth.is"`
-— which matched Xcode's background index-build clang invocations and dumped
-thousands of lines of compiler flags into the session. The convention says
-`lsof -nP -iTCP` and not name grep, and this is why.
+have.** *A commit in one repo is not a behaviour in production.* This session's
+§2 is the same lesson pointing the other way: `978e432` fixes the Sign in
+button, and will fix nothing until somebody deploys it.
 
 **2026-09-10: I asserted `chrome=host` was already working**, several times,
 because the code existed and WP §2 said so. Nothing failed loudly, because a nav
 appearing is what a nav does. *Check that the trigger fires, not just that the
 handler exists.*
 
-**I over-tightened the install gate on my own inference.** A comment I wrote
-claimed a suspended host is still a refusal because C15's crash was inside
-`requestIcon` during a rescan — asserted as though it came from the record. It
-did not. Björn was then blocked from installing anything, and a gate the
-operator cannot clear is a stop, not a safety measure. `3a26581` splits it: our
-appex loaded is absolute, a resident host is overridable with `--force`.
+**I over-tightened the install gate on my own inference**, and a gate the
+operator cannot clear is a stop, not a safety measure. `3a26581` splits it.
 
-**Three separate times a truncated `grep | head` nearly became a finding** —
-`Assets.car` "missing", four unmapped colour literals, `otool`'s filename in a
-checksum. C25 is about exactly this and the guards that caught them exist
-because of C25. *Write the guard that refuses rather than the check you read.*
+**Three separate times a truncated `grep | head` nearly became a finding.** C25
+is about exactly this. *Write the guard that refuses rather than the check you
+read.*
 
-**I handed Björn decisions that were mine to make.** He said so: "It is not
-clear to me what you need from me." Four of five items I had labelled as his
-dissolved on inspection — one was already settled by his own written policy at
-`PluginProcessor.cpp:42`. *Arrive with a proposal and a reason.*
+**I handed Björn decisions that were mine to make.** He said so: "It is not clear
+to me what you need from me." *Arrive with a proposal and a reason.* When he then
+says he is not an expert, that is not an invitation to list options again — it is
+a request for the recommendation and what it trades away.
 
 **A confirmed prediction from an invalid test is worth nothing.** C29 predicted
-the cap would fail on the override clause and it did — and C30 showed the bar
-was reading the operating system, since a block with `voices=0` took 195.5% of
-the deadline. Booking that as a win would have retired the cap question on a
-scheduling hiccup. *Registering a bar in advance is only useful if you will also
-throw it away.*
+the cap would fail on the override clause and it did — and C30 showed the bar was
+reading the operating system. *Registering a bar in advance is only useful if you
+will also throw it away.*
 
----
+## 7. The icon: do not pick this up casually
+
+C34 records five dead hypotheses. **Do not propose a sixth bundle hypothesis.**
+Everything checkable is checked: 30 catalog renditions at scales 1, 2 and 3, both
+idioms, all four plist icon keys present in both bundles with names that resolve,
+loose PNGs at correct pixel sizes, `AudioComponentBundle` eliminated in BOTH
+directions, and registry staleness eliminated by a full delete, reboot and single
+install.
+
+The control test that settled it — *do other vendors' AUv3s show icons in this
+AUM?* — was one glance and came four sessions late. They do.
+
+**The reframe that matters:** the `NEMUR NET EHF.` and `NEMUR NET EHF` entries
+survived a full delete and reboot, so they are separate older builds under their
+own bundle ids, not stale registrations. Three JUCE-built AUv3s of ours across
+years, none with an icon, while Moog's and Space Mushrooms' work. That points at
+JUCE's iOS plist generation, not at this build.
+
+If picked up: read the system log while AUM draws the row, via Console.app with
+the device attached — `log stream --device` is unsupported by this macOS `log`,
+and libimobiledevice is not installed. That would OBSERVE the failure.
+
+**The device currently has a modified build** with `AudioComponentBundle`
+pointing at `is.synth.plugin`. Byte-identical in code, harmless, but not the
+plain build. Overwrite it on the next install.
 
 ## 8. Conventions that held
 
 - Explicit pathspec on every `git add` and `git commit`. `kromosynth-desktop`
-  has unrelated genome-inspector WIP; never stage it.
+  carries unrelated WIP more often than not; never stage it. The MCP
+  `git_commit` tool behaves like `git commit -a` — use the terminal.
 - Commit message files under `/Users/bjornpjo/Developer/`, not `/tmp`.
-- Compile with Faust ON in `build/desk-verify`, which matches
-  `build/ios-auv3`'s option pair. **`build/sampler` is dead as a control** —
-  its cache is from 28 August and fails on `KROMOSYNTH_VI_SERVICE_URL` in
-  unmodified code at HEAD.
-- `filesystem:edit_file` batches are atomic: one bad `oldText` rejects all of
-  them. Box-drawing characters and em dashes must match byte for byte.
-- MCP `local-terminal` calls time out around four minutes. Keep sleeps under
-  ~100 s and poll a log file in a second call rather than waiting inline.
-- `local-terminal` returns a bare `null` when a command hangs. That is not an
-  empty result and it means nothing — the same trap as devicectl's `null`.
-- **`local-terminal` also returns a bare `null` for multi-line commands
-  carrying a shell variable assignment**, in seconds rather than after a hang.
-  It looks identical to the trap above and is not it. Single-line literals work.
-  Confirmed twice on 2026-09-11.
+- `filesystem:edit_file` with `dryRun: true` first. Batches are atomic: one bad
+  `oldText` rejects all of them. Box-drawing characters and em dashes must match
+  byte for byte.
+- **`filesystem:edit_file` will happily orphan a doc comment** by inserting
+  between it and its declaration. The dry run showed it; a blind apply would
+  not have. Anchor on the comment AND the declaration together.
+- MCP `local-terminal` calls time out around four minutes. `nohup … &` plus a
+  polling second call for anything longer; keep inline sleeps under ~100s.
+- `local-terminal` returns a bare `null` when a command hangs, AND for
+  multi-line commands carrying a shell variable assignment. The two look
+  identical and are not the same thing. Single-line literals work.
 - **`timeout` and `gtimeout` DO exist on the laptop** (`/opt/homebrew/bin`),
-  unlike the Mac Studio. And `grep -c` returning 0 matches exits non-zero, which
-  the MCP surfaces as an error; it is not a failure.
+  unlike the Mac Studio. `grep -c` returning 0 matches exits non-zero, which the
+  MCP surfaces as an error; it is not a failure.
 - Corrections go where the wrong claim was written, not only where it was
-  noticed. `ShellPage.h`'s `nav#chrome` comment carries its own retraction.
+  noticed. `ShellPage.h`'s `nav#chrome` comment and C41's delivery paragraph
+  both carry their own retractions.
