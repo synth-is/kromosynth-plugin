@@ -48,6 +48,112 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C42. THE RENDER VERB, and a branch that was there all along (2026-09-15)
+
+C41's option 3, built. Also one correction to C41 and one thing that did not
+need building at all.
+
+## The web branch existed, and gave two different wrong answers
+
+C41 says `Download WAV` has "no `isPluginHost()` branch at all". There is one,
+in `downloadTakeoutEntry`, and it has been there since the acquire path shipped.
+What it does depends on which surface the button is on:
+
+| Surface | format sent | what happened in the plugin |
+|---|---|---|
+| feed card (`SoundRendersList`) | `'wav'`, computed explicitly | refused, with a readable message |
+| Takeout page, instrument detail | `null` -> `'sfz'` | passed the gate, handed to the ZIP unpacker |
+
+`InstrumentDownloadButton`'s single branch called `onDownload(entryId)` with no
+format. Both handlers default `targetFormat` to null, and
+`downloadInstrumentEntry` turns null into `'sfz'`. So a single WAV reached the
+install gate wearing a sampler bundle's label, passed it, and produced "Archive
+is empty or not a ZIP" -- the exact message the comment above that gate was
+written to prevent.
+
+Invisible in a browser, which is why it survived: the bytes come from
+`/vi/download/{jobId}` whatever the POST body claims. **The format string is
+only ever read as a DECISION inside the plugin.** Everywhere else it is
+bookkeeping.
+
+Worth keeping because of the shape rather than the bug. Looking from the plugin
+end, "the branch is missing" and "the branch is there and one caller mislabels
+its input" present identically: nothing useful happens. The first sends you to
+write a branch; the second sends you to find the caller.
+
+## The server needed nothing, and that was checked rather than hoped
+
+- `POST /api/takeout/{id}/download` mints a ticket from `entry.artifactId`
+  alone; the format never reaches `mintExtractionTicket`
+  (`takeoutRoutes.js:549-611`).
+- `GET /vi/plugin-file/:artifactId/:fileName` already sets
+  `Content-Type: audio/wav` for a `.wav` and streams it with `Content-Length`
+  (`vi.js:70`, the body it shares with `/vi/file`).
+- A single-sample artefact's file is `VI_<6 chars>_<low>-<high>.wav`
+  (`generateArtifactName`), which passes the plugin's `isSafeComponent`
+  character rule unchanged.
+
+So the whole of this is web plus plugin, and it works on macOS as well as iOS.
+Only the `Documents` drain is iOS-specific.
+
+## A verb, not a query parameter
+
+`synthis://render`, beside `acquire` and `auth`. The argument is version skew in
+one direction only: `parseSentinel` already answers nullopt for an unknown verb
+and `pageAboutToLoad` blocks it, so **an old plugin against a new deploy does
+nothing**. An unrecognised query PARAMETER is ignored instead, and that plugin
+would unpack the WAV as a ZIP -- reintroducing the defect above through the
+mechanism chosen to avoid it.
+
+Same reasoning `hostDrawsChrome` already follows for `?chrome=host`.
+
+## Move, not copy
+
+`<container>/Renders` is an OUTBOX both processes can write. The container app
+moves each file into `Documents/Renders` at launch.
+
+A copy owes an answer to "what happens when the user deletes or moves the one in
+Documents", and every answer is bad: re-copy it next launch (surprising),
+remember the deletion (a database), or diverge silently (worst). A move leaves
+one file, owned by the user, and no question.
+
+**What it costs, recorded now rather than discovered later:** a sound rendered in
+AUM is not in Files until Synth.is is next opened COLD -- a backgrounded app
+does not drain -- and the appex can never list what it delivered, because it no
+longer has it.
+
+Both are accepted deliberately, to find out whether that staleness is tolerable.
+**The iOS-conventional answer is a document picker in export mode from the
+appex**, which is what audio apps do for bounces: no shared folder, no sync, no
+staleness. It was not built first because it carries an unknown -- whether a
+modal presents cleanly from an appex hosted by AUM, and more so in GarageBand's
+736x242 -- and that unknown needs the phone. The outbox has none, and the
+sentinel, the download and the naming are all reused by a picker unchanged.
+
+## What is verified, and what is not
+
+**Verified**, `acquire-probe selftest`, 105/105 including seventeen new checks:
+both verb spellings (custom scheme and the `__synthis_plugin` https fallback),
+the auth verb not being mistaken for an artefact request, `fileNameFor`'s five
+branches, both paths refusing each other's work before touching disk, and a
+failed render fetch leaving no staging directory behind. `build/desk-verify`
+compiles clean; the web app builds and adds no eslint findings.
+
+**NOT verified: the drain.** It is gated on `wrapperType_Standalone` and needs a
+device -- and the staleness above is the thing to judge when it runs, not
+whether it runs.
+
+## Also
+
+`InstrumentLibrary`'s resolver now answers with the CONTAINER, and `root()`
+appends `Instruments`. Same three paths as before. The point is that the outbox
+resolves through the same branch: an appex writing renders into its private
+Documents while reading instruments from the App Group would be two halves of
+the plugin disagreeing about which sandbox they are in, and the symptom would be
+a render that silently never arrives.
+
+---
+
 # C41. FILES.APP HIDES AN EMPTY FOLDER, and the library was never lost (2026-09-15)
 
 Four findings, three of which correct something asserted earlier.
@@ -107,6 +213,16 @@ was the original mistake.
 `Download WAV` calls `onDownload(entryId)` with no `isPluginHost()` branch. In
 the plugin that is a browser download with nowhere to go. The web app can save
 it; the plugin cannot.
+
+**WRONG, corrected by C42 (2026-09-15).** There IS an `isPluginHost()` branch,
+in `downloadTakeoutEntry`, and it has been there since the acquire path shipped.
+What is missing is a format on the call: the button omits it, both handlers
+default it to null, and `downloadInstrumentEntry` turns null into `'sfz'` -- so
+the single WAV passed the install gate rather than being refused by it, and went
+to the ZIP unpacker. A feed card, which computes `'wav'` explicitly, was refused
+correctly all along. Left standing because "the branch is missing" and "one
+caller mislabels its input" look identical from this end, and the two send you
+looking in different places.
 
 ## The constraint any fix has to survive
 
