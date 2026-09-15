@@ -242,9 +242,27 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
     // empty instrument list and is otherwise indistinguishable from a user who
     // has downloaded nothing. Logged once here so the two are never the same
     // silence.
+    //
+    // THE PATH, not only the origin. `library=appGroup` says which branch
+    // rootDir() took; it does not say where the files are. On 2026-09-15 the
+    // UI listed fifteen instruments while devicectl found no Instruments
+    // directory in the app container, the appex container OR the App Group
+    // container -- and the origin name was all the log had to offer, so the
+    // question could not be answered without a rebuild. It can now.
+    //
+    // Also the count, because a resolvable path holding nothing and an
+    // unresolvable path are different failures that look identical in a UI
+    // showing an empty list.
+    const auto libRoot = InstrumentLibrary::root();
+
     logEvent ("processor_constructed host=" + hostName
               + " wrapper=" + juce::AudioProcessor::getWrapperTypeDescription (wrapperType)
-              + " library=" + InstrumentLibrary::rootOriginName());
+              + " library=" + InstrumentLibrary::rootOriginName()
+              + " root=" + libRoot.getFullPathName()
+              + " exists=" + (libRoot.isDirectory() ? "yes" : "no")
+              + " entries=" + juce::String (libRoot.isDirectory()
+                                            ? libRoot.getNumberOfChildFiles (juce::File::findFilesAndDirectories)
+                                            : -1));
 
     // Two per second, and it writes nothing unless a MIDI counter moved. Slow
     // enough to be free, fast enough that a burst of notes is not averaged
