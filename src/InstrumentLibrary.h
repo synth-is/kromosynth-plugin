@@ -156,6 +156,15 @@ public:
         userMusic          // macOS
     };
 
+    /** The directory the library and the render outbox both sit inside.
+
+        On iOS the App Group container, shared by the app and the AUv3; on
+        macOS ~/Music/Synth.is. Public because RenderOutbox needs the SAME
+        answer this class uses, and resolving it a second time is exactly how
+        the two would come to disagree about which sandbox they are in.
+    */
+    static juce::File containerRoot();
+
     /** The root the scan walks. Created on demand, not at construction:
         making a directory as a side effect of asking where it is would be
         surprising.

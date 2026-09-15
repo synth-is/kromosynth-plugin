@@ -3,16 +3,25 @@
 namespace
 {
 
-/** Resolves the library root and the REASON for it together.
+/** Resolves the CONTAINER and the REASON for it together.
 
     One function rather than two, because root() and rootOrigin() must never
     describe different things. A log line naming a path the scan is not using
     would be worse than no log line at all -- the same failure as a probe
     reporting "identical" for code that ran.
+
+    THE CONTAINER, not the instrument root, since 2026-09-15. Instruments are no
+    longer the only thing that lives here: a single render delivered through the
+    `synthis://render` sentinel lands in a sibling `Renders/` outbox
+    (RenderOutbox.h). Both directories must resolve through the same branch --
+    an appex writing a render into its private Documents while reading
+    instruments from the App Group would be two halves of the plugin
+    disagreeing about which sandbox they are in, and the symptom would be a
+    render that never reaches the container app.
 */
 struct ResolvedRoot
 {
-    juce::File dir;
+    juce::File container;   ///< Instruments/ and Renders/ are children of this
     InstrumentLibrary::RootOrigin origin;
 };
 
@@ -52,8 +61,7 @@ ResolvedRoot resolveRoot()
     // "is it a directory" is exactly the question, and a false answer means the
     // entitlement did not take.
     if (group.isDirectory())
-        return { group.getChildFile ("Instruments"),
-                 InstrumentLibrary::RootOrigin::appGroup };
+        return { group, InstrumentLibrary::RootOrigin::appGroup };
 
     // FALLBACK, and deliberately a working one rather than the broken group
     // path. Documents is where the library lived before the App Group:
@@ -85,26 +93,33 @@ ResolvedRoot resolveRoot()
     // directory sits in a shared ~/Music alongside other vendors' folders and
     // needs a name to own; here the container is already private to this app or
     // this app group, and the extra level would only deepen every path.
-    return { juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-                 .getChildFile ("Instruments"),
+    return { juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
              InstrumentLibrary::RootOrigin::privateContainer };
    #else
     return { juce::File::getSpecialLocation (juce::File::userMusicDirectory)
-                 .getChildFile ("Synth.is")
-                 .getChildFile ("Instruments"),
+                 .getChildFile ("Synth.is"),
              InstrumentLibrary::RootOrigin::userMusic };
    #endif
 }
 
 } // namespace
 
-juce::File InstrumentLibrary::root()
+juce::File InstrumentLibrary::containerRoot()
 {
     // NOT CACHED, and deliberately not a function-level static. That would
     // freeze an early failure into every later call, which is how a wrong
     // answer survives the fix for it. This is a container lookup, not a network
     // round trip.
-    return resolveRoot().dir;
+    return resolveRoot().container;
+}
+
+juce::File InstrumentLibrary::root()
+{
+    // The "Instruments" segment lives HERE and not in resolveRoot, so that the
+    // three platform branches say only which container, and the two consumers
+    // say only which subdirectory. Adding Renders/ the other way round would
+    // have meant a fourth and fifth branch saying the same thing twice.
+    return containerRoot().getChildFile ("Instruments");
 }
 
 InstrumentLibrary::RootOrigin InstrumentLibrary::rootOrigin()
