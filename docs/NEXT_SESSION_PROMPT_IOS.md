@@ -1,135 +1,97 @@
-# Next session: the chrome is done, the page it sits on is not
+# Next session: the chrome is done; delivery and the letterbox are not
 
-Rotated 2026-09-12. Previous: `NEXT_SESSION_PROMPT_IOS.2026-09-11.md`.
+Rotated 2026-09-15. Previous: `NEXT_SESSION_PROMPT_IOS.2026-09-12.md`.
 
-Read `docs/AUV3_IOS_FINDINGS.md` first — C0 through C39, newest first. That file
+Read `docs/AUV3_IOS_FINDINGS.md` first — C0 through C41, newest first. That file
 is the record. Do not re-derive it from commit messages.
 
 ---
 
 ## 1. The single most useful thing to know
 
-**The strip is 51pt and it was never the problem. The shell page's own furniture
-is 172pt, and the instrument list gets 20.**
+**The chrome work is finished, measured and deployed. Two things are not: the
+letterbox layout, and getting a single rendered sound out of the plugin.**
 
-Measured in GarageBand's 736×242 letterbox, off a 3x screenshot, C39:
+Verified on hardware: the HTML nav (51pt in AUM *and* in GarageBand — no
+safe-area inset in either), the account control fed by the `synthis://auth`
+sentinel, one navigation bar instead of two, and the two redundancy deletions
+that took the instrument list in GarageBand's 736x242 from **20pt to 93pt**.
 
-| band | pt | what |
-|---|---|---|
-| 0–51 | **51** | the chrome strip |
-| 51–107 | **56** | shell header |
-| 107–149 | **42** | filter + sort row |
-| 149–169 | **20** | **the instrument list**, for four instruments |
-| 169–206 | **37** | footer status |
-| 206–242 | **37** | load line |
+Not done: WP §11 wants three rows at 44, which is 132pt. C39's remaining two
+items — compact the header under a height media query, hide the filter row at
+short heights — are worth about 62pt and would land it near 155.
 
-The previous rotation said 51pt of chrome leaves 191 for content and called that
-four rows at 44. It counted everything below the strip as content. WP §11's
-criterion of three rows fails by about six times.
+And **a single rendered sound still has nowhere to go** (C41). Virtual
+instruments hand over; `Download WAV` has no plugin branch at all.
 
-**BEFORE WRITING ANY OF THE LAYOUT WORK, READ §2.** The loop cannot see the
-viewport the work is for.
+## 2. Two loops, and what each cannot see
 
-## 2. The loop cannot test the acceptance viewport
+**The letterbox.** 736x242 exists only on the phone, in GarageBand. The
+standalone simulator fills the screen and cannot be letterboxed, so §3.2's work
+cannot be checked before it reaches Björn. Cheapest fix: serve `kIndexHtml` to a
+desktop browser sized to 242pt tall — CSS only, no plugin, no build, no device.
 
-Everything verified on 2026-09-11 was at 402×874 (simulator standalone) or
-428×926 (AUM on device). **736×242 has only ever existed on Björn's phone, in
-GarageBand.** The standalone simulator fills the screen; there is no way to
-letterbox it. So a layout change aimed at §8's acceptance viewport currently
-cannot be checked before it reaches him — and "I could not see it" is how three
-separate wrong claims got made in one day (C35's `calc()`, C38's cache
-magnitude, C39's 191).
+**Plugin<->site, which is SOLVED and worth reusing.** Point a simulator build at
+the dev server:
 
-**Close this first.** Cheapest option: serve `kIndexHtml` to a desktop browser
-sized to 242pt tall. It tests the CSS with no plugin, no build and no device. It
-needs browser access, and `chrome-devtools`' profile is held by a stale
-automation Chrome — **pid 31346, running since 2026-09-08 with Puppeteer flags**.
-Ask Björn to quit it; it is not a browser he is using.
+```
+cmake -B build/ios-sim -DKROMOSYNTH_WEB_APP_URL=http://localhost:5173
+```
 
-Other options, untried: a compile flag forcing the standalone editor to 736×242,
-in the spirit of `KROMOSYNTH_EDITOR_STUB`; or an AUv3 host on the simulator, if
-one exists.
+ATS does not block localhost. The whole auth loop — site emits `synthis://auth`,
+plugin catches it in `pageAboutToLoad`, bar renders — was verified this way with
+no deploy and no phone. **Set it back to `https://synth.is` afterwards.**
 
 ## 3. Open, in order
 
-1. **The letterbox layout**, per C39's proposal. In this order, because the first
-   two are deletions of redundancy and the last two are new responsive
-   behaviour:
+1. **Single-sound delivery (C41), option 3 as agreed.** The constraint that makes
+   it non-obvious: **the appex cannot write to the container app's `Documents`**
+   — the same wall that put the library in the App Group. So: renders land in
+   `<AppGroup>/Renders/`, and the container app mirrors them to `Documents/` on
+   launch, where Files.app shows them and any iOS DAW imports from there.
 
-   1. **Drop the footer's `#status`.** "Nothing loaded yet — pick an
-      instrument." is currently on screen TWICE — in the strip and in the
-      footer — costing 37pt, nearly twice the whole list. Self-inflicted by the
-      `setStatus` mirroring in `e393a5f`: right in strip mode, redundant in
-      library mode. −37pt.
-   2. **Fold the load line into the strip's 16pt status row.** −37pt.
-   3. **Compact the header** under `@media (max-height: 320px)`. 56 → ~36pt.
-   4. **Hide the filter row** at short heights or when the list is short.
-      −42pt.
+   **Try the staleness before building the mirror.** A sound rendered in AUM is
+   not in Files until Synth.is is next opened. If that feels wrong in use, a
+   document picker in export mode from the appex is the better foundation —
+   per-file and needs UI, but no sync question.
 
-   1 and 2 alone take the list from 20 → 94pt. All four reach ~155, which is
-   three rows at 44 with room.
+   Files.app itself is ready: both plist keys ship and *On My iPhone ->
+   Synth.is* appears, **once `Documents` is non-empty** — iOS hides the folder
+   while it is empty, which is why it looked broken.
 
-2. **`Cache-Control: no-cache` and an `ETag` on `/`** (C38). synth.is serves
-   `index.html` with neither, so WebKit falls back to heuristic freshness and a
-   deploy reaches running clients after an unpredictable delay — minutes to more
-   than a day. Not permanent staleness; that was the overstatement C38 corrects.
-   `/assets/` is already right, though it carries two `Cache-Control` headers.
-   Cloudflare reports `DYNAMIC` on the HTML, so likely settable there.
+   Drag-to-DAW is **desktop only** by decision: `performExternalDragDropOfFiles`,
+   no platform negotiation, independent of all the above.
 
-3. **Rebuild the device against HEAD.** The phone's binary dates from 14:20 on
-   2026-09-11, before `21f438a` and `7928b41`. Neither the ChromeBar deletion
-   nor the border-box fix has ever run on hardware. Nothing is known to be
-   wrong; it is simply untested there.
+2. **The letterbox, C39 items 3 and 4.** Compact the header under
+   `@media (max-height: 320px)` (56 -> ~36pt) and hide the filter row at short
+   heights (42pt). Read §2 first.
 
-4. **The Output and Release panel** (WP §9). The control exists as a host
-   parameter with no UI, buried in AUM's generic list.
+3. **Rebuild the desktop VST3/AU.** They are from 2026-09-05 and ~35 commits
+   behind — they have never seen the HTML nav and still draw the deleted
+   ChromeBar. `scripts/build.sh install --backup`, then
+   `auval -v aumu Ksyn Bthj` before opening a host. Expect one audible change
+   that is not a regression: the Output default is now -9 dB (`6fc3159`).
 
-   **`#MKV9X` DOES NOT EXIST.** Checked 2026-09-14 against nine device logs:
-   instrument labels come from `acquisition_sentinel` as
-   `Virtual Instrument #XXXXX`, and the full set ever seen is DDJ9Y HPG05 MBDZW
-   NE1ZR RE89N WMSEM XKBRY YKK21 RPGW9 VDJTF EWBVW TCSG1 APB30 CPRZX HCR3Z
-   HXMA3 WDQMJ YVC37 8F9V2 6PKTV G3A0B T9CC2 5302Z Z222F. `MKV9X` is in none of
-   them. It was mistranscribed on 2026-09-10 and copied through three prompt
-   rotations, so "the only fix for something audible" rested on an instrument
-   nobody could load. Do not reintroduce the label; if the chord report is
-   chased again, get the id off the log.
+4. **Wire `unread`.** The auth sentinel carries a dot, not a count, and the
+   parameter is not sent at all — the count lives in `NotificationBell`, not
+   `NavigationBar`, so sending one from there would have meant inventing a
+   number. The dot stays dark until this is done.
 
-   **The premise of this item was wrong and is fixed.** It said one note at full
-   velocity reaching full scale *IS* preview parity. It is not. That was parity
-   with `renderFaustGenome`'s output buffer, and the web app never plays that
-   buffer at its peak — a card's PLAY button sends it through 0.25, an 0.8
-   master and a DynamicsCompressor. Measured 2026-09-13 over 12 elites spanning
-   26 dB of raw peak: **the plugin was 9.0 dB louder than the audition**, median,
-   spread 0.7 dB peak-to-peak. Both pre-registered rules passed. The Output
-   default is now −9 dB, which also lifts single notes off the 0.95 limiter they
-   previously rode on every key. See `render-socket/src/measure-audition-parity.js`.
+## 3b. Small, and each is one thing
 
-   So this item is now only about the UI, not about the level.
-
-   **On device, 2026-09-13, and the verdict is soft.** Installed to the phone
-   (container `56CE498F`) and auditioned: "seems to be an improvement — perhaps
-   we will revisit". Recorded at that strength deliberately. It is one listener,
-   one sitting, no A/B against the site open alongside, and it is consistent
-   with the 9.0 dB being right without being evidence that it is. Three specific
-   checks were asked for and only the general impression came back, so these two
-   remain genuinely open:
-
-   - **the quiet-genome case.** Genomes measuring ~22 dB below full scale were
-     also 9 dB loud, and a trim-ceiling change would never have reached them
-     — that is the whole reason the fix went on the Output default instead.
-     Not separately confirmed by ear. If these did *not* move with the loud
-     ones, the unconditional-vs-attenuate-only reasoning is wrong and
-     everything above needs revisiting before anything is built on it.
-   - **the chord report.** Cannot be rechecked as written, because the
-     instrument it names does not exist. The audible half of this item is
-     neither confirmed dead nor alive, and now has no subject either.
-
-   Do not let "seems to be an improvement" harden into "parity confirmed" on a
-   later reading of this file. It is not the same claim.
-
-   Two candidates, one test: one note clean and two distorted means summing; two
-   clean and three distorted means voice stealing on the 2-voice cap. Not run.
-
+- **The double-tap fix has never been verified.** `touch-action: manipulation`
+  on `nav#chrome`, shipped 2026-09-14, reproduced by Björn only by
+  double-tapping the LOGO. A double-tap cannot be synthesised through the
+  simulator tooling, so this needs thirty seconds on the phone.
+- **`fcbe75c` in `kromosynth-desktop` swept unrelated units-panel WIP** into a
+  commit about auth. Already pushed; splitting means a force-push.
+- **The `getSurface` resync (C40)** — the page holds view state C++ owns, with
+  no way to resync after a page reload. Specified, not built.
+- **`ios-log.sh`'s header still says its retrieval path is unverified.** It
+  works, and has for days. Update the status line but KEEP the probe — C16 was a
+  retraction of exactly the confidence that deleting the fallbacks would restore.
+- **A probe `README.txt` sits in the device's `Documents`.** Disposable; the
+  folder will vanish from Files.app once it is empty, which is expected.
 
 ## 4. The loop, and how to drive it
 
@@ -214,7 +176,35 @@ wide is ~10 KB, a bar strip at 700px ~7.5 KB.
 
 ---
 
-## 5. What landed on 2026-09-11
+## 5. What landed on 2026-09-14 and 15
+
+**Chrome, finished.** `21f438a` deleted ChromeBar and the disposable probe
+block; `7928b41` fixed the `ResizeObserver` box (C37); `94493e1` added
+`touch-action` and made a refused navigation surface (C40); `ddc2c7f` deleted
+the two footers and folded both readouts into the strip's 16px row — 20pt to
+93pt in the letterbox.
+
+**Account control, both halves, deployed.** `bd36c53` (plugin) and `fcbe75c` +
+`003de9a` (web) put who-you-are in the bar over the `synthis://auth` sentinel:
+no token, no user id, three states with anonymous rendered distinctly as
+"Guest", and the control hidden until the site has spoken. `hideNav` went back
+to hiding the whole nav, which removed the site's 74pt account band.
+
+**Files.app groundwork.** `11b791c` added `LSSupportsOpeningDocumentsInPlace`
+via `PLIST_TO_MERGE`; `8e4d38a` made `processor_constructed` log the library
+path, `exists` and `entries`. `80f9c39` is C41.
+
+**Outside this repo.** `0f8eab7` turned over `WP_UNIFIED_CHROME` §4. On the
+hub, `nginx` now sends `Cache-Control: no-store, no-cache, must-revalidate` on
+`/` — backup at `synth.conf.bak-2026-09-14`. And `kromosynth-recommend` was
+crash-looping for hours on a syntax error: a comment inside a template literal
+contained backticks, which closed the string. Fixed on the hub and **still
+uncommitted there** — the next `git pull` will clobber it and the outage
+returns.
+
+---
+
+## 5b. What landed on 2026-09-11
 
 Nine more commits after the two below, across three repos. In brief:
 `21f438a` deleted ChromeBar and the disposable probe block; `7928b41` fixed the
@@ -254,7 +244,7 @@ still unstaged.
 
 ---
 
-## 5b. What landed on 2026-09-10
+## 5c. What landed on 2026-09-10
 
 Twenty-three commits here, one in `kromosynth-render`, one in
 `kromosynth-desktop`. In rough order of consequence:
