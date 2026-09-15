@@ -1735,8 +1735,19 @@ async function pollAcquisitions () {
     // Everything finished. Report the outcomes once, then clear them so the
     // list does not grow for the life of the session.
     const failed = jobs.filter(function (j) { return !j.ok; });
-    setStatus(failed.length ? failed[0].message
-                            : 'Downloaded ' + jobs.length + ' instrument(s).',
+
+    // Worded per KIND, because the two jobs end somewhere different. A single
+    // 'Downloaded N instrument(s)' covering both would report a WAV sitting in
+    // the render outbox as an instrument added to the library -- a line
+    // asserting an outcome it did not observe, which is the failure shape this
+    // project keeps rediscovering.
+    const renders = jobs.filter(function (j) { return j.kind === 'render'; }).length;
+    const added = jobs.length - renders;
+    const parts = [];
+    if (added) parts.push('Added ' + added + ' instrument' + (added === 1 ? '' : 's'));
+    if (renders) parts.push('Saved ' + renders + ' render' + (renders === 1 ? '' : 's'));
+
+    setStatus(failed.length ? failed[0].message : parts.join(', ') + '.',
               failed.length ? 'err' : undefined);
     await call('clearFinishedAcquisitions');
 

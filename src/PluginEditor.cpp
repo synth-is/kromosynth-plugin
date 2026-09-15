@@ -3,6 +3,10 @@
 #include "PluginEditor.h"
 #include "ShellPage.h"
 #include "Palette.h"
+// For renders::outbox(), handed to the runner beside the library root. See
+// AcquisitionRunner::start on why both destinations are passed rather than
+// resolved in there.
+#include "RenderOutbox.h"
 
 using namespace kromosynth;
 
@@ -684,6 +688,11 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                 o->setProperty ("progress", s.progress);
                 o->setProperty ("finished", s.finished);
                 o->setProperty ("ok", s.ok);
+                // So the shell can word its summary line for what actually
+                // happened. Two jobs, two different outcomes, one poll.
+                o->setProperty ("kind",
+                                s.verb == kromosynth::acquisition::Verb::render ? "render"
+                                                                               : "instrument");
                 out.add (juce::var (o));
             }
 
@@ -1046,13 +1055,22 @@ bool KromosynthAudioProcessorEditor::InstrumentedBrowser::pageAboutToLoad (const
 
         if (auto request = kromosynth::acquisition::parseSentinel (url))
         {
+            // The verb decides which of the two roots the runner uses; both are
+            // handed over because this is the layer that knows where things go.
             const bool queued = proc_.acquisitions().start (
                 *request,
                 KROMOSYNTH_VI_SERVICE_URL,
-                InstrumentLibrary::root());
+                InstrumentLibrary::root(),
+                kromosynth::renders::outbox());
 
-            proc_.logEvent (queued ? "acquisition_queued " + request->artifactId
-                                   : "acquisition_already_running " + request->artifactId);
+            // NAMED IN THE LOG. "acquisition_queued" for a render would send the
+            // next reader looking through the instrument library for a file that
+            // was never going there.
+            const juce::String verb =
+                request->verb == kromosynth::acquisition::Verb::render ? "render" : "acquisition";
+
+            proc_.logEvent (queued ? verb + "_queued " + request->artifactId
+                                   : verb + "_already_running " + request->artifactId);
         }
         else
         {

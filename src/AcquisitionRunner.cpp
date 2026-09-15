@@ -13,7 +13,8 @@ AcquisitionRunner::~AcquisitionRunner()
 
 bool AcquisitionRunner::start (const kromosynth::acquisition::Request& request,
                                const juce::String& baseUrl,
-                               const juce::File& libraryRoot)
+                               const juce::File& libraryRoot,
+                               const juce::File& rendersOutbox)
 {
     {
         const juce::ScopedLock sl (lock_);
@@ -24,6 +25,7 @@ bool AcquisitionRunner::start (const kromosynth::acquisition::Request& request,
 
         Status fresh;
         fresh.artifactId = request.artifactId;
+        fresh.verb = request.verb;
         fresh.message = "Starting";
         statuses_.push_back (fresh);
     }
@@ -31,16 +33,22 @@ bool AcquisitionRunner::start (const kromosynth::acquisition::Request& request,
     // Captured by value. The job outlives this call by definition, and a
     // reference to the caller's Request would be a dangling read the moment the
     // navigation handler returns.
-    pool_.addJob ([this, request, baseUrl, libraryRoot]
+    pool_.addJob ([this, request, baseUrl, libraryRoot, rendersOutbox]
     {
         update (request.artifactId, [] (Status& s) { s.message = "Downloading"; });
 
-        const auto result = kromosynth::acquisition::fetchAndInstall (
-            request, baseUrl, libraryRoot,
-            [this, id = request.artifactId] (double fraction)
-            {
-                update (id, [fraction] (Status& s) { s.progress = fraction; });
-            });
+        const auto onProgress = [this, id = request.artifactId] (double fraction)
+        {
+            update (id, [fraction] (Status& s) { s.progress = fraction; });
+        };
+
+        // Dispatch on the VERB, which came off the sentinel, and not on
+        // anything inferred from the file name here. The site said which of the
+        // two this is; guessing from ".wav" would be a second opinion able to
+        // disagree with the first.
+        const auto result = request.verb == kromosynth::acquisition::Verb::render
+            ? kromosynth::acquisition::fetchRender (request, baseUrl, rendersOutbox, onProgress)
+            : kromosynth::acquisition::fetchAndInstall (request, baseUrl, libraryRoot, onProgress);
 
         update (request.artifactId, [&result] (Status& s)
         {
@@ -54,7 +62,7 @@ bool AcquisitionRunner::start (const kromosynth::acquisition::Request& request,
         // instrument, which suspends processing, and holding this lock across
         // that would put a download thread's lock in the path of the audio
         // thread's barrier.
-        std::function<void (juce::String, bool)> handler;
+        std::function<void (juce::String, bool, kromosynth::acquisition::Verb)> handler;
         {
             const juce::ScopedLock sl (lock_);
             handler = onFinished_;
@@ -63,7 +71,8 @@ bool AcquisitionRunner::start (const kromosynth::acquisition::Request& request,
         if (handler != nullptr)
             juce::MessageManager::callAsync ([handler,
                                               id = request.artifactId,
-                                              ok = result.ok] { handler (id, ok); });
+                                              ok = result.ok,
+                                              verb = request.verb] { handler (id, ok, verb); });
     });
 
     return true;
@@ -84,7 +93,8 @@ void AcquisitionRunner::clearFinished()
                      statuses_.end());
 }
 
-void AcquisitionRunner::setCompletionHandler (std::function<void (juce::String, bool)> handler)
+void AcquisitionRunner::setCompletionHandler (
+    std::function<void (juce::String, bool, kromosynth::acquisition::Verb)> handler)
 {
     const juce::ScopedLock sl (lock_);
     onFinished_ = std::move (handler);

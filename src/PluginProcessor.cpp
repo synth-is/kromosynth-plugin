@@ -2,6 +2,9 @@
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+// For drain(), which the CONTAINER APP runs at launch to move renders the appex
+// left in the App Group into a Documents folder the appex cannot reach.
+#include "RenderOutbox.h"
 
 #if JUCE_MAC || JUCE_IOS || JUCE_LINUX
  // For the atomic log append below. juce::File cannot express O_APPEND, which
@@ -264,6 +267,54 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
                                             ? libRoot.getNumberOfChildFiles (juce::File::findFilesAndDirectories)
                                             : -1));
 
+   #if JUCE_IOS
+    // THE CONTAINER APP'S HALF of single-sound delivery (C41).
+    //
+    // The appex cannot write to this app's Documents, so a render saved from
+    // AUM lands in <AppGroup>/Renders and waits. Opening Synth.is moves it into
+    // Documents/Renders, where Files.app shows it and any iOS DAW can import
+    // it. See RenderOutbox.h for why this MOVES rather than copies.
+    //
+    // wrapperType, not a compile-time switch: the appex is built from this same
+    // source and its Documents is a different, invisible folder. Running this
+    // there would scatter renders into a sandbox nobody opens -- and it would
+    // look like it worked.
+    //
+    // AT LAUNCH ONLY, which is the staleness this design is being tried out to
+    // measure: a render made in AUM while Synth.is is already open in the
+    // background does not appear until the app is next launched cold. If that
+    // turns out to feel wrong, the answer is a document picker from the appex
+    // rather than more sync here.
+    if (wrapperType == wrapperType_Standalone)
+    {
+        // Off the message thread. This is file I/O of unknown size on app
+        // launch, and the one thing worse than a late render is a launch that
+        // visibly stalls before the window appears.
+        juce::Thread::launch ([this, weak = std::weak_ptr<int> (lifetime_)]
+        {
+            const auto drained = kromosynth::renders::drain();
+
+            // Silence when there was nothing to do. A line every launch saying
+            // zero would bury the launches where it did something.
+            if (drained.moved == 0 && drained.failed == 0)
+                return;
+
+            juce::MessageManager::callAsync ([this, weak, drained]
+            {
+                if (weak.expired())
+                    return;
+
+                logEvent ("renders_drained moved=" + juce::String (drained.moved)
+                          + " failed=" + juce::String (drained.failed)
+                          + " first=" + (drained.firstName.isNotEmpty()
+                                             ? drained.firstName.quoted()
+                                             : juce::String ("none"))
+                          + " to=" + kromosynth::renders::deliveredRoot().getFullPathName());
+            });
+        });
+    }
+   #endif
+
     // Two per second, and it writes nothing unless a MIDI counter moved. Slow
     // enough to be free, fast enough that a burst of notes is not averaged
     // into one line.
@@ -286,9 +337,21 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
     // pool thread through the message queue, so the processor can be gone by
     // the time it runs.
     acquisitions_.setCompletionHandler (
-        [this, weak = std::weak_ptr<int> (lifetime_)] (juce::String artifactId, bool ok)
+        [this, weak = std::weak_ptr<int> (lifetime_)] (juce::String artifactId,
+                                                       bool ok,
+                                                       kromosynth::acquisition::Verb verb)
     {
         if (weak.expired() || ! ok || artifactId.isEmpty()) return;
+
+        // A RENDER IS NOT AN INSTRUMENT. It is a file in the outbox; there is no
+        // library directory under this id and nothing to make active. Logged
+        // rather than silently skipped, so "I saved a render and the instrument
+        // did not change" is answerable from the log instead of from the source.
+        if (verb == kromosynth::acquisition::Verb::render)
+        {
+            logEvent ("render_saved id=" + artifactId);
+            return;
+        }
 
         logEvent ("acquisition_autoload id=" + artifactId);
 

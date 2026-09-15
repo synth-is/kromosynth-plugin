@@ -74,6 +74,28 @@ inline constexpr const char* kSentinelScheme = "synthis";
 /** Host part of the sentinel, so other future verbs can share the scheme. */
 inline constexpr const char* kSentinelAcquireHost = "acquire";
 
+/** The second verb: a single rendered sound, delivered as a file rather than
+    installed as an instrument (C41).
+
+    A NEW VERB AND NOT `acquire?kind=render`, and the reason is version skew.
+    parseSentinel already answers nullopt for a verb it does not know and the
+    caller blocks it, so an old plugin against a new deploy does NOTHING -- the
+    safe direction. An unrecognised query PARAMETER would instead be ignored,
+    and the old plugin would hand a WAV to installFromArchive and report
+    "Archive is empty or not a ZIP". Which is precisely the defect this verb
+    exists to remove, reintroduced by the mechanism meant to avoid it.
+*/
+inline constexpr const char* kSentinelRenderHost = "render";
+
+/** What the site asked for. The two verbs take the SAME query shape and differ
+    only in where the bytes end up, which is why one parser serves both.
+*/
+enum class Verb
+{
+    acquire,   ///< a ZIP to unpack into the instrument library
+    render     ///< a single file to drop in the render outbox
+};
+
 /** A parsed acquisition request. Everything needed to fetch exactly one file.
 
     Note what is NOT here: no user id, no account token, no quota state. The
@@ -83,6 +105,8 @@ inline constexpr const char* kSentinelAcquireHost = "acquire";
 */
 struct Request
 {
+    Verb verb = Verb::acquire;
+
     juce::String artifactId;
     juce::String fileName;
     juce::String ticket;
@@ -151,7 +175,9 @@ juce::String redactForLog (const juce::String& url);
 
 /** Fetches and installs, synchronously. Blocks; call it off the message thread.
 
-    @param request     what to fetch
+    @param request     what to fetch. Its verb must be Verb::acquire -- see
+                       fetchRender below on why the two paths refuse each
+                       other's work rather than coercing it.
     @param baseUrl     e.g. "https://vi.synth.is" -- injected rather than baked
                        in so the probe can point at a local fixture server
     @param libraryRoot where instruments live; InstrumentLibrary::root() in the
@@ -163,6 +189,30 @@ Result fetchAndInstall (const Request& request,
                         const juce::String& baseUrl,
                         const juce::File& libraryRoot,
                         std::function<void (double)> onProgress = {});
+
+/** Fetches one file and drops it in the outbox, without unpacking anything.
+
+    The download is byte for byte the same operation fetchAndInstall performs --
+    same route, same ticket header, same truncation check -- and shares its
+    implementation rather than repeating it. What differs is entirely the last
+    step: a rename into `outboxDir` instead of an archive normalisation.
+
+    @param request    verb must be Verb::render; anything else is refused rather
+                      than quietly treated as one, because a mislabelled request
+                      arriving here means a caller dispatched wrongly and that
+                      is worth failing loudly while it is still cheap.
+    @param baseUrl    as fetchAndInstall
+    @param outboxDir  kromosynth::renders::outbox(); injected rather than called
+                      so a test can point it somewhere harmless
+    @param onProgress optional; 0..1, or -1 when the size is unknown
+
+    Result::installedId carries the FILE NAME written, not an artefact id --
+    that is what the shell has to show and what the user will look for.
+*/
+Result fetchRender (const Request& request,
+                    const juce::String& baseUrl,
+                    const juce::File& outboxDir,
+                    std::function<void (double)> onProgress = {});
 
 /** Installs from an already-downloaded archive. Split out from
     fetchAndInstall so the ZIP-shape normalisation can be tested against

@@ -21,6 +21,10 @@ target_sources(acquire_probe PRIVATE
     main.cpp
     ../../src/ArtifactAcquisition.cpp
     ../../src/InstrumentLibrary.cpp
+    # ArtifactAcquisition calls renders::fileNameFor for the `render` verb, so
+    # this is a link dependency and not an optional extra. Adding it also keeps
+    # the probe able to exercise both verbs, which is the point of the probe.
+    ../../src/RenderOutbox.cpp
 )
 
 # JUCE_WEB_BROWSER=0 is honest rather than incidental: nothing in

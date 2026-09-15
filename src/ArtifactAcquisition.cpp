@@ -1,5 +1,10 @@
 #include "ArtifactAcquisition.h"
 
+// For fileNameFor only. This file does NOT resolve the outbox location itself --
+// the directory is injected by the caller, so the naming rule and the path rule
+// stay in one place each.
+#include "RenderOutbox.h"
+
 #include <juce_core/juce_core.h>
 
 #include <vector>
@@ -10,7 +15,7 @@ namespace kromosynth::acquisition
 namespace
 {
 
-constexpr const char* kHttpsFallbackPath = "/__synthis_plugin/acquire";
+constexpr const char* kHttpsFallbackPrefix = "/__synthis_plugin/";
 constexpr const char* kTicketHeader = "X-Extraction-Ticket";
 constexpr const char* kStagingDirName = ".incoming";
 constexpr const char* kSidecarName = "synthis.json";
@@ -35,8 +40,42 @@ juce::String withoutQuery (const juce::String& url)
 
 bool looksLikeHttpsFallback (const juce::String& url)
 {
-    return url.startsWithIgnoreCase ("https://")
-        && withoutQuery (url).endsWithIgnoreCase (kHttpsFallbackPath);
+    if (! url.startsWithIgnoreCase ("https://"))
+        return false;
+
+    const auto path = withoutQuery (url);
+
+    return path.endsWithIgnoreCase (juce::String (kHttpsFallbackPrefix) + kSentinelAcquireHost)
+        || path.endsWithIgnoreCase (juce::String (kHttpsFallbackPrefix) + kSentinelRenderHost);
+}
+
+/** Which verb a sentinel names, in either of its two spellings.
+
+    ONE function that knows both, deliberately. A verb recognised as a custom
+    scheme host but not as an https path segment would work everywhere it was
+    tested and fail only on the fallback the fallback exists for.
+*/
+std::optional<Verb> verbOf (const juce::String& url)
+{
+    juce::String token;
+
+    if (url.startsWithIgnoreCase (juce::String (kSentinelScheme) + "://"))
+    {
+        const auto afterScheme = url.fromFirstOccurrenceOf ("://", false, false);
+        token = withoutQuery (afterScheme).upToFirstOccurrenceOf ("/", false, false);
+    }
+    else if (looksLikeHttpsFallback (url))
+    {
+        token = withoutQuery (url).fromLastOccurrenceOf ("/", false, false);
+    }
+
+    if (token.equalsIgnoreCase (kSentinelAcquireHost))
+        return Verb::acquire;
+
+    if (token.equalsIgnoreCase (kSentinelRenderHost))
+        return Verb::render;
+
+    return std::nullopt;
 }
 
 /** Rejects an id that could escape the library root, or name a hidden
@@ -305,9 +344,13 @@ void discard (const juce::File& f)
     Harmless in itself; scan() ignores a directory with no instrument.sfz. The
     part worth keeping is that a green check covered a path it did not run.
 */
-void tidyStaging (const juce::File& libraryRoot)
+void tidyStaging (const juce::File& parentDir)
 {
-    const auto staging = libraryRoot.getChildFile (kStagingDirName);
+    // parentDir, not libraryRoot: the render outbox uses the same .incoming
+    // convention and the same guard, so this took the more general name when
+    // the second caller arrived rather than keeping one that would be wrong
+    // half the time.
+    const auto staging = parentDir.getChildFile (kStagingDirName);
 
     if (! staging.isDirectory())
         return;
@@ -343,13 +386,110 @@ void tidyStaging (const juce::File& libraryRoot)
 */
 struct StagingTidier
 {
-    explicit StagingTidier (juce::File root) : libraryRoot (std::move (root)) {}
-    ~StagingTidier() { tidyStaging (libraryRoot); }
+    explicit StagingTidier (juce::File dir) : parentDir (std::move (dir)) {}
+    ~StagingTidier() { tidyStaging (parentDir); }
 
-    juce::File libraryRoot;
+    juce::File parentDir;
 
     JUCE_DECLARE_NON_COPYABLE (StagingTidier)
 };
+
+/** GETs one ticketed artefact file into `destination`.
+
+    THE WHOLE NETWORK CONTRACT, in one copy: the route shape, the ticket header,
+    the three status codes worth naming, and the Content-Length truncation
+    check. Both verbs need every part of it. A second copy for the render path
+    would have been four fewer lines to read today and one silent divergence
+    later -- the truncation check is exactly the sort of thing that gets fixed
+    in one copy and not the other.
+
+    Writes to `destination` as given. The caller decides whether that is a
+    staging path or a final one; this function does not create directories and
+    does not clean up after itself except on a failed write, where leaving a
+    partial file behind would be worse than the failure.
+
+    Result::installedId is unused here. The caller fills it in with whatever it
+    ended up producing.
+*/
+Result download (const Request& request,
+                 const juce::String& baseUrl,
+                 const juce::File& destination,
+                 const std::function<void (double)>& onProgress)
+{
+    const auto endpoint = baseUrl.trimCharactersAtEnd ("/")
+                        + "/vi/plugin-file/" + request.artifactId + "/" + request.fileName;
+
+    int statusCode = 0;
+
+    // The ticket goes in a header, never the query string. These routes sit
+    // behind Cloudflare and a credential in a URL is a credential in somebody
+    // else's log files.
+    auto stream = juce::URL (endpoint).createInputStream (
+        juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+            .withExtraHeaders (juce::String (kTicketHeader) + ": " + request.ticket)
+            .withConnectionTimeoutMs (kConnectionTimeoutMs)
+            .withStatusCode (&statusCode));
+
+    if (stream == nullptr)
+        return { false, {}, "Could not reach the download service" };
+
+    if (statusCode == 401)
+        return { false, {}, "The download ticket was rejected or has expired. "
+                            "Click download on the site again." };
+
+    if (statusCode == 503)
+        return { false, {}, "Ticketed downloads are not configured on the server" };
+
+    if (statusCode < 200 || statusCode >= 300)
+        return { false, {}, "Download failed with HTTP " + juce::String (statusCode) };
+
+    const auto total = stream->getTotalLength();
+
+    {
+        juce::FileOutputStream out (destination);
+
+        if (! out.openedOk())
+            return { false, {}, "Could not open the staging file for writing" };
+
+        juce::HeapBlock<char> buffer (65536);
+        juce::int64 written = 0;
+
+        for (;;)
+        {
+            const auto read = stream->read (buffer.getData(), 65536);
+
+            if (read <= 0)
+                break;
+
+            if (! out.write (buffer.getData(), (size_t) read))
+            {
+                discard (destination);
+                return { false, {}, "Ran out of disk space, or the write failed" };
+            }
+
+            written += read;
+
+            if (onProgress)
+                onProgress (total > 0 ? (double) written / (double) total : -1.0);
+        }
+
+        out.flush();
+
+        // A truncated download that is never checked is the failure mode that
+        // looks like a corrupt instrument three steps later. Content-Length is
+        // set by the route deliberately (it has to be, or Cloudflare buffers),
+        // so when it is present it can be trusted enough to compare against.
+        if (total > 0 && written != total)
+        {
+            discard (destination);
+            return { false, {},
+                     "Download was truncated: expected " + juce::String (total)
+                         + " bytes, got " + juce::String (written) };
+        }
+    }
+
+    return { true, {}, {} };
+}
 
 } // namespace
 
@@ -364,20 +504,21 @@ std::optional<Request> parseSentinel (const juce::String& url)
     if (! isSentinel (url))
         return std::nullopt;
 
-    if (url.startsWithIgnoreCase (juce::String (kSentinelScheme) + "://"))
-    {
-        // Only the acquire verb exists. An unknown verb is not a malformed
-        // acquire, and answering nullopt keeps the caller blocking it.
-        const auto afterScheme = url.fromFirstOccurrenceOf ("://", false, false);
-        const auto host = withoutQuery (afterScheme).upToFirstOccurrenceOf ("/", false, false);
+    // TWO verbs, acquire and render. An unknown one is not a malformed acquire,
+    // and answering nullopt here keeps the caller blocking it -- which is what
+    // stops a ticket reaching the network. Note this also catches the AUTH
+    // sentinel, which shares the scheme; pageAboutToLoad handles that one first
+    // so it never gets here, and if it ever did, blocked-and-unparsed is the
+    // right outcome rather than a wrong one.
+    const auto verb = verbOf (url);
 
-        if (! host.equalsIgnoreCase (kSentinelAcquireHost))
-            return std::nullopt;
-    }
+    if (! verb.has_value())
+        return std::nullopt;
 
     const juce::URL parsed (url);
 
     Request r;
+    r.verb       = *verb;
     r.artifactId = param (parsed, "artifact");
     r.fileName   = param (parsed, "file");
     r.ticket     = param (parsed, "ticket");
@@ -556,6 +697,14 @@ Result fetchAndInstall (const Request& request,
                         const juce::File& libraryRoot,
                         std::function<void (double)> onProgress)
 {
+    // Symmetric with fetchRender's guard, and first for the same reason: a
+    // request that arrives at the wrong path is a dispatch bug, and the two
+    // wrong outcomes are a WAV handed to a ZIP unpacker or a ZIP dropped in the
+    // outbox as though it were a sound. Refused before anything is created, so
+    // a mislabelled request leaves no directory behind either.
+    if (request.verb != Verb::acquire)
+        return { false, {}, "Refusing a request that is not an acquisition" };
+
     if (! request.isValid())
         return { false, {}, "Incomplete acquisition request" };
 
@@ -576,77 +725,8 @@ Result fetchAndInstall (const Request& request,
 
     discard (archive);
 
-    const auto endpoint = baseUrl.trimCharactersAtEnd ("/")
-                        + "/vi/plugin-file/" + request.artifactId + "/" + request.fileName;
-
-    int statusCode = 0;
-
-    // The ticket goes in a header, never the query string. These routes sit
-    // behind Cloudflare and a credential in a URL is a credential in somebody
-    // else's log files.
-    auto stream = juce::URL (endpoint).createInputStream (
-        juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
-            .withExtraHeaders (juce::String (kTicketHeader) + ": " + request.ticket)
-            .withConnectionTimeoutMs (kConnectionTimeoutMs)
-            .withStatusCode (&statusCode));
-
-    if (stream == nullptr)
-        return { false, {}, "Could not reach the download service" };
-
-    if (statusCode == 401)
-        return { false, {}, "The download ticket was rejected or has expired. "
-                            "Click download on the site again." };
-
-    if (statusCode == 503)
-        return { false, {}, "Ticketed downloads are not configured on the server" };
-
-    if (statusCode < 200 || statusCode >= 300)
-        return { false, {}, "Download failed with HTTP " + juce::String (statusCode) };
-
-    const auto total = stream->getTotalLength();
-
-    {
-        juce::FileOutputStream out (archive);
-
-        if (! out.openedOk())
-            return { false, {}, "Could not open the staging file for writing" };
-
-        juce::HeapBlock<char> buffer (65536);
-        juce::int64 written = 0;
-
-        for (;;)
-        {
-            const auto read = stream->read (buffer.getData(), 65536);
-
-            if (read <= 0)
-                break;
-
-            if (! out.write (buffer.getData(), (size_t) read))
-            {
-                discard (archive);
-                return { false, {}, "Ran out of disk space, or the write failed" };
-            }
-
-            written += read;
-
-            if (onProgress)
-                onProgress (total > 0 ? (double) written / (double) total : -1.0);
-        }
-
-        out.flush();
-
-        // A truncated download that is never checked is the failure mode that
-        // looks like a corrupt instrument three steps later. Content-Length is
-        // set by the route deliberately (it has to be, or Cloudflare buffers),
-        // so when it is present it can be trusted enough to compare against.
-        if (total > 0 && written != total)
-        {
-            discard (archive);
-            return { false, {},
-                     "Download was truncated: expected " + juce::String (total)
-                         + " bytes, got " + juce::String (written) };
-        }
-    }
+    if (auto fetched = download (request, baseUrl, archive, onProgress); ! fetched.ok)
+        return fetched;
 
     auto result = installFromArchive (archive, request.artifactId, libraryRoot,
                                       request.name);
@@ -654,6 +734,66 @@ Result fetchAndInstall (const Request& request,
     discard (archive);
 
     return result;
+}
+
+Result fetchRender (const Request& request,
+                    const juce::String& baseUrl,
+                    const juce::File& outboxDir,
+                    std::function<void (double)> onProgress)
+{
+    // Refused rather than coerced. Arriving here with the wrong verb means a
+    // caller dispatched on something other than request.verb, and a WAV written
+    // into the outbox by the acquire path -- or a ZIP by this one -- would be a
+    // file that looks delivered and plays as noise.
+    if (request.verb != Verb::render)
+        return { false, {}, "Refusing a request that is not a render" };
+
+    if (! request.isValid())
+        return { false, {}, "Incomplete render request" };
+
+    if (! isSafeComponent (request.artifactId) || ! isSafeComponent (request.fileName))
+        return { false, {}, "Refusing an unsafe artefact id or file name" };
+
+    if (! outboxDir.createDirectory())
+        return { false, {}, "Could not create the renders directory" };
+
+    const auto staging = outboxDir.getChildFile (kStagingDirName);
+
+    if (! staging.createDirectory())
+        return { false, {}, "Could not create a staging directory" };
+
+    const StagingTidier tidier (outboxDir);
+
+    // Staged and then renamed, for the same reason the instrument path stages:
+    // the outbox is drained by the OTHER process, which must never see a file
+    // that is still being written. The staging directory is hidden and the
+    // drain skips hidden entries, so a half-downloaded render cannot be
+    // collected as a finished one. Keyed on the artefact id rather than the
+    // final name so two renders sharing a label cannot collide mid-flight.
+    const auto partial = staging.getChildFile (request.artifactId + ".part");
+
+    discard (partial);
+
+    if (auto fetched = download (request, baseUrl, partial, onProgress); ! fetched.ok)
+        return fetched;
+
+    const auto name = kromosynth::renders::fileNameFor (request.name, request.fileName);
+    const auto destination = outboxDir.getChildFile (name);
+
+    // Overwrite. fileNameFor makes one render produce one name, so a collision
+    // here means this same render is being delivered again -- see the note
+    // there on why that should replace rather than accumulate.
+    discard (destination);
+
+    if (! partial.moveFileTo (destination))
+    {
+        discard (partial);
+        return { false, {}, "Could not move the render into the outbox" };
+    }
+
+    // The FILE NAME, not the artefact id. This is what the shell shows and what
+    // the user will look for in Files.app; the id is meaningless to both.
+    return { true, name, "Saved " + name };
 }
 
 } // namespace kromosynth::acquisition

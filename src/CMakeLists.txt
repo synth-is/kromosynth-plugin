@@ -208,6 +208,8 @@ target_sources(KromosynthPlugin PRIVATE
     ArtifactAcquisition.h
     AcquisitionRunner.cpp
     AcquisitionRunner.h
+    RenderOutbox.cpp
+    RenderOutbox.h
     ShellPage.h
 )
 

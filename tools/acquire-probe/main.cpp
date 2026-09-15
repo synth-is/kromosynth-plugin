@@ -17,6 +17,10 @@
 //   acquire-probe selftest <scratchDir>
 
 #include "../../src/ArtifactAcquisition.h"
+// For fileNameFor, which decides what a delivered render is CALLED. That rule
+// has five branches and no server in it, so it is exactly the sort of thing
+// this probe exists to pin down.
+#include "../../src/RenderOutbox.h"
 
 #include <juce_core/juce_core.h>
 
@@ -155,6 +159,103 @@ int selftest (const juce::File& scratch)
         check (redacted.contains ("ticket=present"), "redaction records that a ticket was there");
         check (redactForLog ("https://synth.is/x") == "https://synth.is/x",
                "redaction leaves ordinary urls alone");
+    }
+
+    line ("");
+    line ("the render verb");
+    {
+        // C41. A single rendered sound is delivered as a FILE and not installed,
+        // so it takes its own verb. Everything below is about keeping the two
+        // apart -- a WAV that reached the install path would be handed to a ZIP
+        // unpacker, which is the defect the verb exists to remove.
+        auto rendered = parseSentinel (
+            "synthis://render?artifact=art-2&file=VI_a1b2c3_C2-C5.wav&ticket=v1.abc.def");
+
+        check (rendered.has_value(), "parses a render sentinel");
+        check (rendered.has_value() && rendered->verb == Verb::render,
+               "a render sentinel carries the render verb");
+        check (rendered.has_value() && rendered->fileName == "VI_a1b2c3_C2-C5.wav",
+               "the VI service's generated wav name survives isSafeComponent");
+
+        auto acquired = parseSentinel ("synthis://acquire?artifact=a&file=f.zip&ticket=t");
+        check (acquired.has_value() && acquired->verb == Verb::acquire,
+               "an acquire sentinel still carries the acquire verb");
+
+        auto fallback = parseSentinel (
+            "https://synth.is/__synthis_plugin/render?artifact=a&file=f.wav&ticket=t");
+        check (fallback.has_value() && fallback->verb == Verb::render,
+               "the https fallback recognises the render verb too");
+
+        // The auth sentinel shares the scheme and is handled earlier in
+        // pageAboutToLoad. If it ever reached here, unparsed-and-blocked is the
+        // right answer rather than a wrong one.
+        check (! parseSentinel ("synthis://auth?state=registered&label=bj").has_value(),
+               "the auth verb is not mistaken for an artefact request");
+
+        line ("");
+        line ("  naming a delivered render");
+
+        check (kromosynth::renders::fileNameFor ("Synth.is JP9YS", "VI_x_C2-C5.wav")
+                   == "Synth.is JP9YS.wav",
+               "the site's label becomes the file name");
+        check (kromosynth::renders::fileNameFor ("Bell.wav", "f.wav") == "Bell.wav",
+               "a label already ending in .wav is not doubled");
+        check (kromosynth::renders::fileNameFor ("a/b:c", "f.wav").isNotEmpty()
+                   && ! kromosynth::renders::fileNameFor ("a/b:c", "f.wav").containsChar ('/'),
+               "path separators are stripped from a label");
+        check (kromosynth::renders::fileNameFor ("", "VI_x_C2-C5.wav") == "VI_x_C2-C5.wav",
+               "an absent label falls back to the artefact's own name");
+        check (kromosynth::renders::fileNameFor ("", "") == "render.wav",
+               "neither name still produces a usable file name");
+        check (kromosynth::renders::fileNameFor (juce::String::repeatedString ("x", 400), "f.wav")
+                   .length() <= 96,
+               "an absurd label is truncated rather than passed to the filesystem");
+
+        line ("");
+        line ("  the two paths refuse each other's work");
+
+        const auto mixedRoot = scratch.getChildFile ("verb-guard");
+        mixedRoot.createDirectory();
+
+        Request asAcquire;
+        asAcquire.verb = Verb::acquire;
+        asAcquire.artifactId = "a";
+        asAcquire.fileName = "pack.zip";
+        asAcquire.ticket = "t";
+
+        Request asRender = asAcquire;
+        asRender.verb = Verb::render;
+        asRender.fileName = "one.wav";
+
+        // Refused BEFORE any network call, so an unroutable base is irrelevant
+        // to what is being checked -- and the check would be worthless if it
+        // passed only because the socket failed.
+        check (! fetchRender (asAcquire, "http://127.0.0.1:9", mixedRoot).ok,
+               "fetchRender refuses an acquire request");
+        check (! fetchAndInstall (asRender, "http://127.0.0.1:9", mixedRoot).ok,
+               "fetchAndInstall refuses a render request");
+        check (mixedRoot.getNumberOfChildFiles (juce::File::findFilesAndDirectories) == 0,
+               "a refused request touches nothing on disk");
+
+        // The staging-hygiene case, for the second path. fetchAndInstall's
+        // version of this caught three empty .incoming directories left behind
+        // by three refused downloads; the render path creates the same
+        // directory and has the same eight early returns.
+        {
+            const auto outbox = scratch.getChildFile ("outbox-fail");
+            outbox.createDirectory();
+
+            Request bogus;
+            bogus.verb = Verb::render;
+            bogus.artifactId = "never-arrives";
+            bogus.fileName = "one.wav";
+            bogus.ticket = "v1.aaa.bbb";
+
+            check (! fetchRender (bogus, "http://127.0.0.1:9", outbox).ok,
+                   "a render fetch against a dead endpoint fails");
+            check (! outbox.getChildFile (".incoming").exists(),
+                   "a failed render fetch leaves no staging directory behind");
+        }
     }
 
     line ("");
