@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<!--
+  Spike: will WebKit put a local file reference on the SYSTEM drag pasteboard
+  for a page whose origin is not file://?
+
+  This is the one question that decides whether the plugin's renders list can
+  be plain HTML with draggable rows, or whether it needs a native drag well in
+  a region no webview covers.
+
+  MUST BE SERVED OVER HTTP. Opening this as file:// would pass trivially and
+  tell us nothing, because a file-origin page dragging a file URL is the one
+  case WebKit has never had reason to block.
+
+  Row 4 is a CONTROL. It drags an https URL, which WebKit certainly allows. If
+  row 4 also does nothing, the failure is in this page or in the drag gesture,
+  not in WebKit's file policy -- and the other three rows tell us nothing.
+-->
+<meta charset="utf-8">
+<title>WebKit file-drag spike</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px;
+    background: #1a3366; color: #c8f0d2;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  h1 { font-size: 17px; margin: 0 0 4px; color: #fff; }
+  .origin { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #82e399; }
+  .warn { color: #ffb4a2; font-weight: 600; }
+  .row {
+    display: flex; align-items: center; gap: 10px;
+    margin: 10px 0; padding: 12px 14px;
+    background: #24427a; border: 1px solid #3b6b96; border-radius: 10px;
+    cursor: grab; user-select: none; text-decoration: none; color: inherit;
+  }
+  .row:active { cursor: grabbing; }
+  .row .n {
+    flex: 0 0 26px; height: 26px; border-radius: 6px;
+    background: #35aaa3; color: #06281f;
+    display: grid; place-items: center; font-weight: 700; font-size: 12px;
+  }
+  .row .what { flex: 1 1 auto; min-width: 0; }
+  .row .what b { color: #fff; font-weight: 600; }
+  .row .what span { display: block; font-family: ui-monospace, Menlo, monospace;
+                    font-size: 11px; color: #9fd3c9; overflow: hidden;
+                    text-overflow: ellipsis; white-space: nowrap; }
+  .row.control { border-color: #35aaa3; }
+  #log {
+    margin-top: 18px; padding: 12px 14px; min-height: 64px;
+    background: #12254a; border: 1px solid #3b6b96; border-radius: 10px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
+    white-space: pre-wrap; color: #82e399;
+  }
+  ol { padding-left: 22px; }
+  li { margin: 3px 0; }
+</style>
+
+<h1>WebKit file-drag spike</h1>
+<p class="origin" id="origin"></p>
+
+<ol>
+  <li>Drag each row below onto an open <b>Finder window</b> (not the Desktop).</li>
+  <li>Then try the same onto a <b>Reaper</b> (or Live) arrange track.</li>
+  <li>Report, per row: did a <b>file</b> land, did a <b>web link</b> land, or nothing?</li>
+</ol>
+
+<div class="row" draggable="true" data-kind="uri-list">
+  <div class="n">1</div>
+  <div class="what"><b>text/uri-list, file URL</b><span id="p1"></span></div>
+</div>
+
+<div class="row" draggable="true" data-kind="download-url">
+  <div class="n">2</div>
+  <div class="what"><b>DownloadURL (Chromium convention)</b><span>audio/wav:…:https://vi.synth.is/…</span></div>
+</div>
+
+<a class="row" id="anchor" draggable="true" data-kind="anchor" href="#">
+  <div class="n">3</div>
+  <div class="what"><b>plain &lt;a href="file://…"&gt;</b><span id="p3"></span></div>
+</a>
+
+<div class="row control" draggable="true" data-kind="control">
+  <div class="n">4</div>
+  <div class="what"><b>CONTROL — https URL, must work</b><span>https://synth.is/</span></div>
+</div>
+
+<div id="log">waiting for a drag…</div>
+
+<script>
+  // The render the plugin actually produced at 19:14, so a successful drop is
+  // a real 5.7s WAV and not a placeholder that might be rejected for its own
+  // reasons.
+  var PATH = '/Users/bjornpjo/Music/Synth.is/Renders/Synth.is FDN13.wav';
+  var FILE_URL = 'file://' + PATH.split('/').map(encodeURIComponent).join('/');
+
+  document.getElementById('p1').textContent = FILE_URL;
+  document.getElementById('p3').textContent = FILE_URL;
+  document.getElementById('anchor').href = FILE_URL;
+
+  var o = document.getElementById('origin');
+  o.textContent = 'origin: ' + location.origin;
+  if (location.protocol === 'file:') {
+    o.innerHTML += ' <span class="warn">— file:// origin, this test is INVALID. '
+                 + 'Serve it over http.</span>';
+  }
+
+  var log = document.getElementById('log');
+  function say(t) { log.textContent = t; }
+
+  document.querySelectorAll('[draggable="true"]').forEach(function (el) {
+    el.addEventListener('dragstart', function (e) {
+      var kind = el.dataset.kind;
+      var dt = e.dataTransfer;
+      dt.effectAllowed = 'copy';
+
+      if (kind === 'uri-list') {
+        dt.setData('text/uri-list', FILE_URL);
+        dt.setData('text/plain', FILE_URL);
+      } else if (kind === 'download-url') {
+        dt.setData('DownloadURL',
+          'audio/wav:Synth.is FDN13.wav:https://vi.synth.is/placeholder.wav');
+      } else if (kind === 'control') {
+        dt.setData('text/uri-list', 'https://synth.is/');
+        dt.setData('text/plain', 'https://synth.is/');
+      }
+      // kind === 'anchor' sets nothing: WebKit's own anchor handling is the
+      // thing under test there.
+
+      // What the PAGE thinks it put on the transfer. This proves nothing about
+      // the system pasteboard -- that is what the drop is for. Recorded only so
+      // a row that lands nothing can be told apart from a row whose setData was
+      // rejected outright.
+      var types = [];
+      try { types = Array.prototype.slice.call(dt.types); } catch (err) {}
+      say('row ' + el.querySelector('.n').textContent + '  (' + kind + ')\n'
+        + 'dataTransfer.types = ' + (types.length ? types.join(', ') : '(empty)')
+        + '\n\nnow drop it on a Finder window, then on a DAW track.');
+    });
+  });
+</script>

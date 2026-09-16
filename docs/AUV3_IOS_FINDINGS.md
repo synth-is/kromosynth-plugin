@@ -48,6 +48,108 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C43. WEBKIT DRAGS A LINK, NEVER A FILE (2026-09-16)
+
+The renders list was going to be HTML -- a section beside Instruments in the
+shell page, same palette, draggable rows. That is where a user looks for it and
+it is what was asked for. It does not work, and the reason is precise enough to
+be worth keeping.
+
+## The question
+
+Will WebKit put a usable local-file reference on the SYSTEM drag pasteboard for
+a page whose origin is not `file://`?
+
+If yes, the renders list is plain HTML and nothing native is needed. If no, the
+drag has to be started by a native component and therefore has to live in a
+rectangle no webview occupies.
+
+## The probe
+
+`tools/drag-spike/index.html`, served over `http://127.0.0.1:8765` and dragged
+by hand. **SERVED, not opened as a file** -- a `file://` origin dragging a file
+URL is the one case WebKit has never had reason to block, so opening it
+directly would have passed and meant nothing. The page says so in red if its
+origin is `file:`.
+
+Four rows, the fourth a control:
+
+| # | transfer | dropped on Finder | dropped on Ableton |
+|---|---|---|---|
+| 1 | `text/uri-list` = `file://…FDN13.wav` | `.fileloc` created | nothing |
+| 2 | `DownloadURL` (Chromium convention) | bounced back | nothing |
+| 3 | plain `<a href="file://…">` | **drag would not start** | nothing |
+| 4 | **control**: `text/uri-list` = `https://synth.is/` | `.webloc` created | nothing |
+
+## The answer, and the mechanism
+
+**WebKit writes `public.url` -- a LINK -- and never `public.file-url`, a FILE.**
+Different UTIs, and everything above follows from it. Finder's response to a
+dropped link that happens to point at a file is a bookmark document, not a copy
+of the audio.
+
+The URL itself was intact, which is what makes this policy rather than a bug in
+the probe:
+
+```
+$ plutil -p ~/Downloads/Users:.fileloc
+{ "URL" => "file:///Users/bjornpjo/Music/Synth.is/Renders/Synth.is%20FDN13.wav" }
+```
+
+Row 3 is the policy refusing out loud: WebKit will not even BEGIN a drag
+session for a `file://` anchor from a remote origin. Row 4 proves the gesture
+and the page were fine throughout -- without it, rows 1 to 3 would have been
+uninterpretable.
+
+A custom scheme like `juce://juce.backend` is at least as restricted as
+`http://localhost`, so this settles the shell page too without a second test.
+
+## What it forces
+
+Native, and in its own rectangle. Two JUCE facts, both from source rather than
+memory:
+
+- `juce_Windowing_mac.mm:192` needs `[[view window] currentEvent]` -- an
+  NSEvent the window is dispatching RIGHT NOW. Only a real `mouseDrag` on a
+  native component provides one. The `window.__JUCE__` bridge is asynchronous,
+  so a native function called from `dragstart` arrives after the event is gone.
+  **Loosening the site/shell trust boundary would therefore not have helped**,
+  which is worth knowing before anyone proposes it: the boundary and this
+  problem are independent, and only one of them was ever in the way.
+- `juce_NSViewComponent.h`: a native view "will obliterate any JUCE components
+  that may overlap this component, but that's life". So the strip cannot float
+  over the browser; `resized()` trims its height off `bounds` BEFORE either
+  webview is placed.
+
+And one platform fact that settles the `#if`: `juce_Windowing_ios.mm:527` is
+`jassertfalse; return false;` with the comment "no such thing on iOS!". Desktop
+only is not a preference here.
+
+## THE SECOND FINDING, WHICH IS NOT SETTLED
+
+**Ableton rejected all four rows, INCLUDING the control.** So there is no
+evidence that Live's arrange view accepts any inter-application drop of a URL,
+and -- more to the point -- no evidence either way about whether it accepts
+JUCE's native file drag.
+
+That assumption was made before the probe and the probe did not test it.
+`performExternalDragDropOfFiles` writes an `NSURL` as its pasteboard writer,
+which yields `public.file-url` and is a different thing from what WebKit wrote;
+plugins that drag samples into Live do work. But "different mechanism, and it
+works for other people" is not a measurement of this one.
+
+**So the gutter is built but not proven.** The observation that decides it is
+narrow and should be made before anything else is built on top:
+
+> Drag a chip onto a Finder window. Does the actual WAV get copied, or does a
+> `.fileloc` appear?
+
+A copied WAV means `public.file-url` reached the pasteboard and the mechanism
+works. A `.fileloc` means the native path is no better than the HTML one and
+the desktop answer is Reveal-in-Finder. Only then is Ableton worth trying.
+
+---
+
 # C42. THE RENDER VERB, and a branch that was there all along (2026-09-15)
 
 C41's option 3, built. Also one correction to C41 and one thing that did not
