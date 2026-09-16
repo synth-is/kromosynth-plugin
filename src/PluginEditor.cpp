@@ -781,8 +781,21 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     setSize (safeArea.getWidth(), safeArea.getHeight());
 #else
     setResizable (true, true);
-    setResizeLimits (640, 400, 3840, 2400);
+    // Lower bound raised by the gutter's height, so the minimum window still
+    // leaves 400 points for the webviews rather than 342. A minimum that
+    // silently means something different after a strip is added is how a
+    // layout collapse gets absorbed instead of seen.
+    setResizeLimits (640, 400 + RenderGutter::kHeight, 3840, 2400);
     setSize (1280, 800);
+#endif
+
+#if ! JUCE_IOS
+    // Constructed before the browsers, so the first resized() already has it
+    // and no frame is laid out with the gutter's rectangle handed to a webview
+    // that would then have to give it back.
+    gutter_ = std::make_unique<RenderGutter>();
+    gutter_->onLog = [this] (const juce::String& line) { proc_.logEvent (line); };
+    addAndMakeVisible (*gutter_);
 #endif
 
 #if ! KROMOSYNTH_EDITOR_STUB
@@ -839,6 +852,17 @@ void KromosynthAudioProcessorEditor::paint (juce::Graphics& g)
 void KromosynthAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
+
+   #if ! JUCE_IOS
+    // TAKEN OFF THE TOP OF THE FUNCTION, before either webview is placed, and
+    // that ordering is the whole reason the strip is visible at all. A native
+    // webview composites above JUCE's rendering regardless of z-order
+    // (juce_NSViewComponent.h: "it'll obliterate any JUCE components that may
+    // overlap this component"), so the only way to own pixels next to one is
+    // to own a rectangle it was never given.
+    if (gutter_ != nullptr)
+        gutter_->setBounds (bounds.removeFromBottom (RenderGutter::kHeight));
+   #endif
 
     if (browser_ != nullptr)
     {

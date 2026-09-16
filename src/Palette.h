@@ -144,6 +144,26 @@ inline constexpr const char* dangerSurfaceDim = "#3d1d1d";
 inline constexpr const char* dangerBorder     = "#8e3b3b";
 inline constexpr const char* dangerText       = "#ffdcd7";
 
+/** A palette value as a juce::Colour, for the native surfaces.
+
+    SIX DIGITS ONLY, and the assert is load-bearing. The values above are CSS,
+    so an eight-digit one is #RRGGBBAA -- alpha LAST -- while
+    juce::Colour::fromString reads eight digits as AARRGGBB, alpha FIRST.
+    Passing successEdge through a naive converter yields a colour wrong in
+    three channels that still looks plausible on screen, which is the worst
+    kind of wrong. Callers wanting an alpha variant take the six-digit base and
+    call withAlpha().
+*/
+inline juce::Colour toColour (const char* cssHex)
+{
+    const juce::String s (cssHex);
+    const auto digits = s.startsWithChar ('#') ? s.substring (1) : s;
+
+    jassert (digits.length() == 6);
+
+    return juce::Colour::fromString ("ff" + digits);
+}
+
 /** The `:root` block the shell's stylesheet is built around.
 
     Generated rather than written into the HTML literal, so the values above

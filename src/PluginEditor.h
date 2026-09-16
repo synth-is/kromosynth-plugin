@@ -14,6 +14,9 @@
 #include "PluginProcessor.h"
 #include "ArtifactAcquisition.h"
 #include "AuthSentinel.h"
+// Desktop only inside, and it declares nothing on iOS. See the header for why
+// that is the platform's decision rather than ours.
+#include "RenderGutter.h"
 // For kStripHeight, which seeds stripHeight_ below. The page owns that number;
 // this header only needs its fallback.
 #include "ShellPage.h"
@@ -159,6 +162,20 @@ private:
     };
 
     std::unique_ptr<StubContent> stub_;
+
+   #if ! JUCE_IOS
+    /** The native strip a render can be dragged out of.
+
+        NATIVE, because WebKit will not put a usable local-file reference on
+        the drag pasteboard from a remote origin, and a SEPARATE RECTANGLE,
+        because a native webview obliterates anything drawn over it. Both
+        measured; both recorded in RenderGutter.h.
+
+        Desktop only: performExternalDragDropOfFiles is `jassertfalse` on iOS,
+        where the delivery route is the Files placement instead.
+    */
+    std::unique_ptr<RenderGutter> gutter_;
+   #endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KromosynthAudioProcessorEditor)
 };
