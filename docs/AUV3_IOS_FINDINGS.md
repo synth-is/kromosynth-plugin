@@ -48,6 +48,102 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C44. RE-RENDERING RETURNS THE SOUND; DURATION AND PITCH DO NOT (2026-09-16)
+
+Measured because the pricing rule "re-rendering a form you own is free,
+forever" is a promise, and it was worth knowing whether the promise is true
+before making it. Probe: `tools/render-determinism/check.py`.
+
+## Pre-registered, before the first render, untouched since
+
+| | rule | threshold |
+|---|---|---|
+| **R1** | same genome, same params, twice | bit-identical, **no tolerance** |
+| **R2** | duration is time-scaling, not redrawing | NCC ≥ 0.98 **and** centroid within 2% |
+| **R3** | pitch is transposition, not redrawing | centroid ratio tracks 2.0× within 5% |
+
+R1 gets no tolerance because a deterministic DSP graph has no legitimate source
+of variation. R2 and R3 get one because resampling and transposition both alter
+samples for reasons that are not redrawing.
+
+## R1 PASS, and it is the load-bearing one
+
+Bit-identical. Peak absolute difference **0.000e+00**, through the WebGPU CPPN
+backend, which was the plausible source of drift and is not one.
+
+So: the sound you own does come back, the server can discard expired artefacts
+and re-derive from the genome, and free re-render at the same parameters is a
+promise that holds.
+
+## R2 and R3 FAIL, structurally
+
+```
+R2   NCC 0.3493                    (rule >= 0.98)
+     centroid 4s   1094.1 Hz
+     centroid 8s   1466.4 Hz       (a pure stretch predicts 547)
+
+R3   centroid 0    1094.1 Hz
+     centroid +12  1195.1 Hz
+     ratio 1.0923                  (resampling a fixed waveform predicts 2.0)
+```
+
+This reads as correct behaviour rather than a defect. **In a hybrid CPPN+DSP
+substrate, duration cannot be a time-scaling.** The CPPN wavetable is drawn over
+normalised time and scales; the as-NEAT graph's filters, delays and reverbs have
+absolute time constants and do not. An 8-second render is a genuinely different
+sound from a stretched 4-second one, and `noteDelta` changes what the graph does
+rather than resampling its output.
+
+**What it changes is what can be said, not what can be built.** "Re-render the
+sound you own, free, at the same parameters" is measured and true. "The same
+sound at any duration or pitch" is measured and false: you get a family of
+related sounds.
+
+The pricing decision -- charge per genome, re-rendering free at any duration and
+pitch -- stands, and now stands as a deliberate choice made against this
+evidence rather than as a claim that the renders are the same sound. Its
+engineering consequence: **entitlement must key on the genome, not on the
+artefact or the takeout entry**, because every new duration is a new artefact.
+
+## THE FIRST RUN WAS VOID
+
+It reported R2 and R3 failing too, and neither reading was a result. Two things
+were wrong and both were the measurement rather than the system:
+
+1. **The instrument.** The centroid was amplitude-weighted across the whole
+   spectrum including DC. The fixture's spectral argmax was bin 0, so the
+   measure reported where the offset sat, not brightness. Hence +12 semitones
+   appearing to move the centroid 0.5%: a DC block does not transpose.
+2. **The fixture.** `reachability-legacy-rhythm/best-genome.json` renders at
+   **mean DC +0.7425 against peak 0.847, 99.3% of spectral energy below 20 Hz**.
+   A DC block with a little audio riding on it, and unable to answer a question
+   about timbre under any measure.
+
+Point 2 is a finding on its own. That is the **best genome** of that run, and it
+corroborates the DC-blindness of `quality_musicality.py` -- no offset term, so
+all four weighted measures reward DC. A scorer blind to DC selected a sound that
+is mostly DC.
+
+Fixed by excluding bins below 20 Hz and choosing a fixture with real content
+(`reachability-legacy-rhythm-final`: DC +0.0112 at peak 0.119, centroid
+1094 Hz). Fixing an instrument is legitimate; retuning a threshold to rescue a
+failed rule is not. The thresholds are as first written and the void readings
+sit in the probe's header beside the corrected ones.
+
+## Scope, stated rather than implied
+
+One fixture, `legacy-2input`, the oldest scheme. **R1 is the result worth
+generalising.** R2 and R3 want repeating on a phase-modulated 4-input genome and
+on a Faust-substrate one -- FDN13, the sound actually taken through the plugin,
+is Faust and was not tested here.
+
+Two CLI traps found on the way, both in the probe's header: the genome must be
+wrapped as `{"genome": {…}}` or `render-audio` dies destructuring
+`genome.asNEATPatch`, and `--play-on-default-audio-device=false` does not
+suppress playback because meow reads the string `"false"` as truthy.
+
+---
+
 # C43. WEBKIT DRAGS A LINK, NEVER A FILE (2026-09-16)
 
 The renders list was going to be HTML -- a section beside Instruments in the
