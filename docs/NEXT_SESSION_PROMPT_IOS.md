@@ -91,9 +91,12 @@ still fails after the deploy, that is a NEW finding, not this one.
 
 3. **Rebuild the desktop VST3/AU.** Now ~40 commits behind and still drawing the
    deleted ChromeBar. `scripts/build.sh install --backup`, then
-   `auval -v aumu Ksyn Bthj` before opening a host. Expect two audible or
-   visible changes that are not regressions: the Output default is -9 dB
-   (`6fc3159`), and single renders now land in `~/Music/Synth.is/Renders`.
+   `auval -v aumu Krm0 Sthi` before opening a host — **`Krm0 Sthi`, not
+   `Ksyn Bthj`**, which several rotations of this file carried and which fails
+   with "didn't find the component". The codes are in `src/CMakeLists.txt:102`.
+   Expect two audible or visible changes that are not regressions: the Output
+   default is -9 dB (`6fc3159`), and single renders now land in
+   `~/Music/Synth.is/Renders`.
 
 4. **Wire `unread`.** Unchanged from the last rotation: the auth sentinel
    carries a dot, not a count, and the parameter is not sent at all — the count

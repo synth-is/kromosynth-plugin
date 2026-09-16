@@ -176,7 +176,18 @@ echo
 # fresh code.
 #
 # So this no longer advises. It checks, and says which image is running.
-HOST_LINE=$(ps -eo lstart=,comm= | grep -i AUHostingServiceXPC | grep -v grep | head -1)
+# `|| true` IS LOAD-BEARING, and its absence made this whole block dead code.
+#
+# With `set -euo pipefail` at the top, a pipeline whose grep matches nothing
+# exits non-zero, and a failing command substitution in an assignment aborts
+# the script. So when NO AU host was running -- the normal case, and the case
+# this advisory is most useful in -- `scripts/build.sh install` printed the
+# codesign block and then exited 1, reporting failure for an install that had
+# just succeeded, without ever reaching the check below.
+#
+# Which is the same shape as the thing this block was written to catch: a check
+# that looks present and does not run. Found 2026-09-16.
+HOST_LINE=$(ps -eo lstart=,comm= | grep -i AUHostingServiceXPC | grep -v grep | head -1 || true)
 
 if [ -n "$HOST_LINE" ]; then
   HOST_EPOCH=$(date -j -f "%a %b %e %T %Y" "$(echo "$HOST_LINE" | sed 's/ *\/System.*//')" +%s 2>/dev/null)
