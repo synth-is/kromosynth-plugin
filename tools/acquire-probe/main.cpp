@@ -256,6 +256,83 @@ int selftest (const juce::File& scratch)
             check (! outbox.getChildFile (".incoming").exists(),
                    "a failed render fetch leaves no staging directory behind");
         }
+
+        line ("");
+        line ("  reading a wav's duration");
+
+        // wavSeconds walks RIFF chunks with juce_core alone, because this probe
+        // links RenderOutbox against juce_core alone. Checked against files
+        // written by the same createWavFromFloat32 the render pipeline uses, so
+        // the header shape here is the one that occurs in production.
+        {
+            const auto made = scratch.getChildFile ("probe-tone.wav");
+
+            // 48 kHz, 2ch, 16-bit, 0.5s => byteRate 192000, data 96000 bytes.
+            const juce::uint32 sampleRate = 48000;
+            const juce::uint16 channels = 2;
+            const juce::uint16 bits = 16;
+            const juce::uint32 byteRate = sampleRate * channels * (bits / 8);
+            const juce::uint32 dataBytes = byteRate / 2;
+
+            juce::MemoryOutputStream m;
+            m.write ("RIFF", 4);
+            m.writeInt ((int) (36 + dataBytes));
+            m.write ("WAVE", 4);
+            m.write ("fmt ", 4);
+            m.writeInt (16);
+            m.writeShort (1);                       // PCM
+            m.writeShort ((short) channels);
+            m.writeInt ((int) sampleRate);
+            m.writeInt ((int) byteRate);
+            m.writeShort ((short) (channels * bits / 8));
+            m.writeShort ((short) bits);
+            m.write ("data", 4);
+            m.writeInt ((int) dataBytes);
+            for (juce::uint32 i = 0; i < dataBytes; ++i) m.writeByte (0);
+
+            made.replaceWithData (m.getData(), m.getDataSize());
+
+            const auto secs = kromosynth::renders::wavSeconds (made);
+            check (std::abs (secs - 0.5) < 1.0e-6,
+                   "a canonical 44-byte header reads as its true duration");
+
+            // TRUNCATION MUST NOT BE BELIEVED. A download cut short declares the
+            // full length it meant to have; reporting that would tell the user a
+            // half-written file is the length they asked for -- the same class of
+            // lie as the artefact metadata claiming 9.0s for a 1.7s render (C44).
+            const auto cut = scratch.getChildFile ("probe-truncated.wav");
+            cut.replaceWithData (m.getData(), m.getDataSize() - (dataBytes / 2));
+
+            const auto cutSecs = kromosynth::renders::wavSeconds (cut);
+            check (cutSecs > 0.0 && cutSecs < 0.3,
+                   "a truncated wav reports what is THERE, not what it claims");
+
+            check (kromosynth::renders::wavSeconds (scratch.getChildFile ("nope.wav")) == 0.0,
+                   "a missing file is 0 seconds rather than a crash");
+
+            const auto notWav = scratch.getChildFile ("probe-notawav.wav");
+            notWav.replaceWithText ("this is not a RIFF file at all");
+            check (kromosynth::renders::wavSeconds (notWav) == 0.0,
+                   "a non-RIFF file is refused rather than misread");
+        }
+
+        line ("");
+        line ("  resolving a name the page supplied");
+
+        // Everything the shell page can name goes through resolve(): a resource
+        // route serving bytes, and a delete. Refusing rather than sanitising is
+        // the point -- a sanitised name resolves to SOME file, and quietly
+        // deleting a different one than was asked for is worse than an error.
+        check (! kromosynth::renders::resolve ("../../etc/passwd.wav").exists(),
+               "a traversing name resolves to nothing");
+        check (! kromosynth::renders::resolve ("a/b.wav").exists(),
+               "a name with a separator resolves to nothing");
+        check (! kromosynth::renders::resolve ("notes.txt").exists(),
+               "a non-wav name resolves to nothing");
+        check (! kromosynth::renders::resolve (".hidden.wav").exists(),
+               "a hidden name resolves to nothing");
+        check (! kromosynth::renders::resolve ("").exists(),
+               "an empty name resolves to nothing");
     }
 
     line ("");

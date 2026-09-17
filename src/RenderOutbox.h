@@ -42,6 +42,8 @@
 
 #include <juce_core/juce_core.h>
 
+#include <vector>
+
 namespace kromosynth::renders
 {
 
@@ -113,5 +115,56 @@ struct DrainResult
     audio thread.
 */
 DrainResult drain();
+
+/** One delivered render, as the shell page needs to show it. */
+struct Entry
+{
+    juce::File file;
+    juce::String name;        ///< file name without the extension
+    double seconds = 0.0;     ///< 0 when the header could not be read
+    juce::int64 bytes = 0;
+    juce::int64 modifiedMs = 0;
+};
+
+/** The outbox's `.wav` files, newest first.
+
+    Written for the shell page's Renders view, which is the thing that finally
+    makes a "taken" marker an observation rather than an assumption -- a web
+    card cannot see the disk, so it can only guess, and both the existing
+    markers do exactly that.
+
+    RenderGutter still scans the directory itself. Folding it onto this is worth
+    doing so there is one reader of the outbox rather than two, and is left for
+    when that file has no uncommitted work in it.
+
+    @param max  hard cap, so a folder that has grown for months cannot make the
+                page slow. Newest first is what makes a cap acceptable.
+*/
+std::vector<Entry> list (int max = 64);
+
+/** Duration of a PCM WAV in seconds; 0 when it cannot be determined.
+
+    A RIFF CHUNK WALK RATHER THAN juce::WavAudioFormat, and the reason is a link
+    dependency rather than taste: tools/acquire-probe links this file against
+    juce_core alone, so reaching for juce_audio_formats here would break the one
+    test harness that can exercise it without a DAW. The format is stable enough
+    to read forty bytes of by hand, and doing so keeps this file's dependencies
+    where they were.
+
+    Chunks are walked rather than assuming the canonical 44-byte header: our own
+    writer produces that, but a file a user has dropped in by hand may carry a
+    LIST or a cue chunk before `data`.
+*/
+double wavSeconds (const juce::File& f);
+
+/** One file in the outbox, by FILE NAME alone.
+
+    The gate for everything the page can name: a resource route serving bytes,
+    and a delete. Returns a nonexistent File for anything that is not a plain
+    `.wav` leaf name -- no separators, no `..`, nothing hidden. The page supplies
+    these names from a list this module produced, so a name that fails here is
+    either a bug or an attempt, and both want the same answer.
+*/
+juce::File resolve (const juce::String& fileName);
 
 } // namespace kromosynth::renders

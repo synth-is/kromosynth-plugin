@@ -194,6 +194,49 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                     std::move (svgBytes), juce::String ("image/svg+xml") };
             }
 
+            // A DELIVERED RENDER'S BYTES, so the shell page can audition one.
+            //
+            // This is what makes preview possible without any plugin audio
+            // path: the page fetches from its OWN origin and plays it with
+            // WebAudio, which reaches the system output exactly as the site's
+            // feed play button already does inside the plugin. Nothing enters
+            // the host's signal chain, and nothing has to be routed through the
+            // processor while a transport may be rolling.
+            //
+            // A `file://` URL would have been the obvious alternative and does
+            // not work: C43 measured that WebKit will not hand a local file to
+            // a page on a non-file origin, and it will not load one either.
+            // Serving the bytes ourselves sidesteps the whole question.
+            //
+            // It also keeps ShellPage.h's no-external-references rule, for the
+            // same reason /logo.svg does: the rule forbids FETCHING over a
+            // network, and this is a local read through the provider.
+            if (clean.startsWith ("/render/"))
+            {
+                // URL-decoded because the page percent-encodes the name and
+                // resolve() compares against a real file name. Names carry
+                // spaces -- "WCM9MKA 9.0s 4T09A.wav" -- so this is the ordinary
+                // case, not an edge one.
+                const auto wanted = juce::URL::removeEscapeChars (
+                    clean.fromFirstOccurrenceOf ("/render/", false, false));
+
+                const auto f = kromosynth::renders::resolve (wanted);
+
+                if (! f.existsAsFile())
+                    return std::nullopt;   // 404 rather than an empty 200
+
+                juce::MemoryBlock mb;
+
+                if (! f.loadFileAsData (mb))
+                    return std::nullopt;
+
+                std::vector<std::byte> bytes (mb.getSize());
+                std::memcpy (bytes.data(), mb.getData(), mb.getSize());
+
+                return juce::WebBrowserComponent::Resource {
+                    std::move (bytes), juce::String ("audio/wav") };
+            }
+
             if (clean != "/" && clean != "/index.html")
                 return std::nullopt;
 
@@ -670,6 +713,74 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             showSite (true);
             navigateSiteTo (path);
             done (juce::var (true));
+        })
+        .withNativeFunction ("getRenders",
+                             [] (const juce::Array<juce::var>&,
+                                 juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // WHAT IS ACTUALLY ON DISK, which is the point of this function
+            // existing at all. Both "taken" markers in the web app are guesses:
+            // the live one assumes any live artefact on screen is installed, and
+            // the single one remembers only this session. Neither can see the
+            // filesystem. This can, so the Renders view built on it is the first
+            // thing in the plugin that reports delivery by observing it.
+            //
+            // Duration comes from each file's own header rather than from the
+            // render request, so it cannot repeat C44's mistake of showing the
+            // length that was asked for instead of the one that arrived.
+            juce::Array<juce::var> out;
+
+            for (const auto& r : kromosynth::renders::list())
+            {
+                auto* o = new juce::DynamicObject();
+
+                // The FILE NAME, not the display name: this is the handle the
+                // page passes back for bytes or a delete, and resolve() accepts
+                // nothing else.
+                o->setProperty ("file", r.file.getFileName());
+                o->setProperty ("name", r.name);
+                o->setProperty ("seconds", r.seconds);
+                o->setProperty ("bytes", (double) r.bytes);
+                o->setProperty ("modifiedMs", (double) r.modifiedMs);
+
+                out.add (juce::var (o));
+            }
+
+            done (juce::var (out));
+        })
+        .withNativeFunction ("deleteRender",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // Deletes a file the user spent extraction quota on, so the page is
+            // expected to confirm first. This end does not prompt -- a native
+            // modal over a webview inside a DAW is its own problem -- but it
+            // does refuse anything resolve() will not vouch for, and it reports
+            // what it did rather than assuming success.
+            const auto name = args.size() > 0 ? args[0].toString() : juce::String();
+            const auto target = kromosynth::renders::resolve (name);
+
+            if (! target.existsAsFile())
+            {
+                proc_.logEvent ("render_delete_refused " + name.quoted());
+                done (juce::var (false));
+                return;
+            }
+
+            // Ableton leaves an .asd analysis sidecar beside any wav it has
+            // read. Deleting the wav and leaving that behind would accumulate
+            // orphans in a folder the user is being encouraged to browse.
+            const auto sidecar = target.getSiblingFile (target.getFileName() + ".asd");
+
+            if (sidecar.existsAsFile())
+                sidecar.deleteFile();
+
+            const bool gone = target.deleteFile();
+
+            proc_.logEvent ("render_deleted ok=" + juce::String (gone ? 1 : 0)
+                            + " " + target.getFileName().quoted());
+
+            done (juce::var (gone));
         })
         .withNativeFunction ("getAcquisitions",
                              [this] (const juce::Array<juce::var>&,
