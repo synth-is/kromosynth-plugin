@@ -165,6 +165,77 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   header button:first-of-type { margin-left: auto; }
   header button:hover { background: var(--border); }
   main { flex: 1 1 auto; overflow-y: auto; padding: 8px; position: relative; }
+
+  /* The taken-sounds section. Sits in the same scroll region as the instrument
+     list and above it, so the two read as siblings rather than as one page with
+     something bolted on.
+
+     z-index because #spectro is absolutely positioned behind the list at
+     z-index 0: without a stacking value of its own this section would be drawn
+     under the spectrogram and look like it had failed to render. */
+  #rendersec { position: relative; z-index: 1; margin-bottom: 10px; }
+  #rendersec .subhead {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 2px 4px 6px;
+  }
+  #rendersec h2 {
+    margin: 0; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-muted);
+  }
+  #rendersec .count { color: var(--text-muted); font-size: 12px; }
+  #rendersec .subhead button {
+    margin-left: auto;
+    background: var(--border-subtle); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 9px; font-size: 11px; cursor: pointer;
+  }
+  #rendersec .subhead button:hover { background: var(--border); }
+
+  .rrow {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 7px;
+    background: var(--surface-panel); border: 1px solid var(--border-subtle);
+    margin-bottom: 4px;
+  }
+  .rrow .rname {
+    flex: 1 1 auto; min-width: 0;
+    font-size: 13px; color: var(--text-primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .rrow .rmeta { flex: 0 0 auto; font-size: 11px; color: var(--text-muted); }
+  .rrow button {
+    flex: 0 0 auto;
+    background: transparent; color: var(--text-body);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 2px 8px; font-size: 11px; cursor: pointer;
+  }
+  .rrow button:hover { background: var(--border-subtle); color: var(--text-primary); }
+  /* Delete reads as destructive only on hover, so a row of them does not look
+     like a row of warnings. It removes a file the user spent extraction quota
+     on, which is why it confirms before acting. */
+  .rrow button.rdel:hover { color: var(--danger); border-color: var(--danger); }
+  .rrow button.rplay.on { color: var(--accent); border-color: var(--accent); }
+
+  /* GARAGEBAND'S 736x242, where putting this section above the instruments is
+     actively wrong rather than merely tight.
+
+     MEASURED in tools/shell-preview at 736x242: the whole viewport was nav,
+     header, toolbar, this heading and one and a half rows, with ZERO
+     instruments visible. Above is right at normal heights -- fifty-three
+     instruments would otherwise push a four-row list off the top -- and the
+     reverse at letterbox height. The reasoning that produced "above" simply
+     did not survive being looked at.
+
+     The rows collapse and the heading stays, so the count is still there and
+     Reveal folder still works. The instrument list is what the page exists
+     for, and on iOS a render cannot be dragged anywhere anyway, which makes
+     these the half that yields. */
+  @media (max-height: 340px) {
+    #rlist { display: none; }
+    #rendersec { margin-bottom: 6px; }
+    #rendersec .subhead { padding: 0 4px 3px; }
+  }
   /* The spectrogram sits BEHIND the list, not beside it. It is context for the
      loaded instrument, not a control, and anything that took vertical space
      away from the list would be paying for decoration with the thing the page
@@ -588,6 +659,31 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
 </div>
 <main id="listwrap">
   <canvas id="spectro" class="empty"></canvas>
+
+  <!-- SOUNDS YOU HAVE TAKEN, above the instruments rather than below.
+
+       Björn, after using the native strip: "I also wonder about if this is the
+       best UI or UX presentation to have this persistent bottom bar with
+       swatches you, for example, cannot preview just with some IDs, maybe not
+       too user friendly." Right on both counts -- the chips were labelled with
+       an entry-id fragment and there was no way to hear one without dragging it
+       into a DAW first.
+
+       Above, because it is the shorter list and the one that changes: fifty-three
+       instruments below it would push it off the top of a GarageBand-height
+       window, and this is the section that gains a row while you watch.
+
+       Hidden entirely until the first take, so it costs no height for anyone
+       who has not used the feature. -->
+  <section id="rendersec" hidden>
+    <div class="subhead">
+      <h2>Sounds you have taken</h2>
+      <span class="count" id="rcount"></span>
+      <button id="rreveal">Reveal folder</button>
+    </div>
+    <div id="rlist"></div>
+  </section>
+
   <div id="list"></div>
 </main>
 
@@ -1347,12 +1443,181 @@ async function refresh () {
   }
 }
 
+// ── Sounds you have taken ───────────────────────────────────────────────────
+//
+// Reads getRenders, which reports what is actually ON DISK. That is the whole
+// reason this list is worth having over the markers in the web app: those are
+// guesses. The live one assumes any live artefact on screen is installed; the
+// single one remembers only the current session. Neither can see a filesystem.
+//
+// Durations come from each file's own header, so this cannot repeat C44's
+// mistake of showing the length that was REQUESTED rather than the one that
+// arrived.
+
+let renderRows = [];
+let audio = null;          // the one <audio> element, reused
+let playingFile = null;
+
+function fmtSeconds (s) {
+  if (!s || s <= 0) return '';
+  return (s < 10 ? s.toFixed(1) : Math.round(s)) + 's';
+}
+
+function fmtBytes (b) {
+  if (!b || b <= 0) return '';
+  return b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB'
+                      : Math.max(1, Math.round(b / 1024)) + ' kB';
+}
+
+function stopPlayback () {
+  if (audio) { audio.pause(); audio.currentTime = 0; }
+  playingFile = null;
+  Array.prototype.forEach.call(
+    document.querySelectorAll('.rrow button.rplay'),
+    function (b) { b.classList.remove('on'); b.textContent = 'Play'; }
+  );
+}
+
+function playRender (file, button) {
+  // Toggling the row that is already sounding stops it, which is what a second
+  // press of a play button means to everyone.
+  if (playingFile === file) { stopPlayback(); return; }
+
+  stopPlayback();
+
+  if (!audio) {
+    audio = new Audio();
+    // Reset the row when the file runs out on its own, so the button does not
+    // sit lit with nothing playing -- a control claiming a state it is not in.
+    audio.addEventListener('ended', stopPlayback);
+    audio.addEventListener('error', stopPlayback);
+  }
+
+  // OUR OWN ORIGIN. The bytes come through the resource provider that serves
+  // /logo.svg, so WebAudio plays them to the system output exactly as the
+  // site's feed play button already does inside the plugin -- nothing enters
+  // the host's signal chain. A file:// URL is the one thing that cannot work
+  // here: C43 measured that WebKit will not load a local file from a page on a
+  // non-file origin.
+  audio.src = '/render/' + encodeURIComponent(file);
+  playingFile = file;
+
+  button.classList.add('on');
+  button.textContent = 'Stop';
+
+  audio.play().catch(function () { stopPlayback(); });
+}
+
+function renderRenders () {
+  const sec = document.getElementById('rendersec');
+  const list = document.getElementById('rlist');
+
+  // Hidden entirely rather than shown empty: before the first take there is
+  // nothing to say, and a heading over a blank box is worse than no heading.
+  if (renderRows.length === 0) {
+    sec.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+
+  sec.hidden = false;
+
+  // The count carries the whole section under @media (max-height: 340px),
+  // where the rows are collapsed to give a letterboxed window back to the
+  // instrument list. Hence the hint: at that size this line and Reveal folder
+  // are the only things left.
+  const rcount = document.getElementById('rcount');
+  rcount.textContent =
+    renderRows.length + (renderRows.length === 1 ? ' sound' : ' sounds');
+  rcount.title = 'Taken into this plugin. Make the window taller to see them '
+                 + 'listed, or use Reveal folder.';
+
+  list.innerHTML = '';
+
+  renderRows.forEach(function (r) {
+    const row = document.createElement('div');
+    row.className = 'rrow';
+
+    const name = document.createElement('span');
+    name.className = 'rname';
+    name.textContent = r.name;
+    name.title = r.file;
+
+    const meta = document.createElement('span');
+    meta.className = 'rmeta';
+    meta.textContent = [fmtSeconds(r.seconds), fmtBytes(r.bytes)]
+      .filter(Boolean).join(' \u00b7 ');
+
+    const play = document.createElement('button');
+    play.className = 'rplay';
+    play.textContent = playingFile === r.file ? 'Stop' : 'Play';
+    if (playingFile === r.file) play.classList.add('on');
+    play.addEventListener('click', function () { playRender(r.file, play); });
+
+    const del = document.createElement('button');
+    del.className = 'rdel';
+    del.textContent = 'Delete';
+    del.addEventListener('click', function () {
+      // CONFIRMS, because this removes a file the user spent extraction quota
+      // on. The native end deliberately does not prompt -- a modal over a
+      // webview inside a DAW is its own problem -- so the asking belongs here.
+      if (!window.confirm('Delete \u201c' + r.name + '\u201d from your renders?\n\n'
+                          + 'The sound stays yours on synth.is and can be taken '
+                          + 'again for free.')) {
+        return;
+      }
+
+      if (playingFile === r.file) stopPlayback();
+
+      call('deleteRender', r.file).then(function (ok) {
+        if (!ok) setStatus('Could not delete that render', 'err');
+        refreshRenders();
+      }).catch(function () {
+        setStatus('Could not delete that render', 'err');
+      });
+    });
+
+    row.appendChild(name);
+    row.appendChild(meta);
+    row.appendChild(play);
+    row.appendChild(del);
+    list.appendChild(row);
+  });
+}
+
+function refreshRenders () {
+  if (!backend) return;
+
+  call('getRenders').then(function (rows) {
+    renderRows = Array.isArray(rows) ? rows : [];
+
+    // A file that vanished under us -- deleted in Finder, or by the drain on
+    // iOS -- must not leave its button lit.
+    if (playingFile && !renderRows.some(function (r) { return r.file === playingFile; })) {
+      stopPlayback();
+    }
+
+    renderRenders();
+  }).catch(function () {
+    // An older binary has no getRenders. Leaving the section hidden is the
+    // right outcome: the native strip still works, and a visible error about a
+    // missing bridge function helps nobody using it.
+    renderRows = [];
+    renderRenders();
+  });
+}
+
+document.getElementById('rreveal').addEventListener('click', function () {
+  call('revealRenders').catch(function () {});
+});
+
 document.getElementById('refresh').addEventListener('click', function () {
   // An explicit refresh is the user saying "show me the current state", so the
   // new-arrival marks are cleared: they exist to point out something that
   // appeared while attention was elsewhere.
   newIds.clear();
   refresh();
+  refreshRenders();
 });
 
 document.getElementById('filter').addEventListener('input', function (ev) {
@@ -1752,6 +2017,11 @@ async function pollAcquisitions () {
     await call('clearFinishedAcquisitions');
 
     refresh();
+
+    // A take that just finished put a file in the outbox, so the list is now
+    // out of date. Refreshed HERE rather than on a timer: this is the one
+    // moment the page knows the folder changed.
+    if (renders) refreshRenders();
   } catch (e) { /* a poll that fails is not worth a visible error */ }
 }
 
@@ -1761,6 +2031,13 @@ async function pollAcquisitions () {
 setInterval(pollAcquisitions, 1000);
 setInterval(pollAuth, 1000);
 refresh();
+
+// Once at startup, and again whenever an acquisition or a take finishes rather
+// than on a timer of its own. The outbox only changes when the plugin puts
+// something there, so polling it would be asking a question whose answer this
+// page already knows is unchanged -- and the native strip is watching the
+// folder anyway for the cases the page cannot see, like a deletion in Finder.
+refreshRenders();
 </script>
 </body>
 </html>

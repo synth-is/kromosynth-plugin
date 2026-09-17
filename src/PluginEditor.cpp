@@ -714,6 +714,21 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             navigateSiteTo (path);
             done (juce::var (true));
         })
+        .withNativeFunction ("revealRenders",
+                             [] (const juce::Array<juce::var>&,
+                                 juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // The escape hatch that always works, whatever the list and the drag
+            // do. createDirectory first because the folder does not exist until
+            // the first take, and revealing nothing looks like a broken button
+            // rather than an empty shelf.
+            auto dir = kromosynth::renders::outbox();
+
+            dir.createDirectory();
+            dir.revealToUser();
+
+            done (juce::var (true));
+        })
         .withNativeFunction ("getRenders",
                              [] (const juce::Array<juce::var>&,
                                  juce::WebBrowserComponent::NativeFunctionCompletion done)
