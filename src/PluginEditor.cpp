@@ -974,6 +974,11 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             browser_->emitEventIfBrowserIsVisible ("rendersChanged", juce::var (true));
     };
 
+    // Dismissing the band, or a take arriving while it is hidden, changes how
+    // much room the site gets -- so the layout has to be redone, which only
+    // the editor can do.
+    renderList_->onHandleWantedChanged = [this] { resized(); };
+
     // NOT addAndMakeVisible: invisible until the Sounds sub-tab asks for it, so
     // it costs nothing on every other tab.
     addChildComponent (*renderList_);
@@ -1064,7 +1069,7 @@ void KromosynthAudioProcessorEditor::resized()
 
         if (renderList_ != nullptr)
         {
-            compactHandle = siteVisible_ && ! renderList_->isEmpty();
+            compactHandle = siteVisible_ && renderList_->wantsHandle();
 
             if (compactHandle)
                 renderList_->setBounds (bounds.removeFromBottom (RenderList::kCompactH));

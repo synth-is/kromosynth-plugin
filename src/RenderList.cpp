@@ -77,7 +77,7 @@ void RenderList::refresh()
     rows_.clear();
 
     for (const auto& e : kromosynth::renders::list())
-        rows_.push_back ({ e, {}, {}, {} });
+        rows_.push_back ({ e, {}, {}, {}, {} });
 
     stamp_ = outboxStamp (kromosynth::renders::outbox());
 
@@ -141,8 +141,11 @@ void RenderList::layOutRows()
 
             const int cy = r.bounds.getCentreY() - kBtnH / 2;
 
-            r.del  = { kPad + w - kPad - kBtnW,        cy, kBtnW, kBtnH };
-            r.play = { r.del.getX() - kRowGap - kBtnW, cy, kBtnW, kBtnH };
+            // Dismiss sits outermost, where a close box belongs, and only in
+            // compact mode -- the Sounds tab cannot be dismissed, it is a tab.
+            r.dismiss = { kPad + w - kPad - kBtnH,           cy, kBtnH, kBtnH };
+            r.del     = { r.dismiss.getX() - kRowGap - kBtnW, cy, kBtnW, kBtnH };
+            r.play    = { r.del.getX() - kRowGap - kBtnW,     cy, kBtnW, kBtnH };
         }
 
         return;
@@ -154,6 +157,7 @@ void RenderList::layOutRows()
 
         const int cy = y + (kRowH - kBtnH) / 2;
 
+        r.dismiss = {};   // list mode has no dismiss; see the compact branch
         r.del  = { kPad + w - kPad - kBtnW,                cy, kBtnW, kBtnH };
         r.play = { r.del.getX() - kRowGap - kBtnW,         cy, kBtnW, kBtnH };
 
@@ -295,6 +299,10 @@ void RenderList::paint (juce::Graphics& g)
                     toColour (playing ? accent : textBody));
 
         drawButton (delBox, "Delete", toColour (border), toColour (textBody));
+
+        if (! r.dismiss.isEmpty())
+            drawButton (r.dismiss.translated (0, -scrollY_), juce::String::charToString (0x00d7),
+                        toColour (border), toColour (textMuted));
     }
 }
 
@@ -319,7 +327,8 @@ void RenderList::mouseMove (const juce::MouseEvent& e)
         const auto& r = rows_[(size_t) hit];
         const auto p = e.getPosition().translated (0, scrollY_);
 
-        draggable = ! r.play.contains (p) && ! r.del.contains (p);
+        draggable = ! r.play.contains (p) && ! r.del.contains (p)
+                 && ! (! r.dismiss.isEmpty() && r.dismiss.contains (p));
     }
 
     setMouseCursor (draggable ? juce::MouseCursor::DraggingHandCursor
@@ -363,6 +372,21 @@ void RenderList::mouseDown (const juce::MouseEvent& e)
         deleteRow (hit);
         return;
     }
+
+    if (! r.dismiss.isEmpty() && r.dismiss.contains (p))
+    {
+        dismissed_ = true;
+
+        if (playingFile_.isNotEmpty() && onPlayRequest != nullptr)
+            onPlayRequest ({});
+
+        say ("render_handle_dismissed");
+
+        if (onHandleWantedChanged != nullptr)
+            onHandleWantedChanged();
+
+        return;
+    }
 }
 
 void RenderList::deleteRow (int index)
@@ -372,39 +396,56 @@ void RenderList::deleteRow (int index)
 
     const auto file = rows_[(size_t) index].entry.file;
 
-    // ASKS FIRST, because this removes a file the user spent extraction quota
+    // ASYNC, and the synchronous form was a silent no-op. The int-returning
+    // showYesNoBox only blocks and returns a real answer under
+    // JUCE_MODAL_LOOPS_PERMITTED, which is OFF in a plugin -- so with a null
+    // callback it showed nothing and returned 0, `if (ok != 1) return;` bailed
+    // every time, and Delete never deleted anything. Björn: "if i press delete,
+    // that bar doesn't change." It did nothing at all, quietly, and it compiled
+    // because both overloads accept these five arguments.
+    //
+    // It ASKS FIRST because this removes a file the user spent extraction quota
     // on. The message says the sound stays theirs, which is true under
-    // per-sound pricing and is what makes offering a delete reasonable at all.
-    const auto ok = juce::NativeMessageBox::showYesNoBox (
+    // per-sound pricing and is what makes offering a delete reasonable.
+    juce::NativeMessageBox::showYesNoBox (
         juce::MessageBoxIconType::WarningIcon,
         "Delete this sound?",
         file.getFileNameWithoutExtension()
             + "\n\nThe sound stays yours on synth.is and can be taken again for free.",
-        this, nullptr);
+        this,
+        // SafePointer, because the callback outlives the click: the editor can
+        // be closed while the box is up, and this component goes with it.
+        juce::ModalCallbackFunction::create (
+            [safe = juce::Component::SafePointer<RenderList> (this), file] (int result)
+            {
+                if (result != 1 || safe == nullptr)
+                    return;
 
-    if (ok != 1)
-        return;
+                if (safe->playingFile_ == file.getFileName() && safe->onPlayRequest != nullptr)
+                    safe->onPlayRequest ({});
 
-    if (playingFile_ == file.getFileName() && onPlayRequest != nullptr)
-        onPlayRequest ({});
+                // Ableton leaves an .asd analysis sidecar beside any wav it has
+                // read. Deleting the wav and leaving that behind accumulates
+                // orphans in a folder the user is being encouraged to browse.
+                const auto sidecar = file.getSiblingFile (file.getFileName() + ".asd");
 
-    // Ableton leaves an .asd analysis sidecar beside any wav it has read.
-    // Deleting the wav and leaving that behind accumulates orphans in a folder
-    // the user is being encouraged to browse.
-    const auto sidecar = file.getSiblingFile (file.getFileName() + ".asd");
+                if (sidecar.existsAsFile())
+                    sidecar.deleteFile();
 
-    if (sidecar.existsAsFile())
-        sidecar.deleteFile();
+                const bool gone = file.deleteFile();
 
-    const bool gone = file.deleteFile();
+                safe->say ("render_deleted ok=" + juce::String (gone ? 1 : 0)
+                           + " " + file.getFileName().quoted());
 
-    say ("render_deleted ok=" + juce::String (gone ? 1 : 0)
-         + " " + file.getFileName().quoted());
+                safe->refresh();
 
-    refresh();
+                if (safe->onContentsChanged != nullptr)
+                    safe->onContentsChanged();
 
-    if (onContentsChanged != nullptr)
-        onContentsChanged();
+                // Deleting the last take takes the band away with it.
+                if (safe->onHandleWantedChanged != nullptr)
+                    safe->onHandleWantedChanged();
+            }));
 }
 
 void RenderList::mouseDrag (const juce::MouseEvent& e)
@@ -424,7 +465,8 @@ void RenderList::mouseDrag (const juce::MouseEvent& e)
 
     // Pressing a button is not the start of a drag. Without this, a slightly
     // shaky click on Delete would begin dragging the file instead.
-    if (r.play.contains (down) || r.del.contains (down))
+    if (r.play.contains (down) || r.del.contains (down)
+        || (! r.dismiss.isEmpty() && r.dismiss.contains (down)))
         return;
 
     if (! r.entry.file.existsAsFile())
@@ -477,6 +519,13 @@ void RenderList::timerCallback()
 
     const auto before = rows_.size();
 
+    // A NEW TAKE BRINGS THE BAND BACK. Dismissal means "not this one", not
+    // "never again" -- the next sound you take is exactly the case the handle
+    // exists for.
+    const bool wasWanted = wantsHandle();
+
+    dismissed_ = false;
+
     refresh();
 
     say ("renders_rescanned was=" + juce::String ((int) before)
@@ -485,6 +534,9 @@ void RenderList::timerCallback()
     // The page's Sounds badge is now wrong, and only it can fix that.
     if (onContentsChanged != nullptr)
         onContentsChanged();
+
+    if (wasWanted != wantsHandle() && onHandleWantedChanged != nullptr)
+        onHandleWantedChanged();
 }
 
 #endif // ! JUCE_IOS

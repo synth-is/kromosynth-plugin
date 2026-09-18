@@ -72,6 +72,12 @@ public:
     */
     std::function<void (const juce::String&)> onPlayRequest;
 
+    /** The editor needs to re-lay out when wantsHandle() changes -- a dismiss,
+        or a take arriving while the band is hidden. Separate from
+        onContentsChanged because that one is about the page's badge.
+    */
+    std::function<void()> onHandleWantedChanged;
+
     /** The page owns the count shown in the Sounds sub-tab badge, so it has to
         hear when the folder changed underneath it -- a delete here, or a take
         landing while the list is open.
@@ -81,10 +87,20 @@ public:
     /** Height of the one-row handle. The editor reserves exactly this. */
     static constexpr int kCompactH = 42;
 
-    /** True when there is nothing to show, so the editor can decline to
-        reserve any height at all before the first take.
+    /** Whether the one-row handle is worth any height right now.
+
+        False before the first take, and false once dismissed -- until the next
+        take arrives, which un-dismisses it. Björn asked "will that bar always
+        be present, not just when i have rendered a new sound?", and it was:
+        anyone with takes in the folder had it on screen for every browsing
+        session forever. The handle is for the sound you JUST took; the Sounds
+        tab is for history, and a permanent 42pt band to say so is too much.
+
+        Dismissal is a user action rather than a timer. A time window would have
+        been a magic number nobody could predict, and the state it hides is not
+        urgent enough to expire on its own.
     */
-    bool isEmpty() const { return rows_.empty(); }
+    bool wantsHandle() const { return ! rows_.empty() && ! dismissed_; }
 
     /** One row (the newest) instead of the whole list.
 
@@ -134,6 +150,7 @@ private:
         juce::Rectangle<int> bounds;   ///< in list space, before scrolling
         juce::Rectangle<int> play;
         juce::Rectangle<int> del;
+        juce::Rectangle<int> dismiss;   ///< compact mode only; empty otherwise
     };
 
     void timerCallback() override;
@@ -146,6 +163,7 @@ private:
     std::vector<Row> rows_;
     juce::String playingFile_;
     bool compact_ = false;
+    bool dismissed_ = false;
 
     int scrollY_ = 0;
     int hoveredRow_ = -1;
