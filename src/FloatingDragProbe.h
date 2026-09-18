@@ -43,20 +43,41 @@
 // editor actually showing. Whether that is sufficient across hosts, spaces,
 // fullscreen and multiple displays is precisely what this probe is for.
 //
-// Position is tracked by ComponentMovementWatcher, which is how JUCE keeps its
-// OWN NSViewComponents glued to a window -- so the handle should track as
-// tightly as the webview beside it does.
+// Position is tracked by ComponentMovementWatcher AND by a timer, and the
+// combination is not belt-and-braces -- each covers a case the other cannot.
 //
-// It started on a 20 Hz timer, on the reasoning that a plugin editor is
-// reparented into a host window it does not own and does not reliably hear
-// about being dragged around the screen. Björn moved the Reaper window quickly
-// and reported the swatch lagging behind and then catching up: 50 ms of
-// visible drift, which is what polling buys you. The watcher listens to the
-// whole parent chain including peer changes, which is the case the timer was
-// hedging against, so the hedge was unnecessary AND worse.
+// The watcher catches resizes and reparenting exactly, in the same pass that
+// moves the editor. What it does NOT catch is the HOST WINDOW being dragged
+// across the screen: no JUCE component's bounds change, the peer moves, and
+// getScreenBounds() returns something new with no callback to announce it.
 //
-// A slow timer remains for the two things no callback reports: the process
-// coming to or leaving the foreground, and a new take appearing in the outbox.
+// Recorded because I got this wrong in both directions. The probe started on a
+// 20 Hz poll, on the reasoning that a plugin editor is reparented into a window
+// it does not own and cannot rely on callbacks. Björn reported the handle
+// lagging on a fast window move, I replaced the poll with the watcher and
+// called the original reasoning an unnecessary hedge -- and he then reported
+// that resizes tracked better and MOVES no longer tracked at all. The hedge was
+// covering a real case. The watcher is better at what it covers and blind to
+// the case the poll existed for.
+//
+// A slow timer also carries the two things no callback reports: the process
+// entering or leaving the foreground, and a new take appearing in the outbox.
+//
+// ── A LIMITATION THE PROBE FOUND, which no amount of tracking fixes ─────────
+//
+// Björn: the handle "can go off window when narrowing too far". The editor has
+// a minimum size, and a host that lets its window get narrower than that CLIPS
+// the editor rather than resizing it. JUCE is not told: the editor's bounds
+// still describe its full size, ComponentPeer::getBounds() is documented as
+// relative to the parent window when nested and so cannot be intersected
+// against, and the only route to the truth is the native view's frame through
+// getNativeHandle().
+//
+// So a handle positioned from the editor's bottom-right corner lands outside
+// the visible window. Clamping to the display below keeps it on screen, which
+// is the part that is fixable from here. The rest is a genuine cost of
+// floating: a band drawn INSIDE the editor is clipped along with everything
+// else and can never be orphaned this way.
 
 #pragma once
 
@@ -86,10 +107,11 @@ public:
         setAlwaysOnTop (true);
         addToDesktop (juce::ComponentPeer::windowIsTemporary);
 
-        // 4 Hz, not 20. Position is the watcher's job now; this only notices
-        // the process changing foreground state and a new take landing, both of
-        // which are human-speed events.
-        startTimerHz (4);
+        // 12 Hz. Position is mostly the watcher's job, but a HOST WINDOW move
+        // produces no callback at all, so the poll has to carry that case --
+        // see the header. Fast enough that a dragged window does not visibly
+        // shed the handle, slow enough to be free.
+        startTimerHz (12);
 
         // updateVisibility, not follow: a fresh Component is invisible until
         // told otherwise and follow() declines to move a hidden window, so
@@ -180,9 +202,24 @@ private:
         if (anchorBounds.isEmpty())
             return;
 
-        setBounds (anchorBounds.getRight()  - kWidth  - kInset,
-                   anchorBounds.getBottom() - kHeight - kInset,
-                   kWidth, kHeight);
+        juce::Rectangle<int> target (
+            anchorBounds.getRight()  - kWidth  - kInset,
+            anchorBounds.getBottom() - kHeight - kInset,
+            kWidth, kHeight);
+
+        // CLAMPED TO THE DISPLAY, because the editor's bounds can extend past
+        // the visible window: a host that narrows below the editor's minimum
+        // size clips it and does not tell JUCE. This cannot put the handle back
+        // inside a clipping window -- nothing here can, see the header -- but it
+        // does stop it being flung off the screen entirely.
+        if (auto* display = juce::Desktop::getInstance().getDisplays()
+                                .getDisplayForRect (anchorBounds))
+        {
+            target = target.constrainedWithin (display->userArea);
+        }
+
+        if (target != getBounds())
+            setBounds (target);
     }
 
     // ── ComponentMovementWatcher ─────────────────────────────────────────────
@@ -231,6 +268,11 @@ private:
 
         if (! wasShowing_)
             return;
+
+        // The case the watcher is blind to: the host window moved and no JUCE
+        // component's bounds changed. follow() is a no-op when nothing has, so
+        // calling it every tick costs a getScreenBounds and a comparison.
+        follow();
 
         // Cheap: list(1) is one directory read, and the label only matters for
         // recognising which file a successful drop delivered.
