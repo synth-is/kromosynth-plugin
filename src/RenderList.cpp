@@ -99,6 +99,18 @@ void RenderList::refresh()
     repaint();
 }
 
+void RenderList::setCompact (bool shouldBeCompact)
+{
+    if (compact_ == shouldBeCompact)
+        return;
+
+    compact_ = shouldBeCompact;
+    scrollY_ = 0;      // a one-row view that remembered a scroll would show nothing
+
+    layOutRows();
+    repaint();
+}
+
 void RenderList::setPlayingFile (const juce::String& fileName)
 {
     if (playingFile_ == fileName)
@@ -112,6 +124,29 @@ void RenderList::layOutRows()
 {
     const int w = juce::jmax (0, getWidth() - kPad * 2);
     int y = kPad;
+
+    // Compact is ONE row, the newest, filling the band. Laying the rest out
+    // below would put them past the bottom edge where paint() skips them but
+    // rowAt() would still match -- an invisible row that answers to a drag.
+    if (compact_)
+    {
+        for (size_t i = 0; i < rows_.size(); ++i)
+        {
+            auto& r = rows_[i];
+
+            if (i > 0) { r.bounds = {}; r.play = {}; r.del = {}; continue; }
+
+            const int h = juce::jmax (kRowH, getHeight() - kPad);
+            r.bounds = { kPad, kPad / 2, w, h - kPad / 2 };
+
+            const int cy = r.bounds.getCentreY() - kBtnH / 2;
+
+            r.del  = { kPad + w - kPad - kBtnW,        cy, kBtnW, kBtnH };
+            r.play = { r.del.getX() - kRowGap - kBtnW, cy, kBtnW, kBtnH };
+        }
+
+        return;
+    }
 
     for (auto& r : rows_)
     {
@@ -145,7 +180,8 @@ int RenderList::rowAt (juce::Point<int> p) const
     const auto inList = p.translated (0, scrollY_);
 
     for (int i = 0; i < (int) rows_.size(); ++i)
-        if (rows_[(size_t) i].bounds.contains (inList))
+        if (! rows_[(size_t) i].bounds.isEmpty()
+            && rows_[(size_t) i].bounds.contains (inList))
             return i;
 
     return -1;
@@ -159,6 +195,11 @@ void RenderList::paint (juce::Graphics& g)
 
     if (rows_.empty())
     {
+        // The editor declines to show this at all when compact and empty, so
+        // this paragraph is only ever the Sounds tab's empty state.
+        if (compact_)
+            return;
+
         g.setColour (toColour (textMuted));
         g.setFont (juce::FontOptions (13.0f));
         g.drawFittedText ("Sounds you take land here, ready to drag into your DAW.\n\n"
@@ -170,6 +211,10 @@ void RenderList::paint (juce::Graphics& g)
     for (int i = 0; i < (int) rows_.size(); ++i)
     {
         const auto& r = rows_[(size_t) i];
+
+        if (r.bounds.isEmpty())
+            continue;   // compact mode zeroes every row but the newest
+
         const auto box = r.bounds.translated (0, -scrollY_);
 
         if (! box.intersects (getLocalBounds()))
@@ -411,6 +456,9 @@ void RenderList::mouseUp (const juce::MouseEvent&) { dragging_ = false; }
 void RenderList::mouseWheelMove (const juce::MouseEvent&,
                                  const juce::MouseWheelDetails& wheel)
 {
+    if (compact_)
+        return;
+
     const int before = scrollY_;
 
     scrollY_ -= juce::roundToInt (wheel.deltaY * (float) (kRowH + kRowGap) * 3.0f);

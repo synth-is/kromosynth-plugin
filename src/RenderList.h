@@ -78,6 +78,29 @@ public:
     */
     std::function<void()> onContentsChanged;
 
+    /** Height of the one-row handle. The editor reserves exactly this. */
+    static constexpr int kCompactH = 42;
+
+    /** True when there is nothing to show, so the editor can decline to
+        reserve any height at all before the first take.
+    */
+    bool isEmpty() const { return rows_.empty(); }
+
+    /** One row (the newest) instead of the whole list.
+
+        THE ANSWER TO A GAP I MADE. Deleting the old full-width gutter left no
+        way to drag a sound you had just taken while still browsing the Feed or
+        the Garden -- you had to navigate to Library > Sounds first, which is
+        friction in the commonest case of all: take a sound, put it on the
+        timeline.
+
+        The same component rather than a second one, so the drag, the grip, the
+        cursor and the outbox reading are shared. A separate handle class would
+        have been a second reader of the same folder, which RenderOutbox::list
+        exists to prevent.
+    */
+    void setCompact (bool shouldBeCompact);
+
     /** Re-reads the outbox. Called on construction, after a delete, and by the
         timer when the outbox stamp moves.
     */
@@ -122,6 +145,7 @@ private:
 
     std::vector<Row> rows_;
     juce::String playingFile_;
+    bool compact_ = false;
 
     int scrollY_ = 0;
     int hoveredRow_ = -1;

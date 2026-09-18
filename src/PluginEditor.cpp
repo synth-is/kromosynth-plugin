@@ -1049,6 +1049,28 @@ void KromosynthAudioProcessorEditor::resized()
         // which made moving between surfaces a full-view mode change rather
         // than a change of content. Both are gone: the chrome is in the shell's
         // own rectangle and cannot go out of step with it.
+       #if ! JUCE_IOS
+        // THE ONE-ROW HANDLE, reserved off the bottom BEFORE the shell/site
+        // split, so both of those shrink to accommodate it rather than being
+        // overlapped by it -- a native component over a webview is invisible
+        // (juce_NSViewComponent.h), which is the constraint the whole design
+        // turns on.
+        //
+        // Only while the site is up, and only once something has been taken.
+        // Browsing is exactly when you cannot reach Library > Sounds without
+        // navigating away, and deleting the old gutter left that case with no
+        // way to drag at all. Before the first take it costs no height.
+        bool compactHandle = false;
+
+        if (renderList_ != nullptr)
+        {
+            compactHandle = siteVisible_ && ! renderList_->isEmpty();
+
+            if (compactHandle)
+                renderList_->setBounds (bounds.removeFromBottom (RenderList::kCompactH));
+        }
+       #endif
+
         auto shellArea = bounds;
         auto siteArea  = bounds;
 
@@ -1070,11 +1092,15 @@ void KromosynthAudioProcessorEditor::resized()
         // record of trying the alternative and finding why not.
         if (renderList_ != nullptr)
         {
-            const bool show = soundsVisible_ && ! siteVisible_;
+            const bool sounds = soundsVisible_ && ! siteVisible_;
 
-            renderList_->setVisible (show);
+            renderList_->setVisible (sounds || compactHandle);
 
-            if (show)
+            // Compact only when it is the handle. The Sounds tab wants the
+            // whole list, and setCompact is a no-op when the state matches.
+            renderList_->setCompact (compactHandle && ! sounds);
+
+            if (sounds)
             {
                 shellArea = bounds.withHeight (stripHeight_);
                 renderList_->setBounds (bounds.withTrimmedTop (stripHeight_));
