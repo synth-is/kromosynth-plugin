@@ -1518,6 +1518,8 @@ function fmtBytes (b) {
 function stopPlayback () {
   if (audio) { audio.pause(); audio.currentTime = 0; }
   playingFile = null;
+
+  if (backend) call('renderPlaying', '').catch(function () {});
   Array.prototype.forEach.call(
     document.querySelectorAll('.rrow button.rplay'),
     function (b) { b.classList.remove('on'); b.textContent = 'Play'; }
@@ -1525,6 +1527,9 @@ function stopPlayback () {
 }
 
 function playRender (file, button) {
+  // button is optional: a play request arriving from the NATIVE list has no
+  // HTML button behind it, and the row it lights up lives on the other side of
+  // the bridge.
   // Toggling the row that is already sounding stops it, which is what a second
   // press of a play button means to everyone.
   if (playingFile === file) { stopPlayback(); return; }
@@ -1548,8 +1553,14 @@ function playRender (file, button) {
   audio.src = '/render/' + encodeURIComponent(file);
   playingFile = file;
 
-  button.classList.add('on');
-  button.textContent = 'Stop';
+  if (button) {
+    button.classList.add('on');
+    button.textContent = 'Stop';
+  }
+
+  // Reported rather than assumed, so a file that fails to load leaves the
+  // native row unlit instead of showing a Stop button for silence.
+  call('renderPlaying', file).catch(function () {});
 
   audio.play().catch(function () { stopPlayback(); });
 }
@@ -1676,6 +1687,13 @@ function setLibraryView (view) {
 
   if (sounds) refreshRenders();
 
+  // TELLS C++, which is what makes the native list appear. On desktop the
+  // editor shrinks the shell to its strip and gives the body to RenderList,
+  // whose rows can be dragged into a DAW -- an HTML row cannot be (C43). On
+  // iOS this is a no-op and the section below stays on screen instead, which
+  // is right: there is no drag on iOS to be had.
+  call('soundsView', sounds).catch(function () { /* older binary */ });
+
   reportChromeHeight();
 }
 
@@ -1687,6 +1705,31 @@ Array.prototype.forEach.call(
     });
   }
 );
+
+// ── What C++ asks the page for ──────────────────────────────────────────────
+//
+// The native Sounds list cannot play a file itself without its own
+// AudioDeviceManager, and routing a preview through the processor would drop it
+// into the host's signal chain and get it recorded if the transport is rolling.
+// So it asks here, and WebAudio reaches the system output exactly as the site's
+// feed play button already does inside the plugin.
+if (backend) {
+  backend.addEventListener('playRender', function (file) {
+    const name = typeof file === 'string' ? file : '';
+
+    if (!name) { stopPlayback(); return; }
+
+    // No button: the row that will light up is the native one, and it learns
+    // about it from the renderPlaying call inside playRender.
+    playRender(name, null);
+  });
+
+  // The folder changed under the native list -- a delete there, or a take
+  // landing while it is open. Only this page owns the Sounds badge.
+  backend.addEventListener('rendersChanged', function () {
+    refreshRenders();
+  });
+}
 
 document.getElementById('rreveal').addEventListener('click', function () {
   call('revealRenders').catch(function () {});

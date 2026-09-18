@@ -714,6 +714,41 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             navigateSiteTo (path);
             done (juce::var (true));
         })
+        .withNativeFunction ("soundsView",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // WHICH SUB-TAB OWNS THE BODY. Only the page knows, so only the
+            // page can say. On iOS there is no RenderList -- drag does not
+            // exist there and the class compiles out -- so this is a no-op and
+            // the page's own HTML list stays visible in the body. Desktop
+            // shrinks the shell to its strip and hands the rest to the native
+            // list, which is the only way those rows can be draggable.
+            const bool on = args.size() > 0 && (bool) args[0];
+
+            if (on != soundsVisible_)
+            {
+                soundsVisible_ = on;
+                resized();
+                proc_.logEvent (juce::String ("sounds_view=") + (on ? "1" : "0"));
+            }
+
+            done (juce::var (true));
+        })
+        .withNativeFunction ("renderPlaying",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // The page owns the audio, so it reports what is actually sounding
+            // rather than the list assuming its own button press worked. A
+            // file that failed to load leaves the row unlit, which is correct.
+           #if ! JUCE_IOS
+            if (renderList_ != nullptr)
+                renderList_->setPlayingFile (args.size() > 0 ? args[0].toString() : juce::String());
+           #endif
+
+            done (juce::var (true));
+        })
         .withNativeFunction ("revealRenders",
                              [] (const juce::Array<juce::var>&,
                                  juce::WebBrowserComponent::NativeFunctionCompletion done)
@@ -907,11 +942,11 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     setSize (safeArea.getWidth(), safeArea.getHeight());
 #else
     setResizable (true, true);
-    // Lower bound raised by the gutter's height, so the minimum window still
-    // leaves 400 points for the webviews rather than 342. A minimum that
-    // silently means something different after a strip is added is how a
-    // layout collapse gets absorbed instead of seen.
-    setResizeLimits (640, 400 + RenderGutter::kHeight, 3840, 2400);
+    // Back to a plain 400 now that nothing is reserved at the bottom. The
+    // gutter's height used to be added here so the minimum window still left
+    // 400 points for the webviews; the Sounds list takes the body instead of a
+    // slice of it, so there is nothing to compensate for.
+    setResizeLimits (640, 400, 3840, 2400);
     setSize (1280, 800);
 #endif
 
@@ -919,9 +954,29 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     // Constructed before the browsers, so the first resized() already has it
     // and no frame is laid out with the gutter's rectangle handed to a webview
     // that would then have to give it back.
-    gutter_ = std::make_unique<RenderGutter>();
-    gutter_->onLog = [this] (const juce::String& line) { proc_.logEvent (line); };
-    addAndMakeVisible (*gutter_);
+    renderList_ = std::make_unique<RenderList>();
+    renderList_->onLog = [this] (const juce::String& line) { proc_.logEvent (line); };
+
+    // Playback belongs to the page: WebAudio reaches the system output, whereas
+    // routing a preview through the processor would drop it into the host's
+    // signal chain and get it recorded if the transport is rolling.
+    renderList_->onPlayRequest = [this] (const juce::String& file)
+    {
+        if (browser_ != nullptr)
+            browser_->emitEventIfBrowserIsVisible ("playRender", juce::var (file));
+    };
+
+    // The Sounds badge lives in the page's sub-tab row, so the page has to hear
+    // about a delete here or a take landing while the list is open.
+    renderList_->onContentsChanged = [this]
+    {
+        if (browser_ != nullptr)
+            browser_->emitEventIfBrowserIsVisible ("rendersChanged", juce::var (true));
+    };
+
+    // NOT addAndMakeVisible: invisible until the Sounds sub-tab asks for it, so
+    // it costs nothing on every other tab.
+    addChildComponent (*renderList_);
 #endif
 
 
@@ -980,16 +1035,6 @@ void KromosynthAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
 
-   #if ! JUCE_IOS
-    // TAKEN OFF THE TOP OF THE FUNCTION, before either webview is placed, and
-    // that ordering is the whole reason the strip is visible at all. A native
-    // webview composites above JUCE's rendering regardless of z-order
-    // (juce_NSViewComponent.h: "it'll obliterate any JUCE components that may
-    // overlap this component"), so the only way to own pixels next to one is
-    // to own a rectangle it was never given.
-    if (gutter_ != nullptr)
-        gutter_->setBounds (bounds.removeFromBottom (RenderGutter::kHeight));
-   #endif
 
     if (browser_ != nullptr)
     {
@@ -1012,6 +1057,30 @@ void KromosynthAudioProcessorEditor::resized()
             shellArea = bounds.withHeight (stripHeight_);
             siteArea  = bounds.withTrimmedTop (stripHeight_);
         }
+
+       #if ! JUCE_IOS
+        // THE SAME MOVE AS siteVisible_, with a native component in the
+        // remainder. The shell keeps its strip -- the chrome and the sub-tabs
+        // live in that document -- and the list gets everything below.
+        //
+        // Non-overlapping is the whole point: a native webview composites above
+        // JUCE's rendering regardless of z-order (juce_NSViewComponent.h: "it'll
+        // obliterate any JUCE components that may overlap this component"), so
+        // the list can only own pixels the browser was never given. C45 is the
+        // record of trying the alternative and finding why not.
+        if (renderList_ != nullptr)
+        {
+            const bool show = soundsVisible_ && ! siteVisible_;
+
+            renderList_->setVisible (show);
+
+            if (show)
+            {
+                shellArea = bounds.withHeight (stripHeight_);
+                renderList_->setBounds (bounds.withTrimmedTop (stripHeight_));
+            }
+        }
+       #endif
 
         auto area = shellArea;
 

@@ -210,8 +210,8 @@ target_sources(KromosynthPlugin PRIVATE
     AcquisitionRunner.h
     RenderOutbox.cpp
     RenderOutbox.h
-    RenderGutter.cpp
-    RenderGutter.h
+    RenderList.cpp
+    RenderList.h
     ShellPage.h
 )
 

@@ -133,9 +133,9 @@ struct Entry
     card cannot see the disk, so it can only guess, and both the existing
     markers do exactly that.
 
-    RenderGutter still scans the directory itself. Folding it onto this is worth
-    doing so there is one reader of the outbox rather than two, and is left for
-    when that file has no uncommitted work in it.
+    RenderList is now the only other reader, and it calls this rather than
+    scanning the directory itself -- so there is one answer about what has been
+    delivered, shared by the native list and by the page's Sounds badge.
 
     @param max  hard cap, so a folder that has grown for months cannot make the
                 page slow. Newest first is what makes a cap acceptable.

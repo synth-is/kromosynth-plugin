@@ -15,11 +15,9 @@ constexpr const char* kStagingName = ".incoming";
 
 /** Newest first, for juce::Array::sort.
 
-    RenderGutter.cpp has an identical one in its own anonymous namespace. That
-    duplication is deliberate for now rather than overlooked: the gutter still
-    scans the directory itself, and folding it onto list() means editing a file
-    with uncommitted work in it. Worth doing once that has landed, so there is
-    one reader of the outbox rather than two that can come to disagree.
+    The only one now. RenderGutter used to keep an identical copy because it
+    scanned the directory itself; RenderList calls list() instead, so the
+    ordering and the reading both live here.
 */
 struct ByNewestFirst
 {

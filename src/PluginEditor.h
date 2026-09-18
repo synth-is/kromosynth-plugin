@@ -16,7 +16,7 @@
 #include "AuthSentinel.h"
 // Desktop only inside, and it declares nothing on iOS. See the header for why
 // that is the platform's decision rather than ours.
-#include "RenderGutter.h"
+#include "RenderList.h"
 // For kStripHeight, which seeds stripHeight_ below. The page owns that number;
 // this header only needs its fallback.
 #include "ShellPage.h"
@@ -169,13 +169,23 @@ private:
         NATIVE, because WebKit will not put a usable local-file reference on
         the drag pasteboard from a remote origin, and a SEPARATE RECTANGLE,
         because a native webview obliterates anything drawn over it. Both
-        measured; both recorded in RenderGutter.h.
+        measured; both recorded in RenderList.h and C45.
 
         Desktop only: performExternalDragDropOfFiles is `jassertfalse` on iOS,
         where the delivery route is the Files placement instead.
     */
-    std::unique_ptr<RenderGutter> gutter_;
+    std::unique_ptr<RenderList> renderList_;
    #endif
+
+    /** Whether the Library's Sounds sub-tab owns the body.
+
+        Set from the page, which is the only thing that knows which sub-tab is
+        showing. Drives the same shrink-the-shell-to-its-strip move that
+        siteVisible_ does, with a native component in the remainder instead of
+        a second webview -- see RenderList.h on why that list has to be native
+        and why non-overlapping matters.
+    */
+    bool soundsVisible_ = false;
 
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KromosynthAudioProcessorEditor)
