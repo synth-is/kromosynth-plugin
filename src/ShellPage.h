@@ -556,6 +556,20 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   body.strip > :not(nav#chrome) { display: none; }
 
   /* ── Library sub-tabs ──────────────────────────────────────────────── */
+
+  /* STRIP MODE HIDES THEM, and it takes an explicit rule to do it.
+     body.strip hides `> :not(nav#chrome)`, and these live INSIDE nav#chrome --
+     the one element strip mode keeps, because the chrome is in that document.
+     So the sub-tabs stayed on screen while the site owned the body, offering to
+     switch between two halves of a Library that was not showing. Björn saw them
+     over the Feed.
+     The comment beside the markup claimed they were "hidden in strip mode with
+     everything else". They were not. Fixed here rather than by editing the
+     claim, because the claim was the right intent.
+     nav#chrome is observed on its BORDER box, so losing this row changes the
+     reported chrome height on its own and C++ resizes the strip to match. */
+  body.strip nav#chrome .subtabs { display: none; }
+
   nav#chrome .subtabs {
     display: flex; gap: 4px; padding: 4px 8px 6px;
     border-top: 1px solid var(--border-subtle);
@@ -674,8 +688,9 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
        device. The collision is real and the site tab is the one to reconsider;
        these two are named for what they are inside a library.
 
-       Hidden in strip mode with everything else, since the site owns the body
-       then and there is nothing local on screen to sub-divide. -->
+       Hidden in strip mode by an explicit rule in the stylesheet -- NOT by
+       body.strip's `> :not(nav#chrome)`, which keeps this element along with
+       the rest of the chrome. See the rule for what that cost. -->
   <div class="subtabs">
     <button class="sub current" data-view="instruments">Instruments</button>
     <button class="sub" data-view="sounds">Sounds<span class="badge" id="subcount"></span></button>

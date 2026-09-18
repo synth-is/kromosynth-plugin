@@ -199,10 +199,27 @@ void RenderList::paint (juce::Graphics& g)
 
         const int metaW = meta.isEmpty() ? 0 : 108;
 
+        // A GRIP, because nothing else says these rows are draggable. Björn:
+        // "would be nice to have some visual indicator that the Sounds rows can
+        // be dragged". Two columns of dots is the convention for a drag handle
+        // and costs no vertical space; the cursor change in mouseMove confirms
+        // it on hover. The whole row is the drag source, not just the grip --
+        // this only advertises.
+        {
+            g.setColour (toColour (hot ? textBody : textMuted));
+
+            const int gx = box.getX() + 10;
+            const int gy = box.getCentreY() - 5;
+
+            for (int dx = 0; dx < 2; ++dx)
+                for (int dy = 0; dy < 3; ++dy)
+                    g.fillRect (gx + dx * 4, gy + dy * 5, 2, 2);
+        }
+
         g.setColour (toColour (textPrimary));
         g.setFont (juce::FontOptions (13.0f));
         g.drawText (r.entry.name,
-                    box.withTrimmedLeft (10)
+                    box.withTrimmedLeft (24)
                        .withTrimmedRight (box.getRight() - playBox.getX() + metaW + 10),
                     juce::Justification::centredLeft, true);
 
@@ -245,6 +262,23 @@ void RenderList::mouseMove (const juce::MouseEvent& e)
         hoveredRow_ = hit;
         repaint();
     }
+
+    // The cursor is the other half of the affordance: an open hand over the
+    // row body says "this can be picked up", and the normal pointer over Play
+    // and Delete says those are buttons rather than a way to start a drag --
+    // which matters because mouseDrag refuses to begin one from them.
+    bool draggable = false;
+
+    if (hit >= 0)
+    {
+        const auto& r = rows_[(size_t) hit];
+        const auto p = e.getPosition().translated (0, scrollY_);
+
+        draggable = ! r.play.contains (p) && ! r.del.contains (p);
+    }
+
+    setMouseCursor (draggable ? juce::MouseCursor::DraggingHandCursor
+                              : juce::MouseCursor::NormalCursor);
 }
 
 void RenderList::mouseExit (const juce::MouseEvent&)
