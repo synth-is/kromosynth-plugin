@@ -32,14 +32,6 @@ option(KROMOSYNTH_BUILD_FAUST    "Build the wasmtime Faust engine (Stage 2)" OFF
 option(KROMOSYNTH_WASM3          "Use the wasm3 interpreter for the Faust engine" OFF)
 option(KROMOSYNTH_WEBVIEW_PROBE  "Inject the Stage 0 environment probe JS"  ON)
 
-# THROWAWAY, and OFF so it cannot ship by accident. Answers whether a native
-# component can float OVER the webview in its own window, which is the only
-# route left to a drag handle that does not cost a full-width band across the
-# bottom of the editor -- a webview is one rectangle and cannot have a corner
-# cut out of it, and C43 measured that WebKit will never make an HTML row
-# draggable. Delete src/FloatingDragProbe.h and this option together once the
-# question is settled either way.
-option(KROMOSYNTH_FLOAT_PROBE    "Float a native drag handle over the webview (probe)"  OFF)
 
 # How long after page load the probe fires. Default 3000 ms is enough for React
 # to mount.

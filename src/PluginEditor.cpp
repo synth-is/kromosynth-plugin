@@ -924,15 +924,6 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     addAndMakeVisible (*gutter_);
 #endif
 
-#if KROMOSYNTH_FLOAT_PROBE && ! JUCE_IOS
-    // Last, so that if it throws or misbehaves during construction the rest of
-    // the editor is already up and the plugin is still usable. A probe that can
-    // take the window down with it measures nothing.
-    floatProbe_ = std::make_unique<FloatingDragProbe> (
-        *this, [this] (const juce::String& line) { proc_.logEvent (line); });
-
-    proc_.logEvent ("float_probe_enabled");
-#endif
 
 #if ! KROMOSYNTH_EDITOR_STUB
     // The shell, not the site. The site is a second component with native

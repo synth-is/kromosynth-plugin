@@ -48,6 +48,100 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C45. A NATIVE HANDLE CAN FLOAT OVER THE WEBVIEW, and we are not going to (2026-09-17)
+
+Probe: `src/FloatingDragProbe.h`, behind `KROMOSYNTH_FLOAT_PROBE`, deleted in the
+same commit as this entry. Everything below was measured by Björn in Reaper on
+macOS.
+
+## Why it was asked
+
+Every route to dragging a render out of this plugin hits one wall, which JUCE
+states in `juce_NSViewComponent.h`: a native view "will obliterate any JUCE
+components that may overlap this component, but that's life". So a drag handle
+cannot be drawn over the browser, and a webview is a single rectangle that
+cannot have a corner cut out of it -- which forced either a full-width band
+across the bottom, or a handle in its **own window**, where a separate NSWindow
+composites above the webview rather than under it.
+
+Two things rode on the answer: whether a corner panel was possible at all, and
+whether a native list could **overlay** the page rather than replace it, which
+would let any historical take be dragged directly.
+
+## What it established
+
+| | |
+|---|---|
+| Stays in the corner through resizes | **yes** |
+| Hides when the plugin loses focus | **yes** (`isForegroundProcess()` + `isShowing()`) |
+| Floats over other applications | **no** — the guard holds |
+| **Drag from the floating window onto a Reaper track** | **YES** |
+| Tracks a host window being moved | only by polling, and visibly less smoothly than a resize |
+| Survives a host clipping the editor | **NO** |
+
+The drag is the load-bearing positive and the reason the probe was worth
+building. `getNSViewForDragEvent` takes `sourceComp->getWindowHandle()`, which
+for a desktop component is its own NSView -- a different view, in a different
+window, from the one the DAW knows about. Whether a drag started there reaches
+the host was not answerable from the source, and it does.
+
+## The two gaps, and why one of them decided it
+
+**Window moves are not reported.** When the host window is dragged, no JUCE
+component's bounds change; the peer moves. `getScreenBounds()` returns something
+new and nothing announces it, so position can only be polled. At 12 Hz that is
+noticeably less smooth than a resize, and no rate makes a guess into a
+notification.
+
+**A clipping host orphans the handle.** The editor has a minimum size, and a
+host that lets its window get narrower than that CLIPS the editor rather than
+resizing it -- and does not tell JUCE. The editor's bounds still describe its
+full size; `ComponentPeer::getBounds()` is documented as relative to the parent
+window when nested, so it cannot be intersected against; the only route to the
+truth is the native view's frame through `getNativeHandle()`. So the handle
+lands outside the visible window, over the host's own UI. Clamping to the
+display stops it leaving the screen and cannot put it back inside the window.
+
+## Decision: not floating
+
+A **native list in the Library's Sounds sub-tab** gets the same direct drag with
+none of this. The shell webview is already two parts -- a strip whose height the
+page reports, and a body -- and `showSite` already shrinks it to the strip and
+lets something else fill the body. A native list is that mechanism with a
+component instead of a second webview: non-overlapping, same window, so no
+polling, no focus guard, no clipping orphan, no lag, and zero height cost on
+every other tab.
+
+Preview still costs nothing. The native list sends a file name to the page via
+`emitEventIfBrowserIsVisible` and the page plays `/render/<file>.wav` with
+WebAudio to the system output. **Native for drag, page for playback** -- neither
+doing the other's job, and no `AudioDeviceManager`.
+
+## Recorded because I was wrong twice inside one probe
+
+**I replaced the poll with `ComponentMovementWatcher` and called the original
+reasoning an unnecessary hedge.** The poll existed because a plugin editor is
+reparented into a window it does not own and cannot rely on callbacks. Björn
+then reported that resizes tracked better and moves no longer tracked at all.
+The hedge was covering a real case; the watcher is better at what it covers and
+blind to exactly what the poll was for. Both are needed, which is what the file
+ended up doing.
+
+**I proposed per-row floating handles** for the list before thinking it through.
+That is one window per visible take, each tracking independently, each needing
+its own focus guard, all scroll-synced to an HTML list they cannot see -- which
+would require the page to report every row's position on every frame. Björn
+asked "are we thinking about multiple orange things", and the question was the
+refutation.
+
+## Untested, and left untested deliberately
+
+A second plugin instance, and any host other than Reaper. Once the decision is
+not to float, those cost effort to learn something we will not use. Noted so
+that a future reader does not mistake absence for a pass.
+
+---
+
 # C44. RE-RENDERING RETURNS THE SOUND; DURATION AND PITCH DO NOT (2026-09-16)
 
 Measured because the pricing rule "re-rendering a form you own is free,
