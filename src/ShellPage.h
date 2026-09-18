@@ -217,25 +217,12 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   .rrow button.rdel:hover { color: var(--danger); border-color: var(--danger); }
   .rrow button.rplay.on { color: var(--accent); border-color: var(--accent); }
 
-  /* GARAGEBAND'S 736x242, where putting this section above the instruments is
-     actively wrong rather than merely tight.
-
-     MEASURED in tools/shell-preview at 736x242: the whole viewport was nav,
-     header, toolbar, this heading and one and a half rows, with ZERO
-     instruments visible. Above is right at normal heights -- fifty-three
-     instruments would otherwise push a four-row list off the top -- and the
-     reverse at letterbox height. The reasoning that produced "above" simply
-     did not survive being looked at.
-
-     The rows collapse and the heading stays, so the count is still there and
-     Reveal folder still works. The instrument list is what the page exists
-     for, and on iOS a render cannot be dragged anywhere anyway, which makes
-     these the half that yields. */
-  @media (max-height: 340px) {
-    #rlist { display: none; }
-    #rendersec { margin-bottom: 6px; }
-    #rendersec .subhead { padding: 0 4px 3px; }
-  }
+  /* No longer needed, and removed rather than left inert: sounds and
+     instruments are separate sub-tabs now, so at letterbox height the Sounds
+     tab shows sounds and nothing competes with them. The rule that collapsed
+     the rows existed because the section sat ABOVE the instrument list and
+     pushed it off a 242pt window entirely -- measured in tools/shell-preview,
+     and the reason the sub-tabs are a better answer than the media query was. */
   /* The spectrogram sits BEHIND the list, not beside it. It is context for the
      loaded instrument, not a control, and anything that took vertical space
      away from the list would be paying for decoration with the thing the page
@@ -567,6 +554,41 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
      would drag the instrument list up into the chrome. */
   body.strip { height: auto; overflow: hidden; }
   body.strip > :not(nav#chrome) { display: none; }
+
+  /* ── Library sub-tabs ──────────────────────────────────────────────── */
+  nav#chrome .subtabs {
+    display: flex; gap: 4px; padding: 4px 8px 6px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  nav#chrome .subtabs .sub {
+    display: flex; align-items: center; gap: 5px;
+    background: transparent; color: var(--text-muted);
+    border: 1px solid transparent; border-radius: 6px;
+    padding: 3px 10px; font-size: 12px; cursor: pointer;
+  }
+  nav#chrome .subtabs .sub:hover { color: var(--text-body); }
+  nav#chrome .subtabs .sub.current {
+    color: var(--text-primary);
+    background: var(--accent-surface);
+    border-color: var(--accent);
+  }
+  nav#chrome .subtabs .badge {
+    font-size: 10px; color: var(--text-muted);
+    background: var(--border-subtle); border-radius: 8px;
+    padding: 0 5px; min-width: 14px; text-align: center;
+  }
+  nav#chrome .subtabs .sub.current .badge { color: var(--text-body); }
+  /* Empty badge takes no room, so "Sounds" does not sit beside a stray pill
+     before the first take. */
+  nav#chrome .subtabs .badge:empty { display: none; }
+
+  /* Which half of the Library is on screen. One class on <body> rather than
+     toggling four elements, so there is one place the state lives. */
+  body.sounds header,
+  body.sounds .toolbar,
+  body.sounds #list,
+  body.sounds #spectro { display: none; }
+  body:not(.sounds) #rendersec { display: none; }
 </style>
 </head>
 <body>
@@ -636,6 +658,28 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     <button class="acct" id="acct" hidden><span id="acctdot"></span><span id="acctlbl"></span></button>
   </div>
   <div class="line"><span id="navline"></span><span id="navload"></span></div>
+
+  <!-- SUB-TABS, inside the Library. Instruments are what you play from MIDI;
+       sounds are what you drag into a timeline. Different actions, so they are
+       siblings here rather than one interleaved list where alternating rows
+       behave completely differently.
+
+       INSIDE nav#chrome deliberately: chromeHeight() measures that element's
+       bounding rect, so a row added here is accounted for with no change to
+       the reporting at either end. Putting it below the nav would have meant
+       teaching C++ about a second measured element.
+
+       NAMING: "Instruments" also names a TOP-LEVEL tab, which is the site's
+       /instruments -- the account's rendered instruments, not what is on this
+       device. The collision is real and the site tab is the one to reconsider;
+       these two are named for what they are inside a library.
+
+       Hidden in strip mode with everything else, since the site owns the body
+       then and there is nothing local on screen to sub-divide. -->
+  <div class="subtabs">
+    <button class="sub current" data-view="instruments">Instruments</button>
+    <button class="sub" data-view="sounds">Sounds<span class="badge" id="subcount"></span></button>
+  </div>
 </nav>
 
 <header>
@@ -676,9 +720,11 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
        Hidden entirely until the first take, so it costs no height for anyone
        who has not used the feature. -->
   <section id="rendersec" hidden>
+    <!-- No heading and no count: the sub-tab above reads "Sounds 4", and a
+         second "SOUNDS YOU HAVE TAKEN  4 sounds" directly beneath it said the
+         same thing twice. The row survives to carry Reveal folder, which is
+         the escape hatch that works whatever the list and the drag do. -->
     <div class="subhead">
-      <h2>Sounds you have taken</h2>
-      <span class="count" id="rcount"></span>
       <button id="rreveal">Reveal folder</button>
     </div>
     <div id="rlist"></div>
@@ -1522,15 +1568,10 @@ function renderRenders () {
 
   sec.hidden = false;
 
-  // The count carries the whole section under @media (max-height: 340px),
-  // where the rows are collapsed to give a letterboxed window back to the
-  // instrument list. Hence the hint: at that size this line and Reveal folder
-  // are the only things left.
-  const rcount = document.getElementById('rcount');
-  rcount.textContent =
-    renderRows.length + (renderRows.length === 1 ? ' sound' : ' sounds');
-  rcount.title = 'Taken into this plugin. Make the window taller to see them '
-                 + 'listed, or use Reveal folder.';
+  // The count lives in the sub-tab badge, set in refreshRenders. This section
+  // used to carry its own heading and count because it sat above the
+  // instrument list and had to name itself; a tab labelled "Sounds 4" does
+  // both, so repeating it here was saying the same thing twice.
 
   list.innerHTML = '';
 
@@ -1597,15 +1638,55 @@ function refreshRenders () {
       stopPlayback();
     }
 
+    // The badge on the Sounds sub-tab, which is the only place the count shows
+    // while the Instruments half is on screen.
+    const badge = document.getElementById('subcount');
+    if (badge) badge.textContent = renderRows.length ? String(renderRows.length) : '';
+
     renderRenders();
   }).catch(function () {
     // An older binary has no getRenders. Leaving the section hidden is the
-    // right outcome: the native strip still works, and a visible error about a
-    // missing bridge function helps nobody using it.
+    // right outcome: a visible error about a missing bridge function helps
+    // nobody using it.
     renderRows = [];
     renderRenders();
   });
 }
+
+// ── Library sub-tabs ─────────────────────────────────────────────────────
+//
+// One class on <body>, so the CSS decides what is on screen and this only
+// decides which class. Reporting the chrome height afterwards matters: the
+// sub-tab row lives inside nav#chrome, and C++ sizes the strip from what the
+// page reports -- a switch that changed the nav's height without saying so
+// would leave the strip the wrong size until the next resize.
+
+function setLibraryView (view) {
+  const sounds = view === 'sounds';
+
+  document.body.classList.toggle('sounds', sounds);
+
+  const subs = document.querySelectorAll('nav#chrome .subtabs .sub');
+  for (let i = 0; i < subs.length; i++)
+    subs[i].classList.toggle('current', subs[i].dataset.view === view);
+
+  // Playback is scoped to the view it started in. Leaving a sound running
+  // while its list is off screen means a stop button nobody can reach.
+  if (!sounds) stopPlayback();
+
+  if (sounds) refreshRenders();
+
+  reportChromeHeight();
+}
+
+Array.prototype.forEach.call(
+  document.querySelectorAll('nav#chrome .subtabs .sub'),
+  function (btn) {
+    btn.addEventListener('click', function () {
+      setLibraryView(btn.dataset.view);
+    });
+  }
+);
 
 document.getElementById('rreveal').addEventListener('click', function () {
   call('revealRenders').catch(function () {});
