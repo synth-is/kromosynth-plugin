@@ -63,6 +63,41 @@ void RenderGutter::say (const juce::String& line) const
         onLog (line);
 }
 
+namespace
+{
+
+/** The outbox's state, as one comparable number.
+ *
+ *  THE NEWEST WAV, NOT THE DIRECTORY'S MTIME, and the difference is not
+ *  cosmetic. A directory's mtime changes when ANY child changes -- including
+ *  Ableton writing its own `.asd` analysis sidecar next to a file we just
+ *  handed it. That produced a rescan two seconds after every successful drag
+ *  (visible as `renders_rescanned was=1 now=1` in the log): the gutter
+ *  reacting to Live reacting to the gutter.
+ *
+ *  Counting the wavs as well as timing them, so a deletion is noticed too --
+ *  removing a file can leave an older newest-mtime than before, which a
+ *  timestamp alone would read as "nothing happened".
+ */
+juce::int64 outboxStamp (const juce::File& dir)
+{
+    if (! dir.isDirectory())
+        return 0;
+
+    juce::Array<juce::File> files;
+    dir.findChildFiles (files, juce::File::findFiles, false, "*.wav");
+
+    juce::int64 newest = 0;
+    for (const auto& f : files)
+        newest = juce::jmax (newest, f.getLastModificationTime().toMilliseconds());
+
+    // Mixed into the low bits so a count change alone is a change. The wav
+    // count will never be large enough for this to collide meaningfully.
+    return newest * 1000 + (juce::int64) files.size();
+}
+
+} // namespace
+
 void RenderGutter::rescan()
 {
     entries_.clear();
@@ -89,7 +124,7 @@ void RenderGutter::rescan()
         }
     }
 
-    folderStamp_ = dir.isDirectory() ? dir.getLastModificationTime().toMilliseconds() : 0;
+    folderStamp_ = outboxStamp (dir);
 
     if (selected_ >= (int) entries_.size())
         selected_ = entries_.empty() ? -1 : 0;
@@ -102,10 +137,7 @@ void RenderGutter::rescan()
 
 void RenderGutter::timerCallback()
 {
-    const auto dir = kromosynth::renders::outbox();
-    const auto stamp = dir.isDirectory()
-                     ? dir.getLastModificationTime().toMilliseconds()
-                     : 0;
+    const auto stamp = outboxStamp (kromosynth::renders::outbox());
 
     if (stamp == folderStamp_)
         return;
