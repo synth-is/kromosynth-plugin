@@ -43,11 +43,20 @@
 // editor actually showing. Whether that is sufficient across hosts, spaces,
 // fullscreen and multiple displays is precisely what this probe is for.
 //
-// Tracked on a TIMER rather than from the editor's moved()/resized(). A plugin
-// editor is reparented into a host window it does not own and does not reliably
-// hear about being dragged around the screen. A probe that used the callbacks
-// would be measuring JUCE's notification coverage instead of the thing in
-// question.
+// Position is tracked by ComponentMovementWatcher, which is how JUCE keeps its
+// OWN NSViewComponents glued to a window -- so the handle should track as
+// tightly as the webview beside it does.
+//
+// It started on a 20 Hz timer, on the reasoning that a plugin editor is
+// reparented into a host window it does not own and does not reliably hear
+// about being dragged around the screen. Björn moved the Reaper window quickly
+// and reported the swatch lagging behind and then catching up: 50 ms of
+// visible drift, which is what polling buys you. The watcher listens to the
+// whole parent chain including peer changes, which is the case the timer was
+// hedging against, so the hedge was unnecessary AND worse.
+//
+// A slow timer remains for the two things no callback reports: the process
+// coming to or leaving the foreground, and a new take appearing in the outbox.
 
 #pragma once
 
@@ -58,6 +67,7 @@
 #include "RenderOutbox.h"
 
 class FloatingDragProbe final : public juce::Component,
+                                private juce::ComponentMovementWatcher,
                                 private juce::Timer
 {
 public:
@@ -66,7 +76,8 @@ public:
         @param log     where to report, so the probe needs no processor.
     */
     FloatingDragProbe (juce::Component& anchor, std::function<void (const juce::String&)> log)
-        : anchor_ (anchor), log_ (std::move (log))
+        : juce::ComponentMovementWatcher (&anchor),
+          anchor_ (anchor), log_ (std::move (log))
     {
         setSize (kWidth, kHeight);
 
@@ -75,7 +86,16 @@ public:
         setAlwaysOnTop (true);
         addToDesktop (juce::ComponentPeer::windowIsTemporary);
 
-        startTimerHz (20);
+        // 4 Hz, not 20. Position is the watcher's job now; this only notices
+        // the process changing foreground state and a new take landing, both of
+        // which are human-speed events.
+        startTimerHz (4);
+
+        // updateVisibility, not follow: a fresh Component is invisible until
+        // told otherwise and follow() declines to move a hidden window, so
+        // calling it here did nothing and the handle only appeared on the first
+        // tick a quarter of a second later.
+        updateVisibility();
 
         say ("float_probe_created");
     }
@@ -142,7 +162,47 @@ private:
             log_ (line);
     }
 
-    void timerCallback() override
+    /** Puts the handle on the anchor's bottom-right corner, in screen space.
+
+        Called from the watcher rather than a timer, so a window drag moves it
+        in the same pass that moves the editor instead of up to one tick later.
+    */
+    void follow()
+    {
+        if (! isVisible())
+            return;
+
+        const auto anchorBounds = anchor_.getScreenBounds();
+
+        // A zero-size anchor happens during teardown and while the editor is
+        // being reparented. Chasing it would park the handle at the top-left of
+        // the screen for a frame.
+        if (anchorBounds.isEmpty())
+            return;
+
+        setBounds (anchorBounds.getRight()  - kWidth  - kInset,
+                   anchorBounds.getBottom() - kHeight - kInset,
+                   kWidth, kHeight);
+    }
+
+    // ── ComponentMovementWatcher ─────────────────────────────────────────────
+
+    void componentMovedOrResized (bool, bool) override { follow(); }
+
+    /** The editor being reparented into a different host window, which is the
+        case the original timer was hedging against. Answered directly here.
+    */
+    void componentPeerChanged() override
+    {
+        say ("float_probe_peer_changed");
+        follow();
+    }
+
+    void componentVisibilityChanged() override { updateVisibility(); }
+
+    // ── Timer: only what no callback reports ─────────────────────────────────
+
+    void updateVisibility()
     {
         // ABUSE 3, attempted. An always-on-top window belongs to this process,
         // not to this plugin, so it will happily sit over Finder or a browser
@@ -151,35 +211,26 @@ private:
         const bool shouldShow = anchor_.isShowing()
                              && juce::Process::isForegroundProcess();
 
-        if (shouldShow != wasShowing_)
-        {
-            wasShowing_ = shouldShow;
-            setVisible (shouldShow);
-            say (juce::String ("float_probe_visible=") + (shouldShow ? "1" : "0"));
-        }
-
-        if (! shouldShow)
+        if (shouldShow == wasShowing_)
             return;
 
-        // ABUSES 1 AND 2. Screen coordinates, read fresh every tick, because
-        // the editor is reparented into a window this process does not own.
-        const auto anchorBounds = anchor_.getScreenBounds();
+        wasShowing_ = shouldShow;
+        setVisible (shouldShow);
 
-        const juce::Rectangle<int> target (
-            anchorBounds.getRight()  - kWidth  - kInset,
-            anchorBounds.getBottom() - kHeight - kInset,
-            kWidth, kHeight);
+        // Reposition on the way back in: the window may well have moved while
+        // the handle was hidden and taking no callbacks.
+        if (shouldShow)
+            follow();
 
-        if (target != getBounds())
-        {
-            setBounds (target);
+        say (juce::String ("float_probe_visible=") + (shouldShow ? "1" : "0"));
+    }
 
-            // Throttled: at 20 Hz a moving window would fill the log with
-            // thousands of lines and bury everything else in it.
-            if (++moveTicks_ % 20 == 1)
-                say ("float_probe_moved to=" + target.toString()
-                     + " anchor=" + anchorBounds.toString());
-        }
+    void timerCallback() override
+    {
+        updateVisibility();
+
+        if (! wasShowing_)
+            return;
 
         // Cheap: list(1) is one directory read, and the label only matters for
         // recognising which file a successful drop delivered.
@@ -201,7 +252,6 @@ private:
     juce::String label_;
     bool dragging_ = false;
     bool wasShowing_ = false;
-    int moveTicks_ = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FloatingDragProbe)
 };
