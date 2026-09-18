@@ -17,6 +17,9 @@
 // Desktop only inside, and it declares nothing on iOS. See the header for why
 // that is the platform's decision rather than ours.
 #include "RenderGutter.h"
+// THROWAWAY probe behind KROMOSYNTH_FLOAT_PROBE (default OFF). Its own header
+// compiles to nothing when the flag is off, so this include is unconditional.
+#include "FloatingDragProbe.h"
 // For kStripHeight, which seeds stripHeight_ below. The page owns that number;
 // this header only needs its fallback.
 #include "ShellPage.h"
@@ -175,6 +178,17 @@ private:
         where the delivery route is the Files placement instead.
     */
     std::unique_ptr<RenderGutter> gutter_;
+   #endif
+
+   #if KROMOSYNTH_FLOAT_PROBE && ! JUCE_IOS
+    /** Throwaway. See FloatingDragProbe.h for the question it answers.
+
+        Declared after gutter_ so it is DESTROYED FIRST: it reads the editor's
+        screen bounds on a timer, and an order that let the editor tear down
+        around a live timer would be a crash on window close rather than a
+        measurement.
+    */
+    std::unique_ptr<FloatingDragProbe> floatProbe_;
    #endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KromosynthAudioProcessorEditor)

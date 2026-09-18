@@ -212,6 +212,7 @@ target_sources(KromosynthPlugin PRIVATE
     RenderOutbox.h
     RenderGutter.cpp
     RenderGutter.h
+    FloatingDragProbe.h
     ShellPage.h
 )
 
@@ -292,6 +293,7 @@ target_compile_definitions(KromosynthPlugin PRIVATE
     # container resolvable, so on macOS this is a constant nothing looks up.
     KROMOSYNTH_APP_GROUP_ID="${KROMOSYNTH_APP_GROUP_ID}"
     KROMOSYNTH_WEBVIEW_PROBE=$<BOOL:${KROMOSYNTH_WEBVIEW_PROBE}>
+    KROMOSYNTH_FLOAT_PROBE=$<BOOL:${KROMOSYNTH_FLOAT_PROBE}>
     KROMOSYNTH_PROBE_DELAY_MS=${KROMOSYNTH_PROBE_DELAY_MS}
     KROMOSYNTH_EDITOR_STUB=$<BOOL:${KROMOSYNTH_EDITOR_STUB}>
     KROMOSYNTH_BROWSER_INSET=${KROMOSYNTH_BROWSER_INSET}
