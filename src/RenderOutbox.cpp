@@ -229,6 +229,32 @@ double wavSeconds (const juce::File& f)
     return (double) dataBytes / (double) byteRate;
 }
 
+/** The places a delivered render can be, in the order to look.
+
+    TWO on iOS in the container app, and that is the point. drain() MOVES files
+    out of the outbox into Documents/Renders, so a process that only reads the
+    outbox sees nothing after a drain -- which is exactly what happened: the
+    standalone app drained its own outbox at launch and then showed an empty
+    Sounds tab while the file sat in Files.app.
+
+    In the APPEX only the outbox resolves, because the container app's Documents
+    is a different sandbox. So the appex lists takes that have not been drained
+    yet, which is all it can see and all it needs to: it is where they are made.
+
+    On macOS the two are the same directory and the second is skipped.
+*/
+std::vector<juce::File> searchRoots()
+{
+    std::vector<juce::File> roots { outbox() };
+
+    const auto delivered = deliveredRoot();
+
+    if (delivered != outbox())
+        roots.push_back (delivered);
+
+    return roots;
+}
+
 juce::File resolve (const juce::String& fileName)
 {
     // Every rejection here is a name the page should never have produced, since
@@ -245,27 +271,38 @@ juce::File resolve (const juce::String& fileName)
         return {};
     }
 
-    const auto candidate = outbox().getChildFile (fileName);
+    // Both roots, because a name that came from list() may name a file the
+    // drain has already moved. Without this, Play and Delete worked in the
+    // appex and silently failed in the container app for the same sound.
+    for (const auto& root : searchRoots())
+    {
+        const auto candidate = root.getChildFile (fileName);
 
-    // Belt and braces against anything the checks above did not imagine: the
-    // resolved path must still be a direct child of the outbox.
-    if (candidate.getParentDirectory() != outbox())
-        return {};
+        // Belt and braces against anything the checks above did not imagine:
+        // the resolved path must still be a direct child of a root.
+        if (candidate.getParentDirectory() == root && candidate.existsAsFile())
+            return candidate;
+    }
 
-    return candidate;
+    return {};
 }
 
 std::vector<Entry> list (int max)
 {
     std::vector<Entry> out;
 
-    const auto dir = outbox();
-
-    if (! dir.isDirectory() || max <= 0)
+    if (max <= 0)
         return out;
 
+    // Every root, then sorted as one. Sorting per directory and concatenating
+    // would put all of one folder's files ahead of the other's regardless of
+    // age -- and after a drain the delivered folder holds everything OLD while
+    // the outbox holds the newest, so the list would come out backwards.
     juce::Array<juce::File> files;
-    dir.findChildFiles (files, juce::File::findFiles, false, "*.wav");
+
+    for (const auto& dir : searchRoots())
+        if (dir.isDirectory())
+            dir.findChildFiles (files, juce::File::findFiles, false, "*.wav");
 
     ByNewestFirst comparator;
     files.sort (comparator, true);
@@ -276,6 +313,16 @@ std::vector<Entry> list (int max)
             break;
 
         if (f.isHidden())
+            continue;
+
+        // A failed drain can leave the same name in both roots. Show it once:
+        // searchRoots puts the outbox first, but either copy plays and drags
+        // identically, so which one wins does not matter.
+        const auto name = f.getFileName();
+        const bool seen = std::any_of (out.begin(), out.end(),
+            [&name] (const Entry& e) { return e.file.getFileName() == name; });
+
+        if (seen)
             continue;
 
         Entry e;
