@@ -48,6 +48,94 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C46. THE DRAIN WORKS, AND THE CONTAINER APP COULD NOT SEE WHAT IT DRAINED (2026-09-19)
+
+C41 pre-registered this on 2026-09-15 and it had never been run. Measured on
+the phone, iPhone 13 Pro Max, AUM.
+
+## The pre-registered question: answered, yes
+
+Take a render in AUM, swipe Synth.is out of the app switcher, open it cold:
+`1G2WVT6P 4.0s G37QV`, 768 KB, appears in **Files → On My iPhone → Synth.is →
+Renders**.
+
+So the App Group outbox plus a cold-launch drain does deliver a render to a
+place Files.app and iOS DAWs can reach, which is the whole of what C41 asked.
+
+## The gap it exposed, which no desktop test could have
+
+The Sounds tab in the **standalone app was empty**, and Refresh could not help,
+while the file sat in Files.
+
+`drain()` MOVES files out of the outbox into `Documents/Renders` — deliberately,
+because a copy owes an answer to "what happens when the user deletes the one in
+Documents" and every answer to that is bad. But `list()` and `resolve()` only
+ever read the **outbox**. So the container app drained its own outbox at launch
+and then looked only in the folder it had just emptied.
+
+**Why it survived everything until the phone.** The appex is fine: AUM reads the
+outbox and the file is there until a drain. macOS has no drain at all, because
+`deliveredRoot()` and `outbox()` are the same directory. The bug existed only in
+the one process on the one platform that had never been tested.
+
+Fixed in `6e4ca1e`: both functions consider both roots via `searchRoots()`.
+
+| | sees |
+|---|---|
+| container app | outbox + `Documents/Renders` |
+| appex | outbox only — the other is a different sandbox |
+| macOS | one directory; the second is skipped |
+
+Two details that would each have been their own bug. Files are gathered from
+every root and sorted **once**: sorting per directory and concatenating would
+have put the list backwards after a drain, since the delivered folder holds
+everything old and the outbox holds the newest. And `resolve()` now requires the
+file to EXIST rather than merely be a legal child — without that, Play and Delete
+worked in the appex and failed silently in the container app for the same sound.
+
+Verified after the fix: the standalone app lists both takes newest-first, and
+Play works on the drained one.
+
+## THE REMAINING COST, stated plainly because it is not obvious
+
+**The appex's Sounds list is "takes since you last opened the app".** Its count
+shrinks when the user opens Synth.is, because the drain removes what it lists.
+Björn saw exactly this: `Sounds 1` in AUM against `Sounds 2` in the app.
+
+That is the sandbox and not a defect — the appex cannot read the container app's
+`Documents` — but it is a confusing thing to ship, and it is a cost of the drain
+rather than of the delivery.
+
+The options, none taken yet:
+
+- **Accept it.** The appex is where takes are made, so the recent ones are the
+  ones that matter there.
+- **Copy instead of move.** Restores the divergence question the move was chosen
+  to avoid, and doubles disk use.
+- **A File Provider extension**, which is the clean answer and removes the drain
+  entirely: the App Group folder itself becomes visible in Files, both processes
+  read one folder, and the two lists agree. Precedented — AudioShare does this.
+  It is a whole extra target, so it is a decision rather than a fix.
+
+## Also confirmed on the phone
+
+The Library sub-tabs work on iOS, the Sounds tab lists takes in both processes,
+and Play works through the `/render/<file>.wav` byte route — its first run on
+iOS. There is **no drag strip**, which is correct: `RenderList` compiles out on
+iOS because `performExternalDragDropOfFiles` is `jassertfalse` there.
+
+## Still unanswered, and it is a judgement rather than a measurement
+
+Whether the cold-launch staleness is tolerable **in use**. A render taken in AUM
+does not reach Files until Synth.is is next opened, and backgrounding is not
+enough. It works; whether it is annoying in the middle of real work is the
+question C41 actually wanted answered, and one session of testing cannot settle
+it. If it turns out to be annoying, the answer is a document picker presented
+from the appex — immediate, no app launch — whose only unknown is whether a
+modal presents cleanly from an AUv3 view, including in GarageBand's 736x242.
+
+---
+
 # C45. A NATIVE HANDLE CAN FLOAT OVER THE WEBVIEW, and we are not going to (2026-09-17)
 
 Probe: `src/FloatingDragProbe.h`, behind `KROMOSYNTH_FLOAT_PROBE`, deleted in the
