@@ -1244,6 +1244,20 @@ disposable and goes when this settles.
 
 # C34. THE ICON: FIVE HYPOTHESES DEAD, AND I AM PUTTING IT DOWN (2026-09-10)
 
+
+> **2026-09-19: THE ICON NOW SHOWS IN AUM, AND NOBODY KNOWS WHY.** Björn: "it
+> just suddenly appeared." No hypothesis below was acted on; nothing in this
+> repo was changed for it. Candidates, none tested: a JUCE update, an AUM
+> update, an iOS update, or one of the rebuilds between 2026-09-15 and today
+> dislodging something in the icon cache that the full delete-and-reboot in
+> C33 did not.
+>
+> **Recorded as OBSERVED WORKING, CAUSE UNKNOWN — not as closed.** An icon that
+> appeared on its own can leave on its own, and if this matters for a store
+> listing it is worth one deliberate check per release rather than an
+> assumption. The five dead hypotheses below stay: they are still what has been
+> ruled out, and a future reader chasing a regression should not repeat them.
+
 Everything checkable from this side is checked. Recording the eliminations so
 the next attempt starts here rather than at the beginning.
 
