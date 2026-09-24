@@ -48,6 +48,74 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C47. HALF THE LIVE FAUST ARCHIVE IS MONOPHONIC ON A PHONE (2026-09-24)
+
+Measured on Björn's iPhone 13 Pro Max, in AUM, by loading live instruments and
+reading `faust_measure` out of the device log. 27 distinct genomes.
+
+## Pre-registered before the phone was touched
+
+- **R1** median iOS `capForRtf` across >= 8 genomes. <= 2 makes sampled Faust
+  instruments a v1 blocker for iOS; >= 4 means live-only ships. 3 is ambiguous
+  and would be reported as such.
+- **R2** the figures must come from `faust_measure` on the device, not
+  `faust_declared platform="macos"` — a desktop number shown on a phone is the
+  defect, not a measurement of the phone.
+- **R3** >= 8 genomes, sample size stated. Below that, numbers but no verdict.
+
+## Result
+
+```
+voices=1   13   48%
+voices=2    6   22%
+voices=3    2
+voices=4    3
+voices=5    3
+                      median 2 voices    RTF 4.7 - 24.4, median 8.6
+```
+
+**R1: median 2. Sampled Faust instruments are a v1 blocker for iOS.** Half the
+live archive cannot play a chord on this phone, which is not a performance
+caveat but a different instrument.
+
+**R2 passes**, and this refuted the leading hypothesis. Going in, the most
+likely explanation for Björn's "the estimate doesn't reflect what one actually
+gets" was that the phone was displaying a macOS RTF — `runtimeId()` embeds the
+OS precisely because the same runtime on another target is a different
+measurement, and iOS forbids JIT so it runs wasm3 where desktop runs wasmtime.
+It is not that. The device measures for itself.
+
+## So why the estimate still misleads
+
+`capForRtf` is `floor(rtf / 4.2)` clamped 1..32, and `FaustEngine.h:241` says
+outright that the cap is "DERIVED from rtf by capForRtf, never measured
+independently". It takes a SINGLE-VOICE RTF and divides. Nobody has ever run
+eight voices and checked that eight fit. The 1.05 per-voice allowance is
+grounded in a 1-4% measurement, so the scaling is defensible — but an estimate
+is still arithmetic on one number, and the UI presents it as a count.
+
+## A prior that was right for the wrong reason
+
+I predicted below 4 from an iPhone-versus-M-series CPU gap. The median is 2, so
+the direction held — but these RTFs are 4.7-24.4 where EXPERIMENT_01's wasm3
+archive median implied around 16.8, making the phone roughly half a Mac running
+wasm3 rather than the larger gap I was reasoning toward. The number was right
+and the model behind it was not, which is worth separating.
+
+## Noticed in the same data, unexplained
+
+Three genomes report `raw_peak` of 415.70, 341.74 and 27.73, against a guard in
+FaustEngine that says "nothing in the archive exceeds 2.4; suspect the
+measurement". 170x past its own threshold, drawing trims of -52.4 dB and
+-50.7 dB. Either the archive has genuinely shifted or the measurement is wrong,
+and the guard firing is the reason to look rather than a reason to relax.
+
+Not the cause of the preview-versus-timeline level difference: the trim applies
+to live Faust playback and a taken WAV is a server-side render that never sees
+it. See the session prompt for what that turned out to be.
+
+---
+
 # C46. THE DRAIN WORKS, AND THE CONTAINER APP COULD NOT SEE WHAT IT DRAINED (2026-09-19)
 
 C41 pre-registered this on 2026-09-15 and it had never been run. Measured on
