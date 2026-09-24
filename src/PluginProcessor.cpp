@@ -1888,8 +1888,26 @@ void KromosynthAudioProcessor::applyFaustMeasurement (const FaustEngine::Measure
         if (auto* renamable = dynamic_cast<RenamableParameter*> (macro1_))
             renamable->setDisplayName (first.isEmpty() ? "Macro 1" : first, *this);
 
-        logEvent ("macro_rename_attempt to=\"" + (first.isEmpty() ? juce::String ("Macro 1") : first)
-                  + "\" reported_as=\"" + macro1_->getName (32) + "\"");
+        // WHAT WAS ASKED FOR, AND NOTHING ELSE. This used to also log
+        // macro1_->getName(32) as `reported_as`, which is asking JUCE what it
+        // called the parameter immediately after telling JUCE what to call it.
+        // It agreed every time -- 149 matches on the phone, more on desktop
+        // back to 2026-09-05 -- and proved nothing at all.
+        //
+        // The question is whether the HOST picked the new name up, and that is
+        // not observable from in here: hosts cache the parameter list at
+        // construction and many ignore later changes. Björn reports seeing a
+        // parameter still called "macro" in AUM, which is the actual evidence
+        // and points the other way.
+        //
+        // So this records the intent and stops implying it was verified. The
+        // reading that settles it is done by LOOKING AT THE HOST: open AUM's
+        // parameter list, load a Faust genome declaring a slider like "att",
+        // and see whether the name changes. If it does not, renaming is dead
+        // and a fixed pool of Macro 1..8 with the mapping shown in our own UI
+        // is the design.
+        logEvent ("macro_rename_requested to=\"" + (first.isEmpty() ? juce::String ("Macro 1") : first)
+                  + "\" (host-side result NOT observable here)");
     }
 
     faust_->setOutputGain (trim);
