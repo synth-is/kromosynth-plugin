@@ -48,6 +48,238 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C49. C48's R1 ANSWERED — two populations, and C47's sample is two weeks old (2026-09-24)
+
+Answered from files already on disk. No phone, no build, no run. C48 is left
+exactly as registered.
+
+## R1: zero overlap, and by construction
+
+The device log names instruments by **takeout artefact UUID** (35 distinct) and
+by display name — `"Synth.is Z4DY6"`, `"P1CX2CQK 11.5s HS5BH"`. It contains the
+string `elite_` **zero** times.
+
+And `dsp="faustgenome_mtvqg98s_9"` cannot be joined either: `uniqueName()` in
+`faust-renderer.js` is `faustgenome_${Date.now().toString(36)}_${_uid++}`, minted
+on the render server at compile time. It is a timestamp, not a genome identity.
+**So R1 as registered was not executable from the log**, which is worth knowing
+before someone tries it again.
+
+The populations differ by construction. `probe/gate0-ios/elites` is 120 `.wasm`
+files exported from a probe run. The plugin's library is artefacts acquired
+through the site. They overlap only by coincidence, and nothing recorded on
+either side would reveal it.
+
+**Per C48's own rule: R2 is void, and candidate 1 stands unrefuted.**
+IOS_VOICE_CAP §6 named this limit in advance — "newer runs, and the
+TIMBRE-seeded material in particular, are not represented."
+
+## The prediction was wrong
+
+C48 predicted >= 5 overlaps and a harness disagreement at ratio <= 0.5. There is
+no overlap to test and R2 never ran. Same shape as C31 → C32: the bar
+contradicted its author on the first reading.
+
+**And C48's framing was too strong.** It called C47 "the outlier" and said one
+of the readings "is not measuring what it is labelled as measuring". That was
+wrong. The three readings are reconcilable without any of them being defective:
+they measure different populations. Left standing above rather than edited.
+
+## What C47 measured, restated
+
+Splitting the log's `faust_measure` lines on `measure_ms`:
+
+| | n | distinct rtf | rtf | median | voices median | ==1 |
+|---|---|---|---|---|---|---|
+| **fresh** (`measure_ms > 0`) | 25 | 22 | 5.2-24.4 | **8.6** | **2** | **48%** |
+| cached (`measure_ms = 0`) | 124 | 24 | 4.7-24.4 | 8.2 | 1 | 60% |
+
+The fresh row reproduces C47's published figures exactly. **C47 aggregated the
+right subset**, which the entry does not say and should be credited with.
+
+## But nothing was measured on 2026-09-24
+
+The log is append-only and its filename is the **pull** date. `faust_measure`
+lines span 09-10 to 09-24 across 22 process lifetimes. Fresh measurements by
+date:
+
+```
+09-10  2     09-14  7     09-16  5
+09-11  2     09-15  1     09-23  6
+09-13  2
+```
+
+**09-24: 0 fresh, 18 cached.** So C47's session loaded instruments and read back
+numbers minted between 09-10 and 09-23 by at least seven different binaries, in
+unknown thermal states, in a log C39 already established cannot tell AUM from
+GarageBand.
+
+The three hot peaks are the clearest case. `415.699310` was measured once, on
+09-10, `measure_ms=5311.7`. Every later appearance — 09-24 included — is
+`measure_ms=0.0`. Same for `341.735443` (09-10) and `27.733810` (09-11). So the
+session prompt's §3 is not a current observation of three hot genomes; it is two
+measurements from a fortnight ago, replayed. They are still worth explaining,
+and "the archive has genuinely shifted" is now the weaker reading of the two.
+
+## The cache key does not include the plugin build
+
+`loadCachedMeasurement` validates `schema`, `runtime`, `sampleRate`, `wasmBytes`
+and `wasmHash`. `FaustEngine::runtimeId()` is the linked wasm3 version macro
+plus OS and arch — **the runtime library, not this plugin's embedding of it.**
+
+So two builds linking the same wasm3 share cached rtf figures even if one of
+them changed how the module is executed: the host-function bindings at
+`FaustEngine.cpp:87`, the measurement loop, the block size it measures at.
+
+`PluginProcessor.cpp:1628` already reasons exactly this way for the CAP and
+fixes that half by re-deriving from stored rtf, citing 2026-09-09. Its companion
+claim — "rtf is the measurement and is worth trusting from disk" — is right for
+a formula change and does not cover a change to the execution path, which is a
+change to the measurement itself.
+
+Not fixed here. The cheap remedy is a `KROMOSYNTH_MEASURE_EPOCH` constant in the
+cache key, bumped deliberately when the execution path moves — which keeps the
+cache doing its job and makes invalidation an explicit act rather than an
+oversight.
+
+## What this does to §1
+
+**Not refuted, and narrowed.** C47 is a statement about the instruments in
+Björn's acquired library — which is arguably the better population for a release
+decision than the 120-elite bundle, since it is what a user actually holds. Half
+of it being monophonic remains the right kind of reason to want a sampled path.
+
+What is now known not to support it: the claim that this describes "the live
+Faust archive". The 120-elite sweep says 60% of that archive carries four or
+more voices on this phone, and both can be true at once.
+
+Still open, unchanged: whether an acquired library generalises beyond this one,
+and C32's divisor, which nothing here touches.
+
+---
+
+# C48. PRE-REGISTERED — C47 disagrees with two earlier measurements of the same archive on the same phone (2026-09-24)
+
+Registered before the run. No new measurement exists at the time of writing, and
+the session prompt's §1 — a month of work on a sampled Faust path — rests on the
+reading this is about.
+
+## The disagreement
+
+| | date | instrument | result |
+|---|---|---|---|
+| `IOS_VOICE_CAP_DISTRIBUTION_2026-09-07` | 09-07 | 120 elites, wasm3, `probe/gate0/host_wasm3.c`, 512 frames | rtf min 5.79, **p25 12.90, median 22.96**, max 131.82; 99.2% >= 2 voices, 60% >= 4 |
+| C32 | 09-10 | deadline meter in AUM, against C31's pre-registered bar | `cap=2` is **TOO TIGHT**; p50@cap 0.3 of a 5.33 ms deadline |
+| C47 | 09-24 | 27 genomes in AUM, `faust_measure` | rtf **4.7-24.4, median 8.6** -> median cap 2, 48% monophonic |
+
+Same phone, same A15, same wasm3 family, same archive nominally.
+
+**C47's MAXIMUM is the 120-elite sweep's MEDIAN.** At most two of its 27 genomes
+sit above 22.96. If the 27 were a draw from the 120 that is p = 379/2^27, about
+**3e-6**, so this is not sampling noise and one of the two readings is not
+measuring what it is labelled as measuring.
+
+And C32 got there first from the other direction: a declared cap of 2 using 30%
+of the deadline at two voices, under a bar registered in advance, which fired
+rule 3 and contradicted its own author's prediction. C47's R1 rule is
+`median capForRtf`, and `capForRtf` is the quantity C32 condemned. Pre-registering
+a rule on a statistic already measured to be biased does not make the verdict
+sound.
+
+## A mechanism I had, and it is wrong
+
+22.96 / 8.6 = **2.67**, and C19's comment cites `d3321de` at **2.3-2.9x** for
+holding a real block cadence against rendering flat out. So the gap looked like
+cadence: the sweep free-running, the plugin under a host.
+
+**It is not.** `FaustEngine::measure` is free-running too, and says so in the
+comment directly above `m.rtf = audioSeconds / elapsed` — 15 s of audio timed
+with the audio path suspended by the barrier C21 measured at nine seconds. Both
+sides of the comparison are free-running, so cadence cannot be the difference.
+
+The ratio falling inside that band is a coincidence. Recorded because it was
+persuasive and because booking it would have been C23's shape exactly: a ratio
+present in a measurement is not evidence that anything applies it.
+
+## What is left, none eliminated
+
+1. **Different genomes.** The 27 are whatever is in Bjorn's plugin library; the
+   120 are the re-measured archive bundle. IOS_VOICE_CAP §6 already names this
+   limit — "newer runs, and the TIMBRE-seeded material in particular, are not
+   represented" — and Stage 1.5 has since added four reverb templates
+   (`dattorro-default`, `zita-rev`, `jpverb`, `greyhole`), which are not cheap.
+2. **Different wasm3 embedding.** The sweep ran `host_wasm3.c` unmodified. The
+   plugin has its own, binding libm through host functions
+   (`FaustEngine.cpp:87`, the `U (fe_sqrt, "_sqrtf", ...)` list). Under an
+   interpreter each of those is a trap out of the wasm frame, per call, and a
+   genome calling `sqrt` or `sin` per sample pays it per sample. This one is
+   ours.
+3. **Contention and thermal.** The sweep is a dedicated app doing nothing else;
+   the plugin measures inside AUM with a live graph and two WKWebViews. The
+   sweep's figures are already hot (§4), so it is not a cold-versus-hot gap.
+
+Block size is NOT a candidate and is worth stating as eliminated: the sweep used
+512, `FaustEngine::measure` uses `impl_->maxBlockSize`, and AUM declares 2048
+(C27). Larger blocks are cheaper per sample, so that pushes the plugin's figure
+UP. It makes the gap harder to explain, not easier.
+
+## The rule
+
+**R1 — identity, first, because it voids R2.** Do any of C47's 27 genomes appear
+among the 120 re-measured archive elites? Evidence is the device log's
+`instrument_load dsp="..."` and the sidecars' `source.soundIds`, against the
+`probe/gate0-ios` bundle manifest.
+
+- **zero overlap** -> candidate 1 stands unrefuted, R2 is void, and C47 is a
+  statement about this library rather than about the archive. Report it that way
+  and stop.
+- **one or more** -> R2.
+
+**R2 — the ratio**, per overlapping genome:
+`rtf(AUM, FaustEngine) / rtf(standalone sweep)`. Median across overlaps.
+
+| median ratio | reading |
+|---|---|
+| **>= 0.8** | the two harnesses agree on the same genome. C47's sample really is that cheap, candidate 1 is the answer, and the archive has shifted. |
+| **<= 0.5** | the harnesses disagree on the same genome. The gap is ours — candidate 2 or 3 — and C47's figures do not describe the archive under any sampling story. |
+| 0.5-0.8 | partly both. Report as such; do not pick a half. |
+
+**R3 — sample size.** At least **5** overlapping genomes for a verdict. Below
+that, ratios but no verdict. The reference side is free, since the sweep already
+measured all 120; the constraint is how much of the library is in it.
+
+## The prediction, so it can be wrong
+
+**R1 finds >= 5 overlaps and R2 lands <= 0.5** — the harnesses disagree. The
+grounds are C32: a declared cap of 2 sitting at p50 0.3 of the deadline is an
+independent instrument saying the plugin's own rtf understates this phone.
+
+If R2 lands >= 0.8 instead, then C32 and this entry are both wrong about the
+divisor and the archive has genuinely moved — which is also what C47's three
+unexplained `raw_peak` readings of 415.70, 341.74 and 27.73 would be pointing
+at, and the two would then be one finding rather than two.
+
+## What this decides, and what it does not
+
+**Decides:** whether "half the live Faust archive is monophonic on a phone" is a
+statement about the archive. §1 of the session prompt treats it as the iOS
+release blocker. If R2 fires the second branch, the blocker is a divisor already
+condemned by C32, and the sampled Faust path keeps its own justification
+(ARTEFACT_CONTRACT §6, polyphony on a phone, drones as pads) at its own priority
+rather than as the thing holding a release.
+
+**Does not decide** what the cap should be. That is C32's unresolved slope —
+"the cap is too tight, and 'raise it to 8' is not yet supported" — and nothing
+here touches it.
+
+## Cost
+
+R1 is a grep of the device log against a manifest. R2 is
+`./run-on-device.sh archive`, ~90 s on device, already scripted (IOS_VOICE_CAP
+§7). No build, and nothing to write first.
+
+---
+
 # C47. HALF THE LIVE FAUST ARCHIVE IS MONOPHONIC ON A PHONE (2026-09-24)
 
 Measured on Björn's iPhone 13 Pro Max, in AUM, by loading live instruments and
