@@ -48,6 +48,44 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C50. THE SAMPLED FAUST PATH RUNS, AND TWO OF ITS CONTROLS ARE COPIES (2026-09-26)
+
+Full record, with numbers:
+`kromosynth-projects/Evolutionary Sound Discovery Platform/faust-genome-substrate/SAMPLED_FAUST_FIRST_RUN_2026-09-26.md`.
+Summarised here because it is §1 of the session prompt and the thread ends at
+C49 otherwise.
+
+Two `/vi/full` jobs, the first Faust genomes ever through the sample path,
+against deployed `kromosynth-render` ce532db and `kromosynth-vi` 3502333.
+
+**It works, unmodified.** 12/12 and 3/3 samples. `startRenderJob`'s Faust guard
+tests the artefact FORM (`config.format === 'faust'`), so a Faust genome sent as
+`format: 'sfz'` already passes. No routing change was needed.
+
+**The three fixes are confirmed on real material, from the log rather than from
+audio:** `midi 48 / 60 / 72`, matching the `pitch_keycenter` beside each sample
+(the nine-semitone defect would read 39/51/63), with `gate off at 100%, faded`
+on every render, on both machines. All 15 samples end at exactly 0.00e+00.
+
+**Two VI controls produce nothing but copies, and both are priced.** Round
+robins come back byte-identical (same SHA256, six pairs) and the SFZ writes a
+real `seq_length=2` alternation between them. Velocity layers differ by 2–3×10⁻⁵
+— the 16-bit quantisation floor — after level-matching, because velocity reaches
+a Faust render only as `setParam('gain', v)`. Of run A's 12 samples, 3 are
+distinct audio; quota bands by sample count.
+
+**What I got wrong:** I tried to verify tuning from the audio twice, on a scrape
+and then a bell, and both estimators locked onto partials. "In tune" is not well
+defined for an inharmonic genome, and a pitch word in the class label does not
+make one a test subject. The interval survived and is worth keeping — midi
+60 → 72 measured +1198.7 cents, an exact octave within 1.3 cents — but absolute
+tuning needs a harmonic seed.
+
+Unchanged by this: C49's population question, which is what decides whether the
+sampled path is the iOS release blocker or a good feature at its own priority.
+
+---
+
 # C49. C48's R1 ANSWERED — two populations, and C47's sample is two weeks old (2026-09-24)
 
 Answered from files already on disk. No phone, no build, no run. C48 is left
