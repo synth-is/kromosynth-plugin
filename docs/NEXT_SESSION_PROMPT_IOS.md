@@ -133,6 +133,84 @@ subset and its figures reproduce exactly — but the three "hot peaks" are two
 measurements from 09-10 and 09-11 replayed from cache, not a current
 observation. "The archive has shifted" is now the weaker reading.
 
+### What is already BUILT, as of C50 (2026-09-26)
+
+**The sampled path runs end to end.** Two `/vi/full` jobs, 12/12 and 3/3, on real
+archive Faust genomes, against deployed services. **No routing change was
+needed** and none should be written: `startRenderJob`'s Faust guard tests
+`config.format === 'faust'`, the artefact FORM, so a Faust genome submitted as
+`format: 'sfz'` already passes. Genome fetch, sample matrix, SFZ generation and
+packaging all handled the substrate unmodified.
+
+Four defects were fixed first, because each would have shipped a broken
+instrument the first time anyone tried. All committed, pushed, deployed on both
+machines, and confirmed from the render log on real material rather than argued:
+
+1. **Pitch was nine semitones sharp.** The sample matrix computes `midi - 60`;
+   `renderFaust` reads `noteDelta` as absolute from A4. `renderFaustGenome` now
+   takes an absolute `midiNote` (render `11c15fa`, vi `927f2fc`). The log states
+   the pitch it rendered: `midi 48 / 60 / 72`, matching `pitch_keycenter`.
+2. **The note-off was baked in at 70%**, so notes decayed twice and went to the
+   float floor for the last fifth. Gate now held for the whole render on the
+   sampler path (vi `e8cd360`); log reads `gate off at 100%`.
+3. **No edge fades on the Faust branch**, unlike the other two render paths, so
+   a held gate ended the buffer at 0.79 full scale. Opt-in `edgeFade`, DEFAULT
+   OFF because the QD loop scores this output (render `ce532db`). All 15 samples
+   end at exactly 0.00e+00.
+4. **`autoLoop` was accepted and ignored** — which is exactly the loop-points
+   gap above. Now refused with `AUTOLOOP_NOT_IMPLEMENTED` (vi `3502333`).
+   Behaviourally free: every caller hardcodes `false`.
+
+### The finding that changes the PRODUCT, not the code
+
+**Round robins and velocity layers produce nothing but copies for a Faust
+genome, and both are priced.**
+
+Round robins come back byte-identical — same SHA256, six pairs — and the SFZ
+writes a real `seq_length=2` alternation between the duplicates. A Faust render
+is deterministic given the same source and parameters, and with
+`layerParamsPerSound` null nothing varies.
+
+Velocity layers differ by 2–3×10⁻⁵ after level-matching, which is the 16-bit
+quantisation floor (1/32768 = 3.05×10⁻⁵). Velocity reaches a Faust render only
+as `setParam('gain', v)` — a scalar on the output.
+
+Of one run's 12 samples, **3 are distinct audio**. Extraction quota bands by
+sample count (4/8/16/32), so a user pays a higher band for copies.
+
+**Fix it server-side**, in `calculateSampleMatrix`: force `velocityLayers` to 1
+and `roundRobins` to 0 for `substrate === 'faust'`, and count distinct renders
+for quota. Preferred over hiding the controls in the panel, because the panel is
+not the only caller and a server that returns copies will return them to whoever
+asks. Hide them in the panel too, so the UI does not offer what the server will
+collapse.
+
+Making velocity MEANINGFUL for Faust is a separate, real feature: it needs
+mapping to something the genome's term tree exposes, not to output gain.
+
+That is now THREE of the VI panel's four sample-shaping controls that do not
+survive the substrate change. Only pitch range clearly applies.
+
+### Still open on this path
+
+- **Tuning, against a HARMONIC seed.** Two attempts to verify it from audio
+  failed on a scrape and then a bell; see §9. The interval is confirmed — midi
+  60 → 72 measured +1198.7 cents, an exact octave within 1.3 cents — so the
+  mapping is linear in semitones. Absolute tuning needs a `pm.*` template with a
+  known fundamental, not an archive elite chosen by class label.
+- **The drone exclusion**, still unbuilt. Enforce it in `startRenderJob`:
+  viable because extraction quota is charged at TAKE, not at submit
+  (`takeoutRoutes.js:600-636`), so a refused job costs nothing. Articulation is
+  NOT available per sound — it is computed in `measureFaustArtefact` at artefact
+  build time and nothing persists it — so either measure at job start or
+  backfill `measured` onto the sound.
+- **Live versus sampled in the UI.** `useObtainInstrument`'s
+  `needsConfiguration` is currently a pure function of substrate. That is the
+  assumption that has to go.
+
+Full record with every number:
+`kromosynth-projects/Evolutionary Sound Discovery Platform/faust-genome-substrate/SAMPLED_FAUST_FIRST_RUN_2026-09-26.md`
+
 ---
 
 ## 5. Small, and each is one thing
@@ -263,6 +341,26 @@ in strip mode", a `#toolbar` rule against a `class="toolbar"` element, and a
 same.** They were not, and could not be joined. *A disagreement between two
 measurements is only a disagreement if they measured the same thing.*
 
+**I told Björn "nothing pushed" five or six times and never once checked.** Three
+of four repos were already on Bitbucket — something in the environment pushes
+after commits, `branch.main.vscode-merge-base` is set and there are no hooks. The
+claim was asserted, not observed, which is the exact failure I had spent the
+session writing into other people's commit messages. *Saying a thing did not
+happen is a measurement.*
+
+**I tried to verify tuning from audio twice, on inharmonic genomes.** A scrape,
+where autocorrelation returned ~65 Hz for two pitches an octave apart; then a
+bell, where a harmonic-sum estimator locked onto partials. "In tune" is not well
+defined for an inharmonic genome, and a pitch word in the class label does not
+make an archive elite a tuning subject. The answer was in the render log the
+whole time, because I had added it there that morning. *Check whether the
+quantity is already being reported before building an instrument to infer it.*
+
+**I restarted one render worker and nearly tested against three stale ones.**
+`RENDER_INSTANCES` fans `/vi/full` across four workers on two machines; the job
+would have round-robined onto old code and the result would have been
+uninterpretable. Deployment is per-fleet, not per-host.
+
 ---
 
 ## 10. Conventions
@@ -271,10 +369,34 @@ Explicit pathspec on every `git add` and `git commit`; the MCP `git_commit` tool
 behaves like `git commit -a`. Commit message files under
 `/Users/bjornpjo/Developer/`. `filesystem:edit_file` with `dryRun: true` first;
 anchor on the comment AND the declaration together. MCP `local-terminal` times
-out around four minutes — `nohup … &` plus a polling call, inline sleeps under
-~100s. `pm2 env` takes a NUMERIC id, not a name. Scripts run by hand on the hub
-need `tools/run-with-service-env.js`, because the hub's `.env` ARCADEDB
-credentials are stale and silently unused.
+out around four minutes — and **`nohup … &` does NOT get you past it**, which
+this file said until 2026-09-26. The runner waits on the whole process group, so
+the `/bin/sh -c` parent stays alive and the call times out anyway; use `setsid`,
+or redirect stdin from `/dev/null` and disown. Inline sleeps under ~100s.
+**A script that calls `renderFaustGenome` never exits** after producing its
+output — two were found still burning 35% CPU twenty minutes later. Check for
+orphans after running `validate-levelling.js`, `measure-audition-parity.js` or
+anything else of that shape. `pm2 env` takes a NUMERIC id, not a name.
+
+**Three machines, three repo roots.** Laptop
+`/Users/bjornpjo/Developer/apps/synth.is/`, Studio
+`/Users/bthj/Developer/apps/synth.is/`, hub `/Users/bthj/Developer/synth.is/` —
+the hub has NO `apps/` segment. Anything scripted against these paths silently
+misses on one machine.
+
+**`git pull` over non-interactive SSH cannot reach the keychain.** The helper is
+`osxkeychain` and the Bitbucket item exists, but a `BatchMode=yes` session gets
+`failed to get: -25308`. Pulls on the Studio and hub have to be run by hand in
+Terminal.app — same class of constraint as the PM2 TCC issue. Do NOT work around
+it by copying files over SSH; that leaves a production checkout divergent from
+its own history.
+
+**Deployment is per-fleet.** `kromosynth-render` runs on BOTH machines (hub
+`kromosynth-render-1` and `-preview`, Studio `-2/-3/-4` on 3006/3007/3008), and
+`kromosynth-vi`'s `RENDER_INSTANCES` fans across four of them. Restart all of
+them or the test lands on stale code. `kromosynth-vi` is hub-only, port 3090.
+Scripts run by hand on the hub need `tools/run-with-service-env.js`, because the
+hub's `.env` ARCADEDB credentials are stale and silently unused.
 
 **Other sessions run concurrently in these repos.** C48 and C49 arrived as
 uncommitted work in the findings file while this session was writing to it.
