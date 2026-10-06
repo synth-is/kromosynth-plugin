@@ -13,7 +13,7 @@ cmake_minimum_required(VERSION 3.24)
 # abstract over. §3's "two engines, one shell" is a document-level idea; it is
 # not a C++ class hierarchy yet.
 
-project(KromosynthPlugin VERSION 0.0.1 LANGUAGES C CXX)
+project(KromosynthPlugin VERSION 0.9.0 LANGUAGES C CXX)
 
 # ── Options ──────────────────────────────────────────────────────────────────
 option(KROMOSYNTH_BUILD_SAMPLER  "Build the sfizz sampler engine (Task 2)" OFF)
