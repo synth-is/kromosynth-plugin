@@ -1,0 +1,35 @@
+{
+  // kromosynth-plugin's bdloop settings. Beads for it live in the synth.is
+  // workspace (label repo:kromosynth-plugin); the harness is global
+  // (~/Developer/tasks-hub/harness, CLI `bdloop`).
+  // Reference: tasks-hub/harness/README.md
+  //
+  // DESKTOP (macOS AU/VST3) work only. The Studio builds with the Command Line
+  // Tools + Homebrew cmake; iOS needs Xcode and the phone, so beads labelled
+  // where:laptop are worked in a session on the laptop, not by the runner.
+  "project": "kromosynth-plugin",
+  "defaultKind": "default",
+  "kinds": {
+    "default": {
+      // scripts/gate.sh: compile AU + VST3 (scripts/build.sh verify: nothing
+      // installed or signed), acquire_probe selftest, and the FaustEngine null
+      // test against docs/BASELINE_FAUSTENGINE_2026-09-07.txt (120 elites,
+      // bit-identical). ~1 min warm.
+      "gateCmd": "./scripts/gate.sh",
+      "gateExitCodes": { "testsFailed": [1], "buildFailed": [2] },
+      // Not scripts/: an agent must not be able to edit its own gate.
+      "agentPaths": ["src", "tools", "docs", "resources", "cmake", "CMakeLists.txt", "CMakePresets.json"],
+      // No revert-verification: most plugin changes cannot be made to fail a
+      // test by reverting src (the null test only sees FaustEngine's output).
+      // Every landed bead comes back for review anyway.
+      "implPaths": []
+    }
+  },
+  // The JUCE and sfizz submodules, once per lane worktree (they are clones of
+  // public GitHub repos, no credentials needed).
+  "worktreeSetup": "git submodule update --init --recursive",
+  "worktreeSetupKeys": [".gitmodules"],
+  // null-test.sh reads the gate0 reference renders from the kromosynth-projects
+  // repo beside this one (probe/out is not committed; the Studio has a copy).
+  "worktreeSiblings": ["kromosynth-projects"]
+}
