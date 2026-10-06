@@ -3,6 +3,8 @@
 #include "PluginEditor.h"
 #include "ShellPage.h"
 #include "Palette.h"
+#include "CheckoutSentinel.h"
+#include "ExternalBrowser.h"
 // For renders::outbox(), handed to the runner beside the library root. See
 // AcquisitionRunner::start on why both destinations are passed rather than
 // resolved in there.
@@ -1270,13 +1272,14 @@ bool KromosynthAudioProcessorEditor::InstrumentedBrowser::pageAboutToLoad (const
     // have treated the sentinel as an off-origin navigation and handed it to
     // launchInDefaultBrowser -- leaking the ticket to whatever the OS opens
     // with it. Neither is recoverable after the fact.
-    // AUTH BEFORE ACQUISITION, and the order is load-bearing.
+    // AUTH AND CHECKOUT BEFORE ACQUISITION, and the order is load-bearing.
     //
     // `acquisition::isSentinel` matches ANY synthis:// URL and parseSentinel
-    // then answers nullopt for an unknown verb. So an auth sentinel reaching
-    // the branch below would be blocked (right) and logged as
-    // `acquisition_sentinel_malformed` (wrong, and it would send the next
-    // reader of the log looking for a broken download).
+    // then answers nullopt for an unknown verb. So an auth or checkout
+    // sentinel reaching the branch below would be blocked (right) and logged
+    // as `acquisition_sentinel_malformed` (wrong, and it would send the next
+    // reader of the log looking for a broken download -- see
+    // CheckoutSentinel.h for checkout's own version of this trap).
     if (interceptsSentinels && kromosynth::auth::isAuthSentinel (url))
     {
         if (auto s = kromosynth::auth::parse (url))
@@ -1294,6 +1297,45 @@ bool KromosynthAudioProcessorEditor::InstrumentedBrowser::pageAboutToLoad (const
         else
         {
             proc_.logEvent ("auth_sentinel_malformed");
+        }
+
+        return false;
+    }
+
+    if (interceptsSentinels && kromosynth::checkout::isCheckoutSentinel (url))
+    {
+        if (auto destination = kromosynth::checkout::parse (url))
+        {
+            // weak, not `this`/`&proc_` captured bare: the presentation
+            // completion arrives asynchronously off UIKit's own animation,
+            // and nothing stops the host from unloading this plugin instance
+            // before it fires. See lifetimeToken()'s comment.
+            const auto outcome = kromosynth::browser::openExternal (
+                *this, juce::URL (*destination), proc_.wrapperType,
+                [weak = proc_.lifetimeToken(), &proc = proc_] (bool presented)
+                {
+                    if (weak.expired())
+                        return;
+
+                    // Confirms the Safari sheet's presentation animation
+                    // actually completed -- i.e. something real reached the
+                    // screen -- rather than just that this code attempted it.
+                    proc.logEvent (juce::String ("checkout_sentinel_presented success=")
+                                   + (presented ? "1" : "0"));
+                });
+
+            proc_.logEvent (juce::String ("checkout_sentinel via=")
+                            + (outcome == kromosynth::browser::Outcome::openedViaSafariView
+                                   ? "safari_view" : "system_browser"));
+        }
+        else
+        {
+            // Same contract as the other two sentinels: isCheckoutSentinel
+            // said yes and parse said no, so this is malformed and still
+            // blocked -- never fall through to the generic off-origin
+            // handling below, which would hand the raw synthis:// URL
+            // (unparsed, unresolved) to launchInDefaultBrowser instead.
+            proc_.logEvent ("checkout_sentinel_malformed");
         }
 
         return false;
@@ -1345,9 +1387,11 @@ bool KromosynthAudioProcessorEditor::InstrumentedBrowser::pageAboutToLoad (const
     //
     // about:blank and the resource-provider root's own sub-requests come
     // through here too; startsWith on the origin covers those.
-    proc_.logEvent ("navigation_blocked " + url);
+    const auto outcome = kromosynth::browser::openExternal (*this, juce::URL (url), proc_.wrapperType);
 
-    juce::URL (url).launchInDefaultBrowser();
+    proc_.logEvent ("navigation_blocked " + url + " via="
+                    + (outcome == kromosynth::browser::Outcome::openedViaSafariView
+                           ? "safari_view" : "system_browser"));
 
     return false;
 }

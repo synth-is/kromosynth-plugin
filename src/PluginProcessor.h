@@ -680,6 +680,15 @@ public:
     */
     juce::String faustRenderStatsForLog() const;
 
+    /** A token for the same weak_ptr<int> pattern lifetime_ exists for
+        (comment at its declaration below): callers outside this class that
+        hand a completion block to something which can outlive the processor
+        -- ExternalBrowser's NSExtensionContext.open(), which waits on the
+        host/OS -- lock it before touching `this` from inside that block,
+        and do nothing if it has expired.
+    */
+    std::weak_ptr<int> lifetimeToken() const { return lifetime_; }
+
 private:
 
     // Guarded by the message thread: written when a load finishes, read by

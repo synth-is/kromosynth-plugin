@@ -213,7 +213,20 @@ target_sources(KromosynthPlugin PRIVATE
     RenderList.cpp
     RenderList.h
     ShellPage.h
+    CheckoutSentinel.h
+    ExternalBrowser.h
+    ExternalBrowser.cpp
 )
+
+# iOS only: the Objective-C++ half of ExternalBrowser.h, which presents an
+# SFSafariViewController in-process for the AUv3 appex. Compiled for Standalone
+# too (both iOS formats share this source set) -- harmless there, since
+# ExternalBrowser.cpp only calls presentSafariView for wrapperType AudioUnitv3.
+if(KROMOSYNTH_IOS)
+    target_sources(KromosynthPlugin PRIVATE
+        ExternalBrowser_iOS.mm
+    )
+endif()
 
 if(KROMOSYNTH_BUILD_SAMPLER)
     target_sources(KromosynthPlugin PRIVATE
@@ -312,6 +325,14 @@ target_link_libraries(KromosynthPlugin
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
+
+# SafariServices is not a framework any enabled JUCE module pulls in, unlike
+# WebKit/UIKit/CoreAudioKit above which arrive for free via juce_gui_extra and
+# juce_audio_plugin_client -- ExternalBrowser_iOS.mm needs it linked
+# explicitly, iOS only (SFSafariViewController does not exist on macOS).
+if(KROMOSYNTH_IOS)
+    target_link_libraries(KromosynthPlugin PRIVATE "-framework SafariServices")
+endif()
 
 # LTO deliberately omitted at Stage 0: it slows the edit/build/host-test loop
 # and this binary ships to nobody. Add juce::juce_recommended_lto_flags when
