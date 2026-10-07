@@ -17,8 +17,10 @@
       // bit-identical). ~1 min warm.
       "gateCmd": "./scripts/gate.sh",
       "gateExitCodes": { "testsFailed": [1], "buildFailed": [2] },
-      // Not scripts/: an agent must not be able to edit its own gate.
-      "agentPaths": ["src", "tools", "docs", "resources", "cmake", "CMakeLists.txt", "CMakePresets.json"],
+      // The whole repo. The runner never keeps changes to its gate script
+      // (scripts/gate.sh, from gateCmd) or to these, which the gate relies on:
+      "agentPaths": ["."],
+      "protectedPaths": ["scripts/null-test.sh", "docs/BASELINE_FAUSTENGINE_2026-09-07.txt"],
       // No revert-verification: most plugin changes cannot be made to fail a
       // test by reverting src (the null test only sees FaustEngine's output).
       // Every landed bead comes back for review anyway.
