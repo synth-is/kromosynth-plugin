@@ -14,13 +14,15 @@
       // scripts/gate.sh: compile AU + VST3 (scripts/build.sh verify: nothing
       // installed or signed), acquire_probe selftest, and the FaustEngine null
       // test against docs/BASELINE_FAUSTENGINE_2026-09-07.txt (120 elites,
-      // bit-identical). ~1 min warm.
+      // bit-identical), and the processor render (scripts/processor-diff.sh,
+      // deterministic through PluginProcessor). ~2 min warm.
       "gateCmd": "./scripts/gate.sh",
       "gateExitCodes": { "testsFailed": [1], "buildFailed": [2] },
       // The whole repo. The runner never keeps changes to its gate script
       // (scripts/gate.sh, from gateCmd) or to these, which the gate relies on:
       "agentPaths": ["."],
-      "protectedPaths": ["scripts/null-test.sh", "docs/BASELINE_FAUSTENGINE_2026-09-07.txt"],
+      "protectedPaths": ["scripts/null-test.sh", "docs/BASELINE_FAUSTENGINE_2026-09-07.txt",
+                         "scripts/processor-diff.sh", "tools/processor-probe/diff_wav.py"],
       // No revert-verification: most plugin changes cannot be made to fail a
       // test by reverting src (the null test only sees FaustEngine's output).
       // Every landed bead comes back for review anyway.
