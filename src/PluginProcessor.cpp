@@ -570,6 +570,10 @@ KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() co
         st.notesOff = faust_->notesOff();
         st.activeVoices = faust_->activeVoices();
         st.forcedStops = faust_->forcedStops();
+        const auto starts = faust_->voiceStarts();
+        st.startsIdle = starts.idle;
+        st.startsReused = starts.reused;
+        st.startsStolen = starts.stolen;
         st.trimDb = 20.0f * std::log10 (juce::jmax (1.0e-9f, faustTrim_));
         st.rawPeak = faustRawPeak_;
         st.rtf = (float) faustRtf_;
@@ -1939,6 +1943,14 @@ void KromosynthAudioProcessor::applyFaustMeasurement (const FaustEngine::Measure
     // §2.7's per-genome cap, computed here because the artefact carries nothing
     // yet; when it does, the stored value is preferred and this is skipped.
     faustVoices_ = juce::jlimit (1, 32, measured.capAt4x);
+   #if KROMOSYNTH_PROCESSOR_PROBE
+    // tools/processor-probe only. capAt4x comes from a timed render, so it moves
+    // with machine load and two renders of one build would differ for reasons
+    // that are not the code. Not compiled into the shipped targets.
+    if (const auto pinned = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_VOICES", {});
+        pinned.isNotEmpty())
+        faustVoices_ = juce::jlimit (1, 32, pinned.getIntValue());
+   #endif
     faust_->setVoiceCount (faustVoices_);
     faustRtf_ = measured.rtf;
 

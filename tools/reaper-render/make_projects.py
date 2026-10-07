@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+For a host-free check of the processor (no Reaper, runs in the agent loop), see
+scripts/processor-diff.sh. This tool is for the AU-against-VST3 comparison.
+
 Generate two Reaper projects that play identical MIDI through the AU and the
 VST3 build of the same plugin, so the two renders can be diffed.
 

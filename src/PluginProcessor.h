@@ -187,7 +187,12 @@ public:
                          float loadRecent = 0.0f, loadMax = 0.0f;
                          std::uint64_t blocksOver = 0;
                          float budgetMs = 0.0f;
-                         int voiceCap = 0; bool faust = false; };
+                         int voiceCap = 0; bool faust = false;
+                         // Where each note-on found its voice, since load:
+                         // an idle one, a released one reused, or a held one
+                         // stolen. Read by tools/processor-probe, which is how
+                         // a polyphony change shows up without listening.
+                         int startsIdle = 0, startsReused = 0, startsStolen = 0; };
 
    #if KROMOSYNTH_HAS_SAMPLER
     /** Loads an instrument from the local library by id.
