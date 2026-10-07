@@ -274,7 +274,11 @@ kromosynth_configure_target(KromosynthPlugin)
 target_compile_definitions(KromosynthPlugin PUBLIC
     JUCE_FORCE_USE_LEGACY_PARAM_IDS=1)
 
+# Part of the Faust measurement cache key (PluginProcessor.cpp). Bump when the
+# host bindings or the measurement loop change; a different value re-measures.
+set(KROMOSYNTH_MEASURE_EPOCH 1 CACHE STRING "Measurement cache epoch for this plugin build")
 target_compile_definitions(KromosynthPlugin PRIVATE
+    KROMOSYNTH_MEASURE_EPOCH=${KROMOSYNTH_MEASURE_EPOCH}
     JUCE_WEB_BROWSER=1
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0

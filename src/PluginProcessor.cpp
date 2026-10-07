@@ -6,6 +6,10 @@
 // left in the App Group into a Documents folder the appex cannot reach.
 #include "RenderOutbox.h"
 
+#ifndef KROMOSYNTH_MEASURE_EPOCH
+ #define KROMOSYNTH_MEASURE_EPOCH 1
+#endif
+
 #if JUCE_MAC || JUCE_IOS || JUCE_LINUX
  // For the atomic log append below. juce::File cannot express O_APPEND, which
  // is the whole point -- see appendLineAtomically.
@@ -1614,6 +1618,19 @@ std::optional<FaustEngine::Measured> KromosynthAudioProcessor::cachedMeasurement
     // keyboard without saying so.
     if ((int) get ("schema") != 1) return std::nullopt;
     if (get ("runtime").toString() != FaustEngine::runtimeId()) return std::nullopt;
+
+    // runtimeId() names the wasm runtime LIBRARY, not this plugin's embedding of
+    // it, so a build that changed the host bindings or the measurement loop
+    // would otherwise read another build's rtf. Bump KROMOSYNTH_MEASURE_EPOCH
+    // (CMake cache variable) when either changes.
+    if ((int) get ("epoch") != KROMOSYNTH_MEASURE_EPOCH)
+    {
+        const_cast<KromosynthAudioProcessor*> (this)->logEvent (
+            "faust_measure_cache_miss epoch=" + juce::String ((int) get ("epoch"))
+            + " build_epoch=" + juce::String (KROMOSYNTH_MEASURE_EPOCH)
+            + " -- another build's measurement, re-measuring");
+        return std::nullopt;
+    }
     if ((double) get ("sampleRate") != faustRate_) return std::nullopt;
     if ((juce::int64) get ("wasmBytes") != faustWasm_.getSize()) return std::nullopt;
 
@@ -1673,6 +1690,7 @@ void KromosynthAudioProcessor::writeCachedMeasurement (const FaustEngine::Measur
     auto* o = new juce::DynamicObject();
     o->setProperty ("schema", 1);
     o->setProperty ("runtime", FaustEngine::runtimeId());
+    o->setProperty ("epoch", KROMOSYNTH_MEASURE_EPOCH);
     o->setProperty ("sampleRate", faustRate_);
     o->setProperty ("wasmBytes", faustWasm_.getSize());
     o->setProperty ("wasmHash", hashFile (faustWasm_));
