@@ -96,6 +96,14 @@ ResolvedRoot resolveRoot()
     return { juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
              InstrumentLibrary::RootOrigin::privateContainer };
    #else
+   #if KROMOSYNTH_PROCESSOR_PROBE
+    // tools/processor-probe only: render from a fixture library instead of the
+    // user's ~/Music. A compile definition of that one target, so the shipped
+    // plugin has no environment variable that can redirect its library.
+    if (const auto fixture = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_LIBRARY", {});
+        fixture.isNotEmpty())
+        return { juce::File (fixture), InstrumentLibrary::RootOrigin::userMusic };
+   #endif
     return { juce::File::getSpecialLocation (juce::File::userMusicDirectory)
                  .getChildFile ("Synth.is"),
              InstrumentLibrary::RootOrigin::userMusic };

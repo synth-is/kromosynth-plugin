@@ -307,6 +307,12 @@ if(KROMOSYNTH_BUILD_FAUST)
     add_subdirectory(tools/faust-probe)
 endif()
 
+# processor-probe compiles the plugin's own processor, so it needs both engines
+# the shipped build has. See scripts/processor-diff.sh.
+if(KROMOSYNTH_BUILD_FAUST AND KROMOSYNTH_BUILD_SAMPLER AND NOT KROMOSYNTH_IOS)
+    add_subdirectory(tools/processor-probe)
+endif()
+
 # acquire-probe links juce_core only -- no sfizz, no webview, no audio device --
 # so it is not gated behind the sampler. It exists to exercise the acquisition
 # path without building the plugin, because a plugin rebuild re-signs and
