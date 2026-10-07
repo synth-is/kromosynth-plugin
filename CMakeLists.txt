@@ -179,12 +179,12 @@ if(KROMOSYNTH_IOS)
     set(CMAKE_THREAD_LIBS_INIT "" CACHE STRING "" FORCE)
 endif()
 
-# Apple platforms only. Fail loudly rather than producing a half-configured
-# build on another host.
-if(NOT APPLE)
+# Apple platforms only, or Windows.  Fail loudly rather than producing a
+# half-configured build on another host.
+if(NOT APPLE AND NOT WIN32)
     message(FATAL_ERROR
-        "kromosynth-plugin targets Apple platforms only: macOS (AU + VST3) and "
-        "iOS (Standalone + AUv3). Windows and Linux are Stage 3 — see "
+        "kromosynth-plugin targets macOS (AU + VST3), iOS (Standalone + AUv3), "
+        "and Windows (AU + VST3). Linux is Stage 3 — see "
         "WP_SYNTHIS_PLUGIN.md §7.")
 endif()
 

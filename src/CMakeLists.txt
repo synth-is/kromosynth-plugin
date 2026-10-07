@@ -141,6 +141,14 @@ juce_add_plugin(KromosynthPlugin
     PLIST_TO_MERGE           "${KROMOSYNTH_PLIST_MERGE}"
     REQUIRES_FULL_SCREEN     ${KROMOSYNTH_IOS}
 
+    # Windows: enable WebView2 (Edge Chromium) for the embedded browser.
+    # JUCE's juce_add_plugin accepts NEEDS_WEBVIEW2 TRUE and sets up the
+    # Microsoft.Web.WebView2 NuGet dependency.  The NuGet package must be
+    # available on the Windows build machine; the standard location is
+    # %ProgramFiles(x86)%\Microsoft\WebView2\win32_x86_64 or via the NuGet
+    # package Microsoft.Web.WebView2 in the project's NuGet sources.
+    NEEDS_WEBVIEW2           ${WIN32}
+
     # The shared container the AUv3 and its container app both read the
     # instrument library out of.
     #
@@ -282,6 +290,10 @@ target_compile_definitions(KromosynthPlugin PRIVATE
     JUCE_WEB_BROWSER=1
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
+
+    # Windows: tell JUCE to use the WebView2 runtime (Edge Chromium) for
+    # WebBrowserComponent.  On macOS / iOS this is silently ignored.
+    JUCE_USE_WIN_WEBVIEW2=1
 
     # STAGE 1 (2026-08-28): native integration and a resource provider are now
     # ON for the shell component. The Stage 0 reasoning below was correct and
