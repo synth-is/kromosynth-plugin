@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 /*  AuthSentinel.h — who the site says you are, carried over the one channel
     that exists.
 

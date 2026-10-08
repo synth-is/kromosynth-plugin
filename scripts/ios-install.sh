@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # ios-install.sh — gate, then install the built app on the phone.
 #
 # WHY THIS EXISTS AS A GATE AND NOT A COMMAND

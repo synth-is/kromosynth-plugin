@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 """Determinism of re-rendering, against rules pre-registered before any render ran.
 
 The pricing rule "re-rendering a form you own is free, forever" is a promise

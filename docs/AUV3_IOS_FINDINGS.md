@@ -709,7 +709,7 @@ the probe:
 
 ```
 $ plutil -p ~/Downloads/Users:.fileloc
-{ "URL" => "file:///Users/bjornpjo/Music/Synth.is/Renders/Synth.is%20FDN13.wav" }
+{ "URL" => "file:///Users/you/Music/Synth.is/Renders/Synth.is%20FDN13.wav" }
 ```
 
 Row 3 is the policy refusing out loud: WebKit will not even BEGIN a drag

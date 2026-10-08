@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // processor-probe — renders a fixed MIDI arpeggio through the plugin's own
 // KromosynthAudioProcessor, with no host, no editor and no audio device.
 //

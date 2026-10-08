@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // Palette.h — the web app's colours, in one place, for both surfaces.
 //
 // WHY THIS FILE EXISTS

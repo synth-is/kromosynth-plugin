@@ -54,7 +54,24 @@ BSD-2-Clause, static, `dr_libs` backend, no libsndfile.
 
 ## Licence
 
-Not yet chosen — and it is not a formality. WP §0 argues that open-sourcing the
-plugin dissolves the libfaust GPL question, which only works if JUCE's
-open-source terms are what the WP assumes. `cmake/JuceLicenceCheck.cmake`
-settles that at configure time. Pick the licence after it has run once.
+**AGPL-3.0-or-later.** The full text is in [`LICENSE`](LICENSE); every
+first-party source file carries `SPDX-License-Identifier: AGPL-3.0-or-later`
+and a copyright line. Copyright (C) 2026 Björn Þór Jónsson. A few build and
+test scripts (`scripts/gate.sh`, `scripts/null-test.sh`,
+`scripts/processor-diff.sh`, `tools/processor-probe/diff_wav.py`) and
+`cmake/JuceLicenceCheck.cmake` carry no header; they are first-party and
+covered by `LICENSE` all the same.
+
+- It relies on **JUCE's AGPLv3 option** (JUCE 9.0.1 is dual-licensed AGPLv3 /
+  commercial). `cmake/JuceLicenceCheck.cmake` verifies this at configure time
+  and fails the build if the JUCE header stops mentioning AGPL.
+- **libfaust is not linked.** Faust instruments are pre-compiled to WebAssembly
+  elsewhere and only the wasm bytes are executed (wasmtime, or wasm3 on iOS),
+  so the Faust compiler's GPL does not enter this binary.
+- The iOS app and its AUv3 extension ship under the AGPL too.
+- Code vs content: the AGPL covers the code in this repository. The licence of
+  evolved Faust `.dsp`/`.wasm` artefacts and of any sample content is a
+  separate matter, described (with what is still open) in
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), as are the licences of
+  JUCE, sfizz, wasmtime, wasm3, dr_libs and the rest. The "Synth.is" name and
+  logo are not licensed by the AGPL.

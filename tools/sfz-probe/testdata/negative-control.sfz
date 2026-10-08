@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // Negative control for sfz-probe. Deliberately broken.
 //
 // This file exists so the dump's zero-results can be believed. A conformance

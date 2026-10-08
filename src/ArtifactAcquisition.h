@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // ArtifactAcquisition — turning a sentinel URL into an installed instrument.
 //
 // Stage 1, WP_SYNTHIS_PLUGIN SS12 and SS13. KEEPABLE.

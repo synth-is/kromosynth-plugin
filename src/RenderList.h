@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // RenderList — the native half of the Library's Sounds sub-tab.
 //
 // Replaces RenderGutter, which was a full-width strip of chips along the bottom

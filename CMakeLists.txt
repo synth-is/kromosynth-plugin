@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 cmake_minimum_required(VERSION 3.24)
 
 # ── Kromosynth Plugin ────────────────────────────────────────────────────────

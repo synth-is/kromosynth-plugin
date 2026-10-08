@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # ios-build.sh — build the iOS AUv3 and its containing app.
 #
 # WHY THIS EXISTS

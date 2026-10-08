@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 #
 # Build a signed, notarised .pkg installer for the AU and VST3.
 #
@@ -150,7 +152,8 @@ ok "both bundles signed and verified"
 # CONTENTS of the root go.
 
 rm -rf "$STAGING"
-mkdir -p "$STAGING/au/Synth.is.component" "$STAGING/vst3/Synth.is.vst3" "$STAGING/out"
+mkdir -p "$STAGING/au/Synth.is.component" "$STAGING/vst3/Synth.is.vst3" \
+         "$STAGING/licences/Licences/third-party" "$STAGING/out"
 
 ditto "$AU"   "$STAGING/au/Synth.is.component"
 ditto "$VST3" "$STAGING/vst3/Synth.is.vst3"
@@ -166,6 +169,56 @@ pkgbuild --root "$STAGING/vst3" \
          --version "$VERSION" \
          --install-location "/Library/Audio/Plug-Ins/VST3" \
          "$STAGING/out/vst3.pkg" >/dev/null
+
+# ── Licences ────────────────────────────────────────────────────────────────
+#
+# AGPL-3.0-or-later (LICENSE), the third-party notices, and the licence texts
+# those notices point at, so the BSD/MIT/Apache "reproduce this notice in
+# binary form" terms are met by the installer itself. Outside the signed
+# bundles on purpose: adding files inside them after signing would break the
+# signature.
+
+LIC="$STAGING/licences/Licences"
+[ -f LICENSE ] || fail "no LICENSE at the repo root"
+[ -f THIRD_PARTY_NOTICES.md ] || fail "no THIRD_PARTY_NOTICES.md at the repo root"
+cp -X LICENSE THIRD_PARTY_NOTICES.md "$LIC/"
+
+WT_LICENSE="$(ls "$BUILD_DIR"/_wasmtime/*/LICENSE 2>/dev/null | head -1 || true)"
+SF=third_party/sfizz
+DR=$SF/external/st_audiofile/thirdparty
+while IFS='|' read -r name path; do
+  [ -f "$path" ] || fail "licence text for $name is missing: $path"
+  cp -X "$path" "$LIC/third-party/$name"
+done <<LIST
+JUCE.md|third_party/JUCE/LICENSE.md
+JUCE-VST3_SDK.txt|third_party/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK/LICENSE.txt
+sfizz.txt|$SF/LICENSE
+wasmtime.txt|$WT_LICENSE
+dr_libs.txt|$DR/dr_libs/LICENSE
+abseil-cpp.txt|$SF/external/abseil-cpp/LICENSE
+atomic_queue.txt|$SF/external/atomic_queue/LICENSE
+filesystem.txt|$SF/external/filesystem/LICENSE
+fmidi.md|$SF/external/fmidi/LICENSE.md
+jsl.md|$SF/external/jsl/LICENSE.md
+simde.txt|$SF/external/simde/COPYING
+st_audiofile.md|$SF/external/st_audiofile/LICENSE.md
+stb_vorbis.txt|$DR/stb_vorbis/LICENSE
+libaiff.txt|$DR/libaiff/LICENSE
+wavpack.txt|$DR/wavpack/license.txt
+cephes.txt|$SF/external/cephes/LICENSE.txt
+cpuid.rst|$SF/src/external/cpuid/LICENSE.rst
+hiir.txt|$SF/src/external/hiir/license.txt
+kiss_fft.txt|$SF/src/external/kiss_fft/COPYING
+pugixml.md|$SF/src/external/pugixml/LICENSE.md
+spline.txt|$SF/src/external/spline/LICENSE
+tunings.md|$SF/src/external/tunings/LICENSE.md
+LIST
+
+pkgbuild --root "$STAGING/licences" \
+         --identifier "is.synth.plugin.licences" \
+         --version "$VERSION" \
+         --install-location "/Library/Application Support/Synth.is" \
+         "$STAGING/out/licences.pkg" >/dev/null
 
 ok "component packages built"
 
@@ -185,6 +238,7 @@ cat > "$STAGING/distribution.xml" <<XML
     <choices-outline>
         <line choice="au"/>
         <line choice="vst3"/>
+        <line choice="licences"/>
     </choices-outline>
 
     <choice id="au" title="Audio Unit (AU)"
@@ -197,8 +251,14 @@ cat > "$STAGING/distribution.xml" <<XML
         <pkg-ref id="is.synth.plugin.vst3"/>
     </choice>
 
+    <choice id="licences" title="Licences" visible="false" start_selected="true"
+            description="AGPL-3.0-or-later and third-party notices. Installs to /Library/Application Support/Synth.is/Licences.">
+        <pkg-ref id="is.synth.plugin.licences"/>
+    </choice>
+
     <pkg-ref id="is.synth.plugin.au" version="$VERSION" onConclusion="none">au.pkg</pkg-ref>
     <pkg-ref id="is.synth.plugin.vst3" version="$VERSION" onConclusion="none">vst3.pkg</pkg-ref>
+    <pkg-ref id="is.synth.plugin.licences" version="$VERSION" onConclusion="none">licences.pkg</pkg-ref>
 </installer-gui-script>
 XML
 

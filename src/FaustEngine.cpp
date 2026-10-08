@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // FaustEngine.cpp — see the header for why each decision here is what it is.
 //
 // The wasm3 driving code is a port of probe/gate0/host_wasm3.c, which produced

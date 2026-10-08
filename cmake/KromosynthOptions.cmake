@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # Per-target compile configuration.
 #
 # KEEPABLE. Deliberately thin — one function, no policy beyond warnings and

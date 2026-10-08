@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // Renders the shell page standalone in a browser, with a stub bridge.
 //
 // WHY THIS EXISTS. §6 of the session prompt records, twice, asserting layout

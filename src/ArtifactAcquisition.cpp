@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 #include "ArtifactAcquisition.h"
 
 // For fileNameFor only. This file does NOT resolve the outbox location itself --

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // Paste over the template's ContentView.swift.
 //
 // Deliberately trivial. The measurement is in C; this is a button and a

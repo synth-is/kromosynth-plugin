@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # ── Plugin target ────────────────────────────────────────────────────────────
 #
 # The juce_add_plugin call and its link/definition blocks are KEEPABLE.

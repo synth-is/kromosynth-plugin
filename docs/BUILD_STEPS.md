@@ -11,7 +11,7 @@ Total time on a warm machine: **5 minutes of typing, 15–40 minutes of waiting*
 ## 0. Preflight — 30 seconds
 
 ```sh
-cd /Users/bjornpjo/Developer/apps/synth.is/kromosynth-plugin
+cd <repo>
 bash scripts/check-deps.sh
 ```
 
@@ -63,7 +63,7 @@ which exists so you can attach a debugger to a host.
 ## 1. Initialise the repository — 1 minute
 
 ```sh
-cd /Users/bjornpjo/Developer/apps/synth.is/kromosynth-plugin
+cd <repo>
 git init
 git add .
 git commit -m "Stage 0: build layer for the Synth.is plugin shell"
@@ -132,7 +132,7 @@ full JUCE clone carries the whole history (~1.5 GB) and the Debug build tree
 adds several GB on top. Clone only the tag:
 
 ```sh
-cd /Users/bjornpjo/Developer/apps/synth.is/kromosynth-plugin
+cd <repo>
 git clone --depth 1 --branch 9.0.1 \
   https://github.com/juce-framework/JUCE.git third_party/JUCE
 git submodule add https://github.com/juce-framework/JUCE.git third_party/JUCE

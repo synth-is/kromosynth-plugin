@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // ShellPage — the local UI the plugin serves to itself.
 //
 // Stage 1. Small on purpose, and the smallness is the design, not a shortcut.

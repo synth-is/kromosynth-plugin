@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # Wasm3.cmake — the interpreter backend, for platforms that forbid JIT.
 #
 # WHY A SECOND RUNTIME EXISTS AT ALL

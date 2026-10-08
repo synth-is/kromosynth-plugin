@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // See ExternalBrowser.h for why this dispatch exists at all, and for the
 // measured history of what was tried before presentSafariView.
 
