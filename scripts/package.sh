@@ -183,6 +183,24 @@ LIC="$STAGING/licences/Licences"
 [ -f THIRD_PARTY_NOTICES.md ] || fail "no THIRD_PARTY_NOTICES.md at the repo root"
 cp -X LICENSE THIRD_PARTY_NOTICES.md "$LIC/"
 
+# AGPL source offer. The public repo URL is not decided yet, so SOURCE_URL is
+# empty until it is: set it (env or edit) and the offer names it. Until then
+# the offer points at the contact address only.
+SOURCE_URL="${SOURCE_URL:-}"
+{
+  echo "Synth.is plugin $VERSION - source offer"
+  echo
+  echo "This software is licensed AGPL-3.0-or-later (see LICENSE). The complete"
+  echo "corresponding source for this exact version is available to anyone who"
+  echo "received these binaries."
+  echo
+  if [ -n "$SOURCE_URL" ]; then
+    echo "Source: $SOURCE_URL (tag v$VERSION)"
+  else
+    echo "Source: on request, see README.md in the source repository."
+  fi
+} > "$LIC/SOURCE_OFFER.txt"
+
 WT_LICENSE="$(ls "$BUILD_DIR"/_wasmtime/*/LICENSE 2>/dev/null | head -1 || true)"
 SF=third_party/sfizz
 DR=$SF/external/st_audiofile/thirdparty
@@ -194,6 +212,7 @@ JUCE.md|third_party/JUCE/LICENSE.md
 JUCE-VST3_SDK.txt|third_party/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK/LICENSE.txt
 sfizz.txt|$SF/LICENSE
 wasmtime.txt|$WT_LICENSE
+wasm3.txt|tools/ios-gate0/wasm3/LICENSE
 dr_libs.txt|$DR/dr_libs/LICENSE
 abseil-cpp.txt|$SF/external/abseil-cpp/LICENSE
 atomic_queue.txt|$SF/external/atomic_queue/LICENSE

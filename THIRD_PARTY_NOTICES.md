@@ -16,7 +16,7 @@ Checked on 2026-10-08 against the files named below, not from memory.
 | JUCE | 9.0.1 (pinned submodule `third_party/JUCE`) | AGPL-3.0 option of JUCE's AGPLv3 / commercial dual licence. **This project uses the AGPLv3 option.** | `third_party/JUCE/LICENSE.md` ("dual-licensed under the AGPLv3 and the commercial JUCE licence"); `cmake/JuceLicenceCheck.cmake` re-checks the module header at every configure |
 | sfizz (sampler engine, `-DKROMOSYNTH_BUILD_SAMPLER=ON`) | 1.2.3 (submodule `third_party/sfizz`) | BSD-2-Clause | `third_party/sfizz/LICENSE` |
 | wasmtime (Faust engine on macOS/Windows) | 48.0.1, prebuilt C-API tarball fetched by `cmake/Wasmtime.cmake` | Apache-2.0 WITH LLVM-exception | `LICENSE` inside the tarball (`<build>/_wasmtime/wasmtime-v48.0.1-*/LICENSE`): Apache License 2.0 text plus a "LLVM Exceptions to the Apache 2.0 License" section |
-| wasm3 (Faust engine on iOS, `-DKROMOSYNTH_WASM3=ON`) | copy in `tools/ios-gate0/wasm3` | **UNVERIFIED from the repo.** See "Flagged" below. | no licence file in the repo |
+| wasm3 (Faust engine on iOS, `-DKROMOSYNTH_WASM3=ON`) | copy in `tools/ios-gate0/wasm3` | MIT, Copyright (c) 2019 Steven Massey, Volodymyr Shymanskyy (`extra/wasi_core.h` is CC0-1.0 by its own header) | `tools/ios-gate0/wasm3/LICENSE`, copied from upstream `github.com/wasm3/wasm3` |
 | dr_libs (`dr_wav`, `dr_flac`, `dr_mp3`), via sfizz's st_audiofile | as vendored by sfizz | Public domain (Unlicense) **or** MIT-0, your choice | `third_party/sfizz/external/st_audiofile/thirdparty/dr_libs/LICENSE` |
 
 ### JUCE's own bundled dependencies
@@ -103,36 +103,28 @@ WebAssembly elsewhere and only the wasm bytes are executed (wasmtime / wasm3).
 
 ## Flagged: not verifiable from the repository
 
-1. **wasm3** (`tools/ios-gate0/wasm3/`). The directory has no `LICENSE` file;
-   the source headers say only "Copyright © 2019 Steven Massey. All rights
-   reserved." (`extra/wasi_core.h` is marked CC0-1.0 by its own header). The
-   upstream project's `LICENSE` (fetched from
-   `github.com/wasm3/wasm3`, not from this repo) is the MIT licence,
-   "Copyright (c) 2019 Steven Massey, Volodymyr Shymanskyy", which is
-   AGPL-compatible. The vendored copy still needs that file added to be
-   compliant when binaries ship (the MIT notice must travel with the code).
-   The iOS build takes its wasm3 sources from the `kromosynth-projects`
-   sibling probe, which was not available when this was written.
-2. **cephes** (sfizz `external/cephes/LICENSE.txt`). The "licence" is an
+1. **cephes** (sfizz `external/cephes/LICENSE.txt`). The "licence" is an
    e-mail from the author to a third party saying "BSD license is fine".
    That is a permissive grant, but it is not a licence text, so it is flagged.
-3. **wasmtime's Rust dependencies.** The C-API tarball ships only wasmtime's
+2. **wasmtime's Rust dependencies.** The C-API tarball ships only wasmtime's
    own `LICENSE` and `README`; the licences of the crates compiled into
    `libwasmtime.a` are not in the tarball and were not audited.
-4. **ThreadPool** (sfizz): zlib per its SPDX header, no licence file.
-5. **JUCE's bundled sub-dependencies**: taken from JUCE's `LICENSE.md`, not
+3. **ThreadPool** (sfizz): zlib per its SPDX header, no licence file.
+4. **JUCE's bundled sub-dependencies**: taken from JUCE's `LICENSE.md`, not
    each re-read (see above).
-6. **Vendored-file incompatibility with AGPLv3: none found.** Everything
+5. **Vendored-file incompatibility with AGPLv3: none found.** Everything
    listed above is permissive (MIT, BSD, BSL, zlib, Apache-2.0, Unlicense,
    WTFPL) or is the AGPL option of JUCE; Apache-2.0 is compatible with
-   AGPLv3. The only files that carry a header that is not an open licence are
-   the wasm3 sources (rule 1 above).
+   AGPLv3.
 
 ## What the installer ships
 
 `scripts/package.sh` installs `LICENSE`, this file and the licence texts of the
-components above (copied from the paths in this file) into
-`/Library/Application Support/Synth.is/Licences/`.
+components above (copied from the paths in this file, including
+`third-party/wasm3.txt`) into `/Library/Application Support/Synth.is/Licences/`,
+plus `SOURCE_OFFER.txt`, the AGPL source offer. It names the public repository
+URL once `SOURCE_URL` is set in `scripts/package.sh`'s environment; the README
+Licence section should carry the same URL when the repo is public.
 
 `cmake/JuceLicenceCheck.cmake` carries no SPDX header on purpose: it is the
 configure-time licence guard and is kept byte-for-byte unchanged; it is
