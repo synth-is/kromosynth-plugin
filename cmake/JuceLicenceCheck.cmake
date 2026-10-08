@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # Configure-time assertion that the vendored JUCE is under the open-source
 # licence this project claims to comply with.
 #

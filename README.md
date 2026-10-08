@@ -56,11 +56,7 @@ BSD-2-Clause, static, `dr_libs` backend, no libsndfile.
 
 **AGPL-3.0-or-later.** The full text is in [`LICENSE`](LICENSE); every
 first-party source file carries `SPDX-License-Identifier: AGPL-3.0-or-later`
-and a copyright line. Copyright (C) 2026 Björn Þór Jónsson. A few build and
-test scripts (`scripts/gate.sh`, `scripts/null-test.sh`,
-`scripts/processor-diff.sh`, `tools/processor-probe/diff_wav.py`) and
-`cmake/JuceLicenceCheck.cmake` carry no header; they are first-party and
-covered by `LICENSE` all the same.
+and a copyright line. Copyright (C) 2026 Björn Þór Jónsson.
 
 - It relies on **JUCE's AGPLv3 option** (JUCE 9.0.1 is dual-licensed AGPLv3 /
   commercial). `cmake/JuceLicenceCheck.cmake` verifies this at configure time
