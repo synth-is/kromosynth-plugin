@@ -95,9 +95,24 @@ cmake --build "$BUILD_DIR" --config "$CONFIG" --target "$TARGET"
 
 after_mtime="$(stat -f '%m' "$APPEX/Synth.is")"
 
+# Privacy manifest in BOTH bundles (synthis-59r.17). Apple reads one per bundle
+# and the appex does not inherit the app's; a missing one is a submission
+# warning today and a rejection later, and nothing in the build would say so.
+# Attached in src/CMakeLists.txt; contents traced in docs/IOS_PRIVACY_MANIFEST.md.
+for bundle in "$APP" "$APPEX"; do
+  [ -f "$bundle/PrivacyInfo.xcprivacy" ] \
+    || fail "no PrivacyInfo.xcprivacy at the root of ${bundle#"$BUILD_DIR"/}.
+      If you changed src/CMakeLists.txt, rerun 'cmake -S . -B $BUILD_DIR' first:
+      xcodebuild does not depend on ZERO_CHECK, so a stale project is the
+      likeliest cause."
+  plutil -lint "$bundle/PrivacyInfo.xcprivacy" >/dev/null \
+    || fail "$bundle/PrivacyInfo.xcprivacy is not a valid plist."
+done
+
 say ""
 say "app    $APP_REL"
 say "appex  PlugIns/Synth.is.appex"
+say "privacy PrivacyInfo.xcprivacy in both bundles"
 say "built  $(date -r "$after_mtime" '+%Y-%m-%d %H:%M:%S')"
 
 if [ -n "$before_mtime" ] && [ "$before_mtime" = "$after_mtime" ]; then
