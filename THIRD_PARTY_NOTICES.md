@@ -89,16 +89,17 @@ WebAssembly elsewhere and only the wasm bytes are executed (wasmtime / wasm3).
   runtime from the user's Synth.is account; they are not part of the
   installer. Twelve evolved modules are embedded as byte arrays in
   `tools/ios-gate0/src/Gate0Data.c` (benchmark only, not in the plugin). The
-  AGPL here covers the **code** in this repository. The licence of the
-  *artefacts* (what a user may do with a rendered sound, a `.dsp` or a
-  `.wasm` they evolved or downloaded) is **not settled by anything in this
-  repository** — it depends on the Synth.is terms of service and on the
-  licences of the Faust compiler and Faust libraries that produced the code.
-  A decision has been requested (see the follow-up bead listed in the commit
-  message of this change). Until then nothing in this repository grants or
-  restricts rights in the artefacts, and the AGPL is not claimed over them.
-- **Trademark.** "Synth.is" and its logo are not licensed by the AGPL. The
-  AGPL grants copyright permissions in the code only.
+  AGPL covers the **code** in this repository only. Artefacts and renders
+  are not AGPL: Synth.is claims no copyright in what a user evolved or
+  rendered, which may be used freely including commercially, as is, subject to
+  the upstream Faust licences. The embedded modules are benchmark fixtures on
+  the same terms. Full decision:
+  [`docs/ARTEFACT_LICENCE_DECISION.md`](docs/ARTEFACT_LICENCE_DECISION.md).
+  (Upstream Faust compiler/library licences are an assumption to confirm
+  before public release; see that document.)
+- **Trademark and icon.** "Synth.is", its logo and the designer-supplied
+  AppIcon are not licensed by the AGPL; forks must replace them (decision
+  section 3).
 
 ## Flagged: not verifiable from the repository
 

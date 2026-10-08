@@ -69,9 +69,10 @@ covered by `LICENSE` all the same.
   elsewhere and only the wasm bytes are executed (wasmtime, or wasm3 on iOS),
   so the Faust compiler's GPL does not enter this binary.
 - The iOS app and its AUv3 extension ship under the AGPL too.
-- Code vs content: the AGPL covers the code in this repository. The licence of
-  evolved Faust `.dsp`/`.wasm` artefacts and of any sample content is a
-  separate matter, described (with what is still open) in
-  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), as are the licences of
-  JUCE, sfizz, wasmtime, wasm3, dr_libs and the rest. The "Synth.is" name and
-  logo are not licensed by the AGPL.
+- Code vs content: the AGPL covers the code in this repository. Evolved
+  Faust `.dsp`/`.wasm` artefacts and renders are not AGPL: Synth.is claims no
+  copyright in them and they may be used freely, as is (see
+  [`docs/ARTEFACT_LICENCE_DECISION.md`](docs/ARTEFACT_LICENCE_DECISION.md)).
+  Third-party licences (JUCE, sfizz, wasmtime, wasm3, dr_libs, ...) are in
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). The "Synth.is" name,
+  logo and app icon are not licensed by the AGPL.
