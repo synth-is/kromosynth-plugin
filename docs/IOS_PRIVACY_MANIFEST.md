@@ -6,10 +6,15 @@ One file, `resources/ios/PrivacyInfo.xcprivacy`, attached to both bundles in
 `PlugIns/Synth.is.appex` lacks `PrivacyInfo.xcprivacy` at its root. Both targets
 link the same shared-code target, so the declarations are identical.
 
-Not verified on a build: this worktree has no Xcode generator, so the CMake
+Not yet verified on a build. On 2026-10-08 the Mac Studio had Xcode 27.0, but
+`xcodebuild` could not load `CoreSimulator.framework` (`/Library/Developer/
+PrivateFrameworks/` is missing; `xcodebuild -checkFirstLaunchStatus` exits 69),
+so CMake's Xcode-generator configure found no compiler. It needs
+`sudo xcodebuild -runFirstLaunch` (installs the components) once. After that,
+configure `build/ios-auv3` by hand and run `./scripts/ios-build.sh`: the CMake
 attachment (`MACOSX_PACKAGE_LOCATION Resources`, which CMake flattens to the
-bundle root on iOS) is untested until `./scripts/ios-build.sh` runs on a machine
-with Xcode. The script's check is what will say.
+bundle root on iOS) is untested until then, and the script's check is what will
+say.
 
 ## Tracking and data collected
 
