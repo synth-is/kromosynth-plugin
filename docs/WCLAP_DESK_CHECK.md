@@ -218,3 +218,57 @@ against it.
 3. Keep GPL engine WCLAPs out of the iOS binary; deliver SFZ there.
 4. Build the Node-host to SFZ step in kromosynth-vi (3 to 5 days).
 5. Then the plugin `WclapEngine` (14 to 18 days).
+
+## 6. Addendum: wclap-bridge read upstream (synthis-aa4.38, 2026-10-12)
+
+Source: `github.com/WebCLAP/wclap-bridge`, default branch, read through a
+web-fetch summariser (README, `LICENSE.txt`, `CMakeLists.txt`,
+`wasmtime-fetched.cmake`, `include/wclap-bridge.h`). No tag or commit was
+pinned and nothing was built, so re-read the exact commit when vendoring.
+
+- **Licence: BSL-1.0 (Boost Software License 1.0). AGPL-compatible: yes.**
+  BSL-1.0 is permissive, and GPL-family projects can include it. It can be
+  linked into the AGPL plugin. The text carries no copyright-holder name, so
+  take the holder from the README or the commit history when writing the
+  notice. For the binary-only case BSL-1.0 needs no attribution at all.
+  `THIRD_PARTY_NOTICES.md` entry to add, in its table style:
+  `wclap-bridge | <pinned commit> | BSL-1.0 | <vendored path>/LICENSE.txt`.
+  Its bundled Wasmtime (below) is Apache-2.0 WITH LLVM-exception, the same as
+  ours. The WCLAP and wclap-host-js licences were not checked here.
+- **Library API: yes.** The repo has two parts. A `wclap-bridge` CMake target
+  (`add_library(wclap-bridge STATIC)`, `include/wclap-bridge.h`) is a C API of
+  about 10 functions: `wclap_global_init(timeLimitMs)`, `wclap_open(dir)`,
+  `wclap_open_with_dirs`, `wclap_close`, `wclap_get_error`, `wclap_version`,
+  `wclap_bridge_version`, `wclap_get_factory(handle, factory_id)`,
+  `wclap_set_strings`, `wclap_global_deinit`. `wclap_get_factory` returns the
+  same thing a native `clap_entry.get_factory()` does, so we get a normal CLAP
+  factory and drive `clap_plugin` (activate, process, events, `clap.state`)
+  ourselves. `plugin/` is the separate CLAP/VST3 wrapper built on it.
+  So `WclapEngine` is a thin CLAP host over this API, as section 1 assumed.
+- **Wasmtime: 39.0.1**, static (`.a`/`.lib`, macOS fat via `lipo`), linked
+  PRIVATE into the bridge library. **Clash with our pinned 48.0.1: yes.** Both
+  are static archives exporting the same unprefixed `wasm_*`/`wasmtime_*`/
+  `wasi_*` C symbols, and a 39 and a 48 in one binary give duplicate-symbol
+  link errors or, worse, silent mixing of two ABIs. `PRIVATE` linking does not
+  hide symbols in a static archive. Fix: build the bridge's sources against
+  our `cmake/Wasmtime.cmake` 48.0.1 and skip its `wasmtime-fetched.cmake`.
+  The bridge uses the C API only, which is stable between releases, but the
+  39 to 48 gap is nine majors and the call sites must be compiled and
+  checked. The fallback is keeping the bridge on 39.0.1 and moving FaustEngine
+  to it, which is worse (it changes a shipped, null-tested engine).
+- **Real-time warning (new, from the README).** If the WCLAP does not support
+  threads (it exports its memory instead of importing it), "the main thread
+  is used for everything, so the audio thread _may_ block". Thread-aware
+  WCLAPs get their own arena and `Instance` per plugin, which is real-time
+  safe. Whether Surge XT's WCLAP is thread-aware is not known; test it before
+  trusting `processBlock`. Webview GUI is "partially supported" (the bridge
+  provides the host side of the webview draft extension and maps it to
+  `clap.gui`), so the editor swing factor of 3 to 5 days stands.
+- **Does the 14 to 18 day estimate hold? Yes, with +1 to 2 days.** The
+  licence and API gates both pass, so the "stop if" in section 5, item 1 does
+  not trigger. Step 1 (vendor) grows from 1 day to 2 to 3 for re-pointing the
+  bridge at our Wasmtime 48.0.1 and fixing any C-API drift. Revised total:
+  **15 to 20 working days** (12 with the generic parameter UI). Risk 6 in
+  section 1 (threads) is now partly answered: the bridge supports them
+  through shared memory. The new risk is the non-thread-aware main-thread
+  fallback above.
