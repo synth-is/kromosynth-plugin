@@ -6,8 +6,8 @@ Run 2026-10-12, unattended, on the Mac Studio-class arm64 macOS laptop. Follows
 **Headline.** The Surge XT WCLAP was driven headlessly through the wclap-bridge C
 API and produced audio, and a state save/load round trip worked on the instance that
 survived creation. It was **not** run inside the Synth.is plugin and **not** in a DAW.
-Plugin creation in the bridge is flaky (3 of 12 runs), a second instance crashes,
-and nothing about the editor was exercised. Of the four checks, none is fully
+Plugin creation in the bridge was flaky (3 of 12 runs) and a second instance crashed;
+both were found in aa4.40 (findings 4 and 5: a bridge bug and a probe bug, both fixed here). Nothing about the editor was exercised. Of the four checks, none is fully
 demonstrated; what each one did and did not show is listed in section 2.
 
 ## 1. What was built
@@ -56,14 +56,32 @@ the bridge into the plugin as is means two Wasmtimes in one binary. Not attempte
    logs "User directory is non-writable" and creation fails; `wclap_open_with_dirs`
    with real preset/cache/var directories gets further. Whether that is the whole
    cause is unknown.
-4. **Plugin creation is flaky.** 3 of 12 consecutive runs reached audio; the rest
-   returned a null plugin from `create_plugin` (sometimes with "libc++abi:
-   terminating"). Cause not found. Do not build on this until it is.
-5. **A second instance panics Wasmtime**: "object used with the wrong store"
-   (`store/data.rs:196`), aborting the process. It hit in every run that reached
-   the fresh-instance stage, so `CHECK_STATE_ROUNDTRIP_FRESH_INSTANCE` never ran for
-   the WCLAP. That is what a DAW does when it reloads a session, so this blocks the
-   state check in a DAW. The native `.clap` passes both stages.
+4. **Plugin creation was flaky: a wclap-bridge bug (synthis-aa4.40).** 3 of 12 runs reached audio
+   (the rerun in aa4.40 saw 1 to 3 of 12); the rest returned a null plugin from `create_plugin`.
+   Root cause: `WclapModuleBase::hostTemplate` (`source/_generic/wclap-module-base.h:127`,
+   bridge cd11d22) is declared `wclap_host hostTemplate;` and only its four function fields are
+   ever filled, so `host->clap_version` (and name, vendor, url, version) is whatever the heap
+   held. The JUCE WCLAP wrapper (`juce_webclap_clap.cpp`, factory `create_plugin`) returns null
+   unless `clap_version_is_compatible(host->clap_version)` (major >= 1); fresh heap is mostly
+   zero, so most runs failed silently, which is why nothing was logged. It is not the probe's
+   single-thread driving: a single-thread WCLAP (this module has no `wasi thread-spawn`) uses one
+   Wasmtime store for the whole module and every call came from one thread. Fix (2 lines, in
+   `build()` of `scripts/wclap-spike.sh`): `wclap_host hostTemplate{};` and
+   `hostTemplate.clap_version = {CLAP_VERSION_MAJOR, CLAP_VERSION_MINOR, CLAP_VERSION_REVISION};`
+   in the `WclapModule` constructor. With it: 12 of 12 creations and a passing
+   `CHECK_STATE_ROUNDTRIP_FRESH_INSTANCE`, on Wasmtime 39.0.1 and on 48.0.1 (the bug is in the
+   bridge, so 48.0.1 alone does not fix it: unpatched it failed 11 of 12 there too). To upstream:
+   see `.bdloop/proposals.json`.
+5. **The "second instance panic" was the probe's mistake, with a bridge sharp edge
+   (synthis-aa4.40).** CLAP extensions are per plugin instance, and wclap-bridge stores the
+   guest's extension pointers in its `Plugin` object, filling them in on `get_extension()`. The
+   probe asked only the first plugin and reused its `clap_plugin_state_t` on the second, so the
+   bridge's `Plugin::state_load` called guest function-table slot 0 (a null funcref, which has no
+   store), and Wasmtime panicked with "object used with the wrong store" (`store/data.rs:196`;
+   the log showed `fnP=0`). Fixed in `tools/wclap-probe/main.cpp` by calling
+   `b->get_extension(b, CLAP_EXT_STATE)`. The bridge still turns a call before `get_extension`
+   into an abort instead of an error (`wtCall` does not check for a null funcref); worth a
+   guard upstream. A DAW calls `get_extension` per instance, so it is not exposed to this.
 6. **CPU.** Same host code, 4 s of a held middle-C, default patch, 256-frame blocks,
    fraction of real time on one core. Native: 0.0034 to 0.0039 (3 runs). WCLAP:
    0.0077 to 0.0084 (3 runs). About **2.1 to 2.4x**, against WebCLAP's quoted ~1.5x.
@@ -108,14 +126,14 @@ the bridge into the plugin as is means two Wasmtimes in one binary. Not attempte
 Inputs it expects (override with `WCLAP_SRC`, `NATIVE_CLAP`): a Surge XT WCLAP
 directory built by `~/wclap-native/juce-webclap-plugins/scripts/build-surge-xt.sh`
 (its `module.wasm`) and a native Surge XT `.clap` from `~/wclap-native/surge-native`.
-Both were already on this machine; neither is in this repo. The WCLAP half is flaky
-(finding 4): the script retries up to six times.
+Both were already on this machine; neither is in this repo. The script patches the
+bridge for finding 4 and keeps a six-attempt retry only as a guard.
 
 ## 5. Recommendation
 
-Do not start `WclapEngine` yet. First: (a) find why creation is flaky and why a second
-instance panics (a bridge/Wasmtime-39 bug, or a mistake in how the probe drives it);
-(b) ask the juce-webclap-plugins build for exnref output; (c) retry on Wasmtime 48.
+Do not start `WclapEngine` yet. First: (a) done in aa4.40 (findings 4 and 5: an uninitialised
+`hostTemplate` in the bridge, and a probe that skipped per-instance `get_extension`); send
+the bridge fix upstream; (b) ask the juce-webclap-plugins build for exnref output; (c) Wasmtime 48.0.1 retried in aa4.40: works with the same patch (the C API there takes a bool for `wasi_config_preopen_dir` permissions, so the bridge needs a small port).
 If (a) turns out to be a bridge defect with no quick fix, the alternative is to host
 the WCLAP with the Wasmtime that `FaustEngine` already uses and write the CLAP-over-wasm
 glue ourselves, which is larger than the desk check's estimate.

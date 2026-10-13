@@ -37,6 +37,22 @@ assert k in s
 open(p, 'w').write(s.replace(k, '\twasmtime_config_wasm_exceptions_set(config, true);\n' + k, 1))
 PY
   fi
+  # wclap-bridge cd11d22 never initialises WclapModuleBase::hostTemplate, so host->clap_version handed to
+  # the guest's create_plugin is heap garbage; the JUCE WCLAP wrapper returns null unless
+  # clap_version_is_compatible() (major >= 1). That was the "flaky creation" (synthis-aa4.40). Idempotent.
+  python3 - "$WORK/wclap-bridge/source/_generic" <<'PY'
+import sys
+d = sys.argv[1]
+p = d + '/wclap-module-base.h'; s = open(p).read()
+if 'wclap_host hostTemplate{};' not in s:
+    assert '\twclap_host hostTemplate;\n' in s
+    open(p, 'w').write(s.replace('\twclap_host hostTemplate;\n', '\twclap_host hostTemplate{};\n', 1))
+p = d + '/wclap-module.h'; s = open(p).read()
+k = '\t\tif (hasError) return; // base class failed\n'
+if 'hostTemplate.clap_version' not in s:
+    assert k in s
+    open(p, 'w').write(s.replace(k, k + '\t\thostTemplate.clap_version = {CLAP_VERSION_MAJOR, CLAP_VERSION_MINOR, CLAP_VERSION_REVISION};\n', 1))
+PY
   cmake -S "$WORK/wclap-bridge" -B "$WORK/wclap-bridge/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
   cmake --build "$WORK/wclap-bridge/build" -j"$(sysctl -n hw.ncpu)" >/dev/null
   cmake -S tools/wclap-probe -B "$WORK/probe-build" -DCMAKE_BUILD_TYPE=Release -DWCLAP_BRIDGE_DIR="$WORK/wclap-bridge" >/dev/null
@@ -57,8 +73,8 @@ run() {
   mkdir -p "$WORK/data/presets" "$WORK/data/cache" "$WORK/data/var"
   export WCLAP_PROBE_DATA="$WORK/data" WCLAP_PROBE_TIME_LIMIT_MS=0
   echo "── native Surge XT"; "$WORK/probe-build/wclap-probe" "$NATIVE_CLAP" || true
-  # Creating the WCLAP plugin is FLAKY (about 40% succeed) and a second instance panics Wasmtime
-  # ("object used with the wrong store"); retry until one run gets as far as it can.
+  # With the build() patches creation succeeds every time; the retry is kept only as a guard
+  # (before the hostTemplate patch about 1 run in 4 to 12 got through).
   for i in 1 2 3 4 5 6; do
     echo "── WCLAP Surge XT, attempt $i"
     "$WORK/probe-build/wclap-probe" "$WORK/surge.wclap" >"$WORK/wclap-run.txt" 2>&1 && ok=0 || ok=$?

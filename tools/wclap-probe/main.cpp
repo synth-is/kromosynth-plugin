@@ -201,12 +201,18 @@ int main(int argc, char** argv) {
         // and check it still makes sound. Audio is not compared sample for sample: the native Surge XT
         // does not render two fresh instances identically either (random oscillator phase).
         const clap_plugin_t* b = make();
+        // CLAP: extensions are per plugin instance. wclap-bridge keeps the guest's extension pointers
+        // in the Plugin object and fills them in on get_extension(), so using `a`'s `state` struct on
+        // `b` without asking `b` calls guest function-table slot 0 and Wasmtime panics
+        // ("object used with the wrong store": a null funcref has no store). See
+        // docs/PLUGIN_AS_HOST_SPIKE.md finding 5.
+        auto* stateB = b ? (const clap_plugin_state_t*)b->get_extension(b, CLAP_EXT_STATE) : nullptr;
         Mem mb = m1;
         auto ibb = mkIn(&mb);
-        bool l2 = b && state->load(b, &ibb);
+        bool l2 = stateB && stateB->load(b, &ibb);
         Mem m3;
         auto os3 = mkOut(&m3);
-        bool s3 = l2 && state->save(b, &os3);
+        bool s3 = l2 && stateB->save(b, &os3);
         Run rb;
         if (l2) rb = render(b, sr, block, 1.0, 64);
         bool same2 = s3 && m3.b == m1.b && rms(rb.L) > 1e-5;
