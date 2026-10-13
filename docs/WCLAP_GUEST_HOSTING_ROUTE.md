@@ -25,12 +25,33 @@ wasm-merge surge/module.wasm host surge/module.wasm guest -o merged.wasm --all-f
 - Node 22 compiled and instantiated it (WASI imports stubbed to return 0) and both
   `_initialize` functions ran. Both memories were 32 MiB at start.
 
-**Not shown:** that Surge then makes sound out of the merged copy (no CLAP host loop was
-driven); that a guest reached through `wasm-merge`'s import-to-export linking works when the
+**Not shown (but see 1b for the first):** that Surge makes sound out of the merged copy (shown in 1b);
+that a guest reached through `wasm-merge`'s import-to-export linking works when the
 host module calls it; Firefox, Chrome, Safari; WebCLAP browser host; openDAW. The test used
 the same module twice, so it says nothing about merging two *different* toolchains' output.
 It also says nothing about the wasm-exceptions issue (finding 1 of the spike) for native
 hosts: browsers and Node accept the legacy form, Wasmtime does not.
+
+### 1b. Merged module plays in a CLAP host loop (synthis-aa4.42, 2026-10-13)
+
+`scripts/wclap-merged-host.mjs` (Node v22.23.1, not in the gate) builds the same `wasm-merge` output
+and drives the **guest** half (`clap_entry_15`, `memory_11`, `__indirect_function_table_12`, `malloc_14`)
+as a minimal single-threaded CLAP host, struct offsets ported from juce_webclap's
+`test-host/clap-host-worklet.js`. Result (exit 0):
+
+- `clap_entry` -> plugin factory -> "Surge XT" created, 775 params, activated at 48 kHz.
+- 20 blocks before a note: RMS 0 exactly. Note-on key 60 for 150 blocks of 128: **RMS 0.1011**, peak 0.268.
+- State: `clap.state` save = 58603 bytes; a parameter moved 0 -> 0.75 after the save went back to 0
+  after loading it; the re-saved state is byte-identical; the next note sounds (RMS 0.1011).
+- Guest activity left the host half's first 64 KiB of memory unchanged (two real memories).
+
+Caveats: (a) the host half of the merge never *calls* the guest here, JavaScript does, through the
+guest's suffixed exports; import-to-export linking (host module calling `clap_entry` of the guest
+directly) is still untried. (b) Both halves are the same Surge binary. (c) The two halves share one
+WASI import namespace, so a shim cannot tell whose memory a pointer belongs to: the script switches an
+`active` memory by hand. A real merged host needs distinct import module names (rename one side before
+merging) or no WASI in the guest. (d) The perturbed parameter is the first continuous one ("M1: -",
+a modulator slot), so the state check proves round-tripping, not a particular sound change.
 
 ## 2. Route per guest engine (reasoning; no product-specific handling anywhere)
 
@@ -96,7 +117,7 @@ already exist (WCLAP source was not re-read).
 
 ## 4. Recommendation and follow-ups (not filed)
 
-1. Prove the merge end to end first, cheaply: write a ~100-line CLAP host in Node 22 (or
+1. (Done, see 1b; the linking variant remains.) Prove the merge end to end first, cheaply: write a ~100-line CLAP host in Node 22 (or
    reuse `clap-host-worklet.js`) that loads `merged.wasm`, drives the guest's
    `clap_entry`, plays a note and checks RMS. Half a day.
 2. Then the WCLAP target for the plugin (sampler + libfaust interpreter) and a measurement of
