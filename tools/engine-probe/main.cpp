@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // engine-probe — exercises SamplerEngine's channel-layout paths directly.
 //
 // DEVELOPER TOOL, never shipped.

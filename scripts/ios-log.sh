@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # ios-log.sh — find and pull the plugin's log off the phone.
 #
 # STATUS: THE RETRIEVAL PATH IS UNVERIFIED. Read the next section before

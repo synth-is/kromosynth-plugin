@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 """
 For a host-free check of the processor (no Reaper, runs in the agent loop), see
 scripts/processor-diff.sh. This tool is for the AU-against-VST3 comparison.

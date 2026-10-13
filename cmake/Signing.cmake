@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # Code signing — Developer ID, hardened runtime, notarisation.
 #
 # KEEPABLE.
@@ -117,7 +119,11 @@ function(kromosynth_sign_plugin_targets shared_code_target)
         # Re-copy over JUCE's already-copied, ad-hoc-signed bundle.
         get_target_property(dest "${fmt_target}" JUCE_PLUGIN_COPY_DIR)
 
-        if(dest)
+        # JUCE sets JUCE_PLUGIN_COPY_DIR whether or not the copy step is
+        # enabled, so `dest` alone is not evidence that a copy is wanted.
+        # Without this guard the re-copy installed into ~/Library/Audio/Plug-Ins
+        # even with KROMOSYNTH_COPY_AFTER_BUILD=OFF (scripts/package.sh).
+        if(dest AND KROMOSYNTH_COPY_AFTER_BUILD)
             add_custom_command(TARGET "${fmt_target}" POST_BUILD
                 COMMAND "${CMAKE_COMMAND}"
                         "-Dsrc=$<GENEX_EVAL:${artefact}>"

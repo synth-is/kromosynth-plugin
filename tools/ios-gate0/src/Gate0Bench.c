@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // Gate0Bench.c — EXPERIMENT_01 §3.3 on real iOS hardware.
 //
 // ── The one question this answers ───────────────────────────────────────────

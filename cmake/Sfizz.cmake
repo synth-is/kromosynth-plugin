@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # sfizz vendoring — Task 2 only, gated behind KROMOSYNTH_BUILD_SAMPLER.
 #
 # KEEPABLE.

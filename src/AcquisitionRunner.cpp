@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 #include "AcquisitionRunner.h"
 
 AcquisitionRunner::~AcquisitionRunner()

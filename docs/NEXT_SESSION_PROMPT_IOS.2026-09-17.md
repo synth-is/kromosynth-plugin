@@ -134,7 +134,7 @@ so the two have diverged and `git pull` will conflict in that comment block.
 Diffed: the only difference in `RecommendationService.js` is comment wording, no
 behaviour change, so dropping `969bf05` is safe. Björn's call.
 
-**The hub path is `/Users/bthj/Developer/synth.is/…`**, not
+**The hub path is `/Users/you/Developer/synth.is/…`**, not
 `…/Developer/apps/synth.is/…` as several notes claimed.
 
 ## 4. The loop, and how to drive it
@@ -182,7 +182,7 @@ cmake --build build/ios-sim --config Release --target KromosynthPlugin_Standalon
 # Literal UDID, NOT a shell variable -- see §6 on local-terminal and bare null.
 xcrun simctl install <udid> build/ios-sim/src/KromosynthPlugin_artefacts/Release/Standalone/Synth.is.app
 xcrun simctl launch <udid> is.synth.plugin
-xcrun simctl io <udid> screenshot /Users/bjornpjo/Developer/shot.png
+xcrun simctl io <udid> screenshot /Users/you/Developer/shot.png
 xcrun simctl get_app_container <udid> is.synth.plugin data   # re-derive EVERY install
 ```
 
@@ -348,7 +348,7 @@ plain build. Overwrite it on the next install.
 - Explicit pathspec on every `git add` and `git commit`. `kromosynth-desktop`
   carries unrelated WIP more often than not; never stage it. The MCP
   `git_commit` tool behaves like `git commit -a` — use the terminal.
-- Commit message files under `/Users/bjornpjo/Developer/`, not `/tmp`.
+- Commit message files under `/Users/you/Developer/`, not `/tmp`.
 - `filesystem:edit_file` with `dryRun: true` first. Batches are atomic: one bad
   `oldText` rejects all of them. Box-drawing characters and em dashes must match
   byte for byte.

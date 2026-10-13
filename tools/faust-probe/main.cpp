@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // faust-probe — drives FaustEngine directly, with no plugin wrapper and no
 // audio device.
 //

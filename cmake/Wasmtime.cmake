@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # Wasmtime.cmake — the Faust engine's runtime.
 #
 # ── Why this does not follow VENDORING.md ────────────────────────────────────

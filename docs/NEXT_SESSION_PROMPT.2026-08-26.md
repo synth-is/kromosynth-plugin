@@ -9,16 +9,16 @@ Continue work on the Synth.is DAW plugin. Task 1 (webview) is complete and
 passed; this session is Task 2 (sfizz) plus one decision that gates it.
 
 Context to load:
-- /Users/bjornpjo/Developer/apps/synth.is/kromosynth-plugin/docs/STAGE0_FINDINGS.md
+- /Users/you/Developer/apps/synth.is/kromosynth-plugin/docs/STAGE0_FINDINGS.md
   — read the TASK 1 VERDICT at the top in full, then §C and §D. §C is the
   decision below; §D is the Task 2 material inventory.
-- /Users/bjornpjo/Developer/apps/synth.is/kromosynth-plugin/ — the repo. Read
+- /Users/you/Developer/apps/synth.is/kromosynth-plugin/ — the repo. Read
   CMakeLists.txt, cmake/Sfizz.cmake (written, never exercised), CMakePresets.json.
-- /Users/bjornpjo/Developer/apps/synth.is/kromosynth-projects/Evolutionary Sound
+- /Users/you/Developer/apps/synth.is/kromosynth-projects/Evolutionary Sound
   Discovery Platform/daw-plugin/WP_SYNTHIS_PLUGIN.md — §3 (the two engines) and
   §5. NOTE: six findings from Task 1 have not been reconciled into this document.
   It is stale in known ways; STAGE0_FINDINGS.md is the newer truth.
-- /Users/bjornpjo/Developer/apps/synth.is/kromosynth-vi/src/services/sfzGenerator.js
+- /Users/you/Developer/apps/synth.is/kromosynth-vi/src/services/sfzGenerator.js
   and sampleMatrix.js — what our SFZ actually contains.
 
 DECIDE FIRST, do not test: §C's audition routing.

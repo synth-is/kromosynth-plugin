@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # ios-icon-experiment.sh — C24's one throwaway run, made repeatable.
 #
 # THE QUESTION

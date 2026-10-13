@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // InstrumentLibrary — what is on this machine, and how to load one.
 //
 // Stage 1. Not disposable in the way PluginProcessor is: the shell, the

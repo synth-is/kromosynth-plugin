@@ -1,0 +1,131 @@
+# Third-party notices
+
+Synth.is (this repository, `kromosynth-plugin`) is licensed under
+**AGPL-3.0-or-later** — see [`LICENSE`](LICENSE). Everything below is code or
+content written by someone else. Each entry says where its licence text sits in
+this repository (or in a build directory), and what that text says. Where a
+licence could not be established from a file in the repository it is marked
+**UNVERIFIED** rather than guessed.
+
+Checked on 2026-10-08 against the files named below, not from memory.
+
+## Linked into the plugin
+
+| Component | Version | Licence | Verified against |
+|---|---|---|---|
+| JUCE | 9.0.1 (pinned submodule `third_party/JUCE`) | AGPL-3.0 option of JUCE's AGPLv3 / commercial dual licence. **This project uses the AGPLv3 option.** | `third_party/JUCE/LICENSE.md` ("dual-licensed under the AGPLv3 and the commercial JUCE licence"); `cmake/JuceLicenceCheck.cmake` re-checks the module header at every configure |
+| sfizz (sampler engine, `-DKROMOSYNTH_BUILD_SAMPLER=ON`) | 1.2.3 (submodule `third_party/sfizz`) | BSD-2-Clause | `third_party/sfizz/LICENSE` |
+| wasmtime (Faust engine on macOS/Windows) | 48.0.1, prebuilt C-API tarball fetched by `cmake/Wasmtime.cmake` | Apache-2.0 WITH LLVM-exception | `LICENSE` inside the tarball (`<build>/_wasmtime/wasmtime-v48.0.1-*/LICENSE`): Apache License 2.0 text plus a "LLVM Exceptions to the Apache 2.0 License" section |
+| wasm3 (Faust engine on iOS, `-DKROMOSYNTH_WASM3=ON`) | copy in `tools/ios-gate0/wasm3` | MIT, Copyright (c) 2019 Steven Massey, Volodymyr Shymanskyy (`extra/wasi_core.h` is CC0-1.0 by its own header) | `tools/ios-gate0/wasm3/LICENSE`, copied from upstream `github.com/wasm3/wasm3` |
+| dr_libs (`dr_wav`, `dr_flac`, `dr_mp3`), via sfizz's st_audiofile | as vendored by sfizz | Public domain (Unlicense) **or** MIT-0, your choice | `third_party/sfizz/external/st_audiofile/thirdparty/dr_libs/LICENSE` |
+
+### JUCE's own bundled dependencies
+
+JUCE's `LICENSE.md` lists the third-party code inside its modules. The ones in
+modules this project links (`juce_core`, `juce_audio_formats`,
+`juce_audio_plugin_client`, `juce_graphics`, `juce_gui_extra`, …) are:
+zlib, pnglib (zlib), jpeglib (IJG), FLAC (BSD), Ogg Vorbis (BSD), HarfBuzz
+(Old MIT), SheenBidi (Apache-2.0), LunaSVG and PlutoVG (MIT), CHOC (ISC) with
+QuickJS (MIT), the VST3 SDK (MIT, `third_party/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK/LICENSE.txt`),
+AudioUnitSDK (Apache-2.0). This list is JUCE's own statement; the individual
+texts live under `third_party/JUCE/modules/` and were not re-read one by one.
+JUCE also lists the AAX SDK and ASIO SDK (proprietary / GPLv3); neither is
+built here (formats are AU, VST3 and AUv3 only).
+
+### sfizz's bundled dependencies
+
+From `third_party/sfizz/external/` and `third_party/sfizz/src/external/`. The
+build links the first group; `cxxopts` is present but not built
+(`SFIZZ_RENDER=OFF`).
+
+| Component | Licence | File checked |
+|---|---|---|
+| abseil-cpp | Apache-2.0 | `external/abseil-cpp/LICENSE` |
+| atomic_queue | MIT | `external/atomic_queue/LICENSE` |
+| filesystem (gulrak) | MIT | `external/filesystem/LICENSE` |
+| fmidi | BSL-1.0 | `external/fmidi/LICENSE.md` |
+| jsl | BSL-1.0 | `external/jsl/LICENSE.md` |
+| simde | MIT | `external/simde/COPYING` |
+| st_audiofile | BSD-2-Clause | `external/st_audiofile/LICENSE.md` |
+| stb_vorbis | MIT or Unlicense, your choice | `external/st_audiofile/thirdparty/stb_vorbis/LICENSE` |
+| libaiff | MIT-style permission notice | `external/st_audiofile/thirdparty/libaiff/LICENSE` |
+| WavPack | BSD-3-Clause | `external/st_audiofile/thirdparty/wavpack/license.txt` |
+| ThreadPool | zlib | SPDX header only (`external/threadpool/ThreadPool.h`); no licence file — **UNVERIFIED beyond the header** |
+| cephes | **UNVERIFIED** — see "Flagged" | `external/cephes/LICENSE.txt` |
+| cpuid | BSD-3-Clause | `src/external/cpuid/LICENSE.rst` |
+| hiir | WTFPL v2 | `src/external/hiir/license.txt` |
+| kiss_fft | BSD-2-Clause | `src/external/kiss_fft/COPYING` |
+| pugixml | MIT | `src/external/pugixml/LICENSE.md` |
+| spline | BSD-3-Clause | `src/external/spline/LICENSE` |
+| tunings | MIT | `src/external/tunings/LICENSE.md` |
+
+libsndfile is **not** linked (`SFIZZ_USE_SNDFILE=OFF`, `cmake/Sfizz.cmake`).
+libfaust is **not** linked either: Faust instruments are pre-compiled to
+WebAssembly elsewhere and only the wasm bytes are executed (wasmtime / wasm3).
+
+## Web UI, fonts, icons
+
+- **Web UI libraries: none.** The editor page is a single inline HTML/CSS/JS
+  string in `src/ShellPage.h`; it loads no script, stylesheet or font from a
+  CDN or from the repo (`git grep` for `<script src`, `<link`, `@font-face`,
+  CDN hosts finds nothing). The embedded page is first-party code, AGPL like
+  the rest.
+- **Fonts: none bundled.** The page uses the system font (`font-family:
+  inherit`).
+- **Icons / logo.** `src/ShellPage.h` embeds the Synth.is logo SVG (a copy of
+  `kromosynth-desktop/packages/web/src/assets/synthis_S_logo.svg`) and
+  `resources/AppIcon-1024.png` is the Synth.is mark on black, generated by
+  `resources/make-appicon.py` from the designer's branding folder. Both are
+  Synth.is brand assets: see "Content and brand" below.
+
+## Content and brand
+
+- **Sample content: none bundled.** No `.wav`/`.sfz` instrument ships in the
+  repo or the installer; the sampler loads whatever `.sfz` the user points it
+  at (`KROMOSYNTH_SFZ_PATH`). `tools/sfz-probe/testdata/negative-control.sfz`
+  is a deliberately broken test file written for this repo (AGPL like the
+  code).
+- **Evolved Faust `.dsp` / `.wasm` artefacts.** The plugin downloads these at
+  runtime from the user's Synth.is account; they are not part of the
+  installer. Twelve evolved modules are embedded as byte arrays in
+  `tools/ios-gate0/src/Gate0Data.c` (benchmark only, not in the plugin). The
+  AGPL covers the **code** in this repository only. Artefacts and renders
+  are not AGPL: Synth.is claims no copyright in what a user evolved or
+  rendered, which may be used freely including commercially, as is, subject to
+  the upstream Faust licences. The embedded modules are benchmark fixtures on
+  the same terms. Full decision:
+  [`docs/ARTEFACT_LICENCE_DECISION.md`](docs/ARTEFACT_LICENCE_DECISION.md).
+  (Upstream Faust compiler/library licences are an assumption to confirm
+  before public release; see that document.)
+- **Trademark and icon.** "Synth.is", its logo and the designer-supplied
+  AppIcon are not licensed by the AGPL; forks must replace them (decision
+  section 3).
+
+## Flagged: not verifiable from the repository
+
+1. **cephes** (sfizz `external/cephes/LICENSE.txt`). The "licence" is an
+   e-mail from the author to a third party saying "BSD license is fine".
+   That is a permissive grant, but it is not a licence text, so it is flagged.
+2. **wasmtime's Rust dependencies.** The C-API tarball ships only wasmtime's
+   own `LICENSE` and `README`; the licences of the crates compiled into
+   `libwasmtime.a` are not in the tarball and were not audited.
+3. **ThreadPool** (sfizz): zlib per its SPDX header, no licence file.
+4. **JUCE's bundled sub-dependencies**: taken from JUCE's `LICENSE.md`, not
+   each re-read (see above).
+5. **Vendored-file incompatibility with AGPLv3: none found.** Everything
+   listed above is permissive (MIT, BSD, BSL, zlib, Apache-2.0, Unlicense,
+   WTFPL) or is the AGPL option of JUCE; Apache-2.0 is compatible with
+   AGPLv3.
+
+## What the installer ships
+
+`scripts/package.sh` installs `LICENSE`, this file and the licence texts of the
+components above (copied from the paths in this file, including
+`third-party/wasm3.txt`) into `/Library/Application Support/Synth.is/Licences/`,
+plus `SOURCE_OFFER.txt`, the AGPL source offer. It names the public repository
+URL once `SOURCE_URL` is set in `scripts/package.sh`'s environment; the README
+Licence section should carry the same URL when the repo is public.
+
+`cmake/JuceLicenceCheck.cmake` carries no SPDX header on purpose: it is the
+configure-time licence guard and is kept byte-for-byte unchanged; it is
+first-party and covered by `LICENSE`.

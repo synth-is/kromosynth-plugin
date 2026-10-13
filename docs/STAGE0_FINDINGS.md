@@ -270,7 +270,7 @@ not in the reasoning.
 
 ## Prior art the WP does not account for
 
-`/Users/bjornpjo/Developer/apps/kromosynth-evoruns-plugin` (**KRME**) is an
+`/Users/you/Developer/apps/kromosynth-evoruns-plugin` (**KRME**) is an
 existing VST3/AU built on SRVB. `native/WebViewEditor.cpp` creates a
 `choc::ui::WebView`, attaches it via `viewContainer.setView(webView->getViewHandle())`
 on macOS, binds `__postNativeMessage__`, and in dev mode navigates to
@@ -1786,7 +1786,7 @@ correctly found all three, then run across the repository: no other occurrences.
 does this correctly nearly everywhere.
 
 Note: the fix is in the local checkout only. The hub runs its own checkout at
-`/Users/bthj/Developer/synth.is/`, so the live service is unaffected until
+`/Users/you/Developer/synth.is/`, so the live service is unaffected until
 deployed and restarted.
 
 ### E6.2 `kromosynth-vi` — `calculateKeyRange` double-covers boundary keys

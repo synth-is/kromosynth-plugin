@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // RenderOutbox — where a single rendered sound lands, and how it gets out.
 //
 // C41, and the constraint that shapes all of it: THE APPEX CANNOT WRITE TO THE

@@ -71,7 +71,7 @@ cmake --build build/ios-sim --config Release --target KromosynthPlugin_Standalon
 # Literal UDID, NOT a shell variable -- see §6 on local-terminal and bare null.
 xcrun simctl install <udid> build/ios-sim/src/KromosynthPlugin_artefacts/Release/Standalone/Synth.is.app
 xcrun simctl launch <udid> is.synth.plugin
-xcrun simctl io <udid> screenshot /Users/bjornpjo/Developer/shot.png
+xcrun simctl io <udid> screenshot /Users/you/Developer/shot.png
 xcrun simctl get_app_container <udid> is.synth.plugin data   # re-derive EVERY install; the UUID changes
 ```
 
@@ -359,7 +359,7 @@ throw it away.*
 
 - Explicit pathspec on every `git add` and `git commit`. `kromosynth-desktop`
   has unrelated genome-inspector WIP; never stage it.
-- Commit message files under `/Users/bjornpjo/Developer/`, not `/tmp`.
+- Commit message files under `/Users/you/Developer/`, not `/tmp`.
 - Compile with Faust ON in `build/desk-verify`, which matches
   `build/ios-auv3`'s option pair. **`build/sampler` is dead as a control** —
   its cache is from 28 August and fails on `KROMOSYNTH_VI_SERVICE_URL` in

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 // SamplerEngine — see SamplerEngine.h for the thread-safety contract and for
 // why the render is chunked.
 

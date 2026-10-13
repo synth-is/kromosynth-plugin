@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 /*  CheckoutSentinel.h — "open this URL in a real browser", carried over the
     one channel that exists.
 

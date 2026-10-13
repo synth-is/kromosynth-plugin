@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 cmake_minimum_required(VERSION 3.24)
 
 # ── Kromosynth Plugin ────────────────────────────────────────────────────────
@@ -65,7 +67,8 @@ option(KROMOSYNTH_EDITOR_STUB "Build editor with a plain component instead of th
 # default for a question as small as "does it build".
 #
 # Turning this OFF also suppresses the signing re-copy, because that step is
-# guarded on JUCE_PLUGIN_COPY_DIR, which JUCE only sets when the copy is on.
+# guarded on this option (JUCE sets JUCE_PLUGIN_COPY_DIR even when the copy is
+# off, so that property cannot be the guard).
 option(KROMOSYNTH_COPY_AFTER_BUILD
        "Copy built plugin bundles into ~/Library/Audio/Plug-Ins" ON)
 

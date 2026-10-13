@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # ── Plugin target ────────────────────────────────────────────────────────────
 #
 # The juce_add_plugin call and its link/definition blocks are KEEPABLE.
@@ -251,6 +253,27 @@ if(KROMOSYNTH_BUILD_FAUST)
 endif()
 
 kromosynth_configure_target(KromosynthPlugin)
+
+# Privacy manifest, iOS only: one PrivacyInfo.xcprivacy in BOTH bundles.
+#
+# Apple wants a manifest per bundle that ships code -- the container app and
+# the AUv3 appex are separate bundles and the appex's is not inherited from the
+# app's. The two declare the same thing because both link the same shared-code
+# target (the same JUCE and the same src/), so there is one file and two
+# attachments. juce_add_plugin has no option for it (checked in JUCE 9.0.1).
+#
+# What it declares, and the use each entry traces to, is in
+# docs/IOS_PRIVACY_MANIFEST.md; scripts/ios-build.sh fails the build if either
+# bundle comes out without the file.
+if(KROMOSYNTH_IOS)
+    set(KROMOSYNTH_PRIVACY_MANIFEST
+        "${CMAKE_CURRENT_LIST_DIR}/../resources/ios/PrivacyInfo.xcprivacy")
+    set_source_files_properties("${KROMOSYNTH_PRIVACY_MANIFEST}" PROPERTIES
+        MACOSX_PACKAGE_LOCATION Resources)
+    foreach(_fmt_target KromosynthPlugin_Standalone KromosynthPlugin_AUv3)
+        target_sources(${_fmt_target} PRIVATE "${KROMOSYNTH_PRIVACY_MANIFEST}")
+    endforeach()
+endif()
 
 # PUBLIC, and the visibility is half the point; the spelling is the other half.
 #

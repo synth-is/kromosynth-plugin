@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Björn Þór Jónsson
 /*  ExternalBrowser.h — handing a URL to the system browser, for every build
     target this plugin ships as.
 

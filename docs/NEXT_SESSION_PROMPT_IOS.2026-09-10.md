@@ -247,7 +247,7 @@ throw it away.*
 
 - Explicit pathspec on every `git add` and `git commit`. `kromosynth-desktop`
   has unrelated genome-inspector WIP; never stage it.
-- Commit message files under `/Users/bjornpjo/Developer/`, not `/tmp`.
+- Commit message files under `/Users/you/Developer/`, not `/tmp`.
 - Compile with Faust ON in `build/desk-verify`, which matches
   `build/ios-auv3`'s option pair. **`build/sampler` is dead as a control** —
   its cache is from 28 August and fails on `KROMOSYNTH_VI_SERVICE_URL` in

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 # Stage 0 preflight — verify the native toolchain before spending time on a build.
 #
 # KEEPABLE.

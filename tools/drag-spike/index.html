@@ -1,4 +1,6 @@
 <!DOCTYPE html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later
+     Copyright (C) 2026 Björn Þór Jónsson -->
 <!--
   Spike: will WebKit put a local file reference on the SYSTEM drag pasteboard
   for a page whose origin is not file://?
@@ -90,7 +92,7 @@
   // The render the plugin actually produced at 19:14, so a successful drop is
   // a real 5.7s WAV and not a placeholder that might be rejected for its own
   // reasons.
-  var PATH = '/Users/bjornpjo/Music/Synth.is/Renders/Synth.is FDN13.wav';
+  var PATH = '/Users/you/Music/Synth.is/Renders/Synth.is FDN13.wav';
   var FILE_URL = 'file://' + PATH.split('/').map(encodeURIComponent).join('/');
 
   document.getElementById('p1').textContent = FILE_URL;

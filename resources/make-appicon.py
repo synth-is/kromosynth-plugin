@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Björn Þór Jónsson
 """Regenerates resources/AppIcon-1024.png from the Synth.is brand assets.
 
 WHY A DERIVED FILE IS COMMITTED. src/CMakeLists.txt feeds ICON_BIG to
@@ -20,11 +22,13 @@ sharp) composited onto an OPAQUE black square, at the same relative scale the
 designer used in Profile-pic-black.png. Appearance is identical once iOS masks
 the corners; the difference is that this one is valid.
 """
+import os
 import sys
 from pathlib import Path
 from PIL import Image
 
-BRAND = Path("/Users/bjornpjo/Documents/synth.is/Synth.is-Branding")
+# The designer's branding folder is not in the repo; point this at your copy.
+BRAND = Path(os.environ.get("SYNTHIS_BRANDING_DIR", "Synth.is-Branding"))
 OUT = Path(__file__).parent / "AppIcon-1024.png"
 SIZE = 1024
 

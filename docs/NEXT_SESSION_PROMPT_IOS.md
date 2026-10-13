@@ -367,7 +367,7 @@ uninterpretable. Deployment is per-fleet, not per-host.
 
 Explicit pathspec on every `git add` and `git commit`; the MCP `git_commit` tool
 behaves like `git commit -a`. Commit message files under
-`/Users/bjornpjo/Developer/`. `filesystem:edit_file` with `dryRun: true` first;
+`/Users/you/Developer/`. `filesystem:edit_file` with `dryRun: true` first;
 anchor on the comment AND the declaration together. MCP `local-terminal` times
 out around four minutes — and **`nohup … &` does NOT get you past it**, which
 this file said until 2026-09-26. The runner waits on the whole process group, so
@@ -379,8 +379,8 @@ orphans after running `validate-levelling.js`, `measure-audition-parity.js` or
 anything else of that shape. `pm2 env` takes a NUMERIC id, not a name.
 
 **Three machines, three repo roots.** Laptop
-`/Users/bjornpjo/Developer/apps/synth.is/`, Studio
-`/Users/bthj/Developer/apps/synth.is/`, hub `/Users/bthj/Developer/synth.is/` —
+`/Users/you/Developer/apps/synth.is/`, Studio
+`/Users/you/Developer/apps/synth.is/`, hub `/Users/you/Developer/synth.is/` —
 the hub has NO `apps/` segment. Anything scripted against these paths silently
 misses on one machine.
 
