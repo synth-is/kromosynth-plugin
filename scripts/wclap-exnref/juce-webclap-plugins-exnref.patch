@@ -1,0 +1,47 @@
+diff --git a/modules/juce_webclap/juce_webclap.cmake b/modules/juce_webclap/juce_webclap.cmake
+index 07bd22a..529dab5 100644
+--- a/modules/juce_webclap/juce_webclap.cmake
++++ b/modules/juce_webclap/juce_webclap.cmake
+@@ -12,7 +12,8 @@
+ #                         for a module.wasm built around a juce::AudioProcessor
+ 
+ set(JUCE_MODULES "${KIT_ROOT}/external/JUCE/modules")
+-set(JUCE_WEBCLAP_FLAGS -msimd128 -fwasm-exceptions)
++# exnref exceptions (try_table): Wasmtime loads only these. Needs Emscripten >= 4.0.7; 3.1.x emits legacy try.
++set(JUCE_WEBCLAP_FLAGS -msimd128 -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0)
+ 
+ set(JUCE_DEFINITIONS
+     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+diff --git a/ports/surge-xt/CMakeLists.txt b/ports/surge-xt/CMakeLists.txt
+index 08c9587..bef219e 100644
+--- a/ports/surge-xt/CMakeLists.txt
++++ b/ports/surge-xt/CMakeLists.txt
+@@ -24,7 +24,7 @@ set(BUNDLE "${CMAKE_BINARY_DIR}/web/surge-xt.wclap")
+ set(SURGE_VERSION "1.4.0")
+ 
+ # Every target (the libraries below too) is built with the kit's wasm flags (SIMD, wasm exceptions)
+-add_compile_options(-msimd128 -fwasm-exceptions -fno-math-errno -fno-trapping-math
++add_compile_options(-msimd128 -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0 -fno-math-errno -fno-trapping-math
+     $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>)
+ 
+ # ---------------------------------------------------------------------------------------------------------------
+diff --git a/scripts/build-surge-xt.sh b/scripts/build-surge-xt.sh
+index f10c154..b734502 100755
+--- a/scripts/build-surge-xt.sh
++++ b/scripts/build-surge-xt.sh
+@@ -4,13 +4,13 @@
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+-BUILD="$ROOT/build/surge-xt"
++BUILD="${SURGE_BUILD_DIR:-$ROOT/build/surge-xt}"
+ WEB="$BUILD/web"
+ BUNDLE="$WEB/surge-xt.wclap"
+ SURGE="$ROOT/external/surge"
+ 
+ if ! command -v emcmake >/dev/null 2>&1; then
+-    for env in "${EMSDK:-}/emsdk_env.sh" "$HOME/emsdk/emsdk_env.sh" "$HOME/Development/emsdk/emsdk_env.sh"; do
++    for env in "${EMSDK:-}/emsdk_env.sh" "$HOME/wclap-native/emsdk-4/emsdk_env.sh" "$HOME/emsdk/emsdk_env.sh" "$HOME/Development/emsdk/emsdk_env.sh"; do
+         if [ -f "$env" ]; then source "$env" >/dev/null 2>&1; break; fi
+     done
+ fi

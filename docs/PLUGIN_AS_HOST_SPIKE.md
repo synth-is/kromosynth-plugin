@@ -47,7 +47,7 @@ the bridge into the plugin as is means two Wasmtimes in one binary. Not attempte
    implements only the newer exnref form, and the C API exposes no legacy switch.
    What worked: binaryen 133 `wasm-opt --translate-to-exnref` on a copy of the module.
    Emscripten's bundled binaryen is too old for that flag. Lasting fix: build the
-   WCLAP with the exnref lowering. Whether Wasmtime 48.0.1 (the plugin's) accepts the
+   WCLAP with the exnref lowering (done in aa4.52, section 6). Whether Wasmtime 48.0.1 (the plugin's) accepts the
    translated module is **untested**.
 2. **The bridge's default 2000 ms per-call limit kills Surge XT's init**
    (`wclap_global_init(2000)`); I passed 0. A real limit needs the
@@ -138,21 +138,38 @@ If (a) turns out to be a bridge defect with no quick fix, the alternative is to 
 the WCLAP with the Wasmtime that `FaustEngine` already uses and write the CLAP-over-wasm
 glue ourselves, which is larger than the desk check's estimate.
 
-## 6. exnref build attempt (aa4.41, not completed)
+## 6. exnref build (aa4.41 attempt, completed in aa4.52)
 
-The change belongs in `~/wclap-native/juce-webclap-plugins` (a different repository,
-outside this worktree's writable scope), and the toolchain there cannot do it yet:
+Result: the Surge XT WCLAP builds with exnref exceptions, and Wasmtime loads its `module.wasm` with
+only `wasmtime_config_wasm_exceptions_set(true)`. The `--translate-to-exnref` step is gone from
+`scripts/wclap-spike.sh`. Reproduce with `scripts/wclap-exnref-build.sh`.
 
-- `~/wclap-native/emsdk` is Emscripten 3.1.51 (LLVM ~18). Its clang rejects
-  `-mllvm -wasm-use-legacy-eh=false` ("Unknown command line argument"), and a
-  `-fwasm-exceptions` test module still emits legacy `try` (39 of them, no `try_table`).
-- Needed: an emsdk new enough to emit exnref (Emscripten 4.0.x; there the link flag is
-  `-sWASM_LEGACY_EXCEPTIONS=0`, with `-fwasm-exceptions` kept at compile time — verify
-  against the installed version's `emcc --help`/settings.js). Then change
-  `JUCE_WEBCLAP_FLAGS` in `modules/juce_webclap/juce_webclap.cmake:15` and add the link
-  option wherever the module's link flags are set; rebuild all dependencies with it
-  (exception ABI must match across every object).
-- Verify: `wasm-dis module.wasm | grep -c try_table` > 0 and no `(try`; load in
-  wclap-bridge with only `wasmtime_config_wasm_exceptions_set(true)` (drop the
-  `--translate-to-exnref` step in `scripts/wclap-spike.sh`); play in the browser test host
-  (browsers support exnref in Chrome 137+/Firefox 131+; Safari may lag — check).
+- **Toolchain.** Emscripten 3.1.51 cannot emit exnref (its clang rejects
+  `-mllvm -wasm-use-legacy-eh=false`, and `-fwasm-exceptions` still emits legacy `try`). Emscripten
+  4.0.20 is installed **beside it** at `~/wclap-native/emsdk-4` (a second clone of
+  `emscripten-core/emsdk`). `~/wclap-native/emsdk` stays 3.1.51, because the Surge/OB-Xf/Odin 2
+  recipes in kromosynth-burst docs are pinned to it. Source `emsdk-4/emsdk_env.sh` only for the exnref build.
+- **Flag.** In 4.0.20 `settings.js` has `var WASM_LEGACY_EXCEPTIONS = true;`. Setting
+  `-sWASM_LEGACY_EXCEPTIONS=0` next to `-fwasm-exceptions`, at compile and link time, makes emcc emit exnref.
+- **Diff, in the juce-webclap-plugins clone** (base `ecab895`; the exact patch is
+  `scripts/wclap-exnref/juce-webclap-plugins-exnref.patch`, which the build script applies):
+  - `modules/juce_webclap/juce_webclap.cmake:15`: `JUCE_WEBCLAP_FLAGS` becomes
+    `-msimd128 -fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=0`. That variable is also in
+    `JUCE_WEBCLAP_UI_LINK_OPTIONS` and `JUCE_WEBCLAP_DSP_LINK_OPTIONS`, so the link side follows.
+  - `ports/surge-xt/CMakeLists.txt:27`: the port's own `add_compile_options` gets the same flag (it does
+    not use `JUCE_WEBCLAP_FLAGS`).
+  - `scripts/build-surge-xt.sh`: `SURGE_BUILD_DIR` override, and `emsdk-4` tried first when no `emcmake` is on PATH.
+  - The other ports (six-sines, OB-Xf, Odin 2, RipplerX) were NOT rebuilt; they pick up the flag
+    through `JUCE_WEBCLAP_FLAGS` the next time they are built with emsdk-4, and with 3.1.51 the
+    flag has no effect (untested whether it warns), so those still yield legacy exceptions.
+    A 3.1.51 build tree cannot be reused: exception ABI must match in every object, so a clean build dir is needed.
+- **Verified** (2026-10-13, Emscripten 4.0.20, full clean rebuild of Surge XT):
+  `module.wasm` 6.8 MB: `wasm-dis` shows 5912 `try_table`, no `(try`. `ui/ui.wasm`: 23845 `try_table`, no `(try`.
+  `scripts/wclap-spike.sh build run` with the untranslated module: `CHECK_PLAYS=PASS` (RMS 0.131),
+  state round trips (same instance and fresh instance) PASS.
+  Both wasm files pass `WebAssembly.validate` in Node 24.19 (V8 with exnref).
+- **Not verified:** playback in the browser test host. Headless Chrome 154 here could not run the page
+  (no audio gesture, file:// fetch blocked), so only the validation above stands. Chrome 137+/Firefox 131+
+  support exnref; Safari may lag, so check it before shipping this bundle to a browser.
+- The bundle is GPL-3.0 and is not committed. The legacy 3.1.51 build tree was moved to
+  `juce-webclap-plugins/build/surge-xt-legacy-3.1.51` (not usable for incremental builds any more).
