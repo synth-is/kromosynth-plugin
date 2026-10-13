@@ -71,7 +71,7 @@ the bridge into the plugin as is means two Wasmtimes in one binary. Not attempte
    in the `WclapModule` constructor. With it: 12 of 12 creations and a passing
    `CHECK_STATE_ROUNDTRIP_FRESH_INSTANCE`, on Wasmtime 39.0.1 and on 48.0.1 (the bug is in the
    bridge, so 48.0.1 alone does not fix it: unpatched it failed 11 of 12 there too). To upstream:
-   see `.bdloop/proposals.json`.
+   the issue text is drafted in `docs/WCLAP_BRIDGE_UPSTREAM_ISSUE.md` (not yet filed; URL to be added here once it is).
 5. **The "second instance panic" was the probe's mistake, with a bridge sharp edge
    (synthis-aa4.40).** CLAP extensions are per plugin instance, and wclap-bridge stores the
    guest's extension pointers in its `Plugin` object, filling them in on `get_extension()`. The
