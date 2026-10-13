@@ -137,3 +137,22 @@ the bridge fix upstream; (b) ask the juce-webclap-plugins build for exnref outpu
 If (a) turns out to be a bridge defect with no quick fix, the alternative is to host
 the WCLAP with the Wasmtime that `FaustEngine` already uses and write the CLAP-over-wasm
 glue ourselves, which is larger than the desk check's estimate.
+
+## 6. exnref build attempt (aa4.41, not completed)
+
+The change belongs in `~/wclap-native/juce-webclap-plugins` (a different repository,
+outside this worktree's writable scope), and the toolchain there cannot do it yet:
+
+- `~/wclap-native/emsdk` is Emscripten 3.1.51 (LLVM ~18). Its clang rejects
+  `-mllvm -wasm-use-legacy-eh=false` ("Unknown command line argument"), and a
+  `-fwasm-exceptions` test module still emits legacy `try` (39 of them, no `try_table`).
+- Needed: an emsdk new enough to emit exnref (Emscripten 4.0.x; there the link flag is
+  `-sWASM_LEGACY_EXCEPTIONS=0`, with `-fwasm-exceptions` kept at compile time — verify
+  against the installed version's `emcc --help`/settings.js). Then change
+  `JUCE_WEBCLAP_FLAGS` in `modules/juce_webclap/juce_webclap.cmake:15` and add the link
+  option wherever the module's link flags are set; rebuild all dependencies with it
+  (exception ABI must match across every object).
+- Verify: `wasm-dis module.wasm | grep -c try_table` > 0 and no `(try`; load in
+  wclap-bridge with only `wasmtime_config_wasm_exceptions_set(true)` (drop the
+  `--translate-to-exnref` step in `scripts/wclap-spike.sh`); play in the browser test host
+  (browsers support exnref in Chrome 137+/Firefox 131+; Safari may lag — check).
