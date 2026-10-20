@@ -1,0 +1,99 @@
+diff --git a/modules/juce_webclap/juce_webclap.cmake b/modules/juce_webclap/juce_webclap.cmake
+index 07bd22a..9e37589 100644
+--- a/modules/juce_webclap/juce_webclap.cmake
++++ b/modules/juce_webclap/juce_webclap.cmake
+@@ -14,6 +14,14 @@
+ set(JUCE_MODULES "${KIT_ROOT}/external/JUCE/modules")
+ set(JUCE_WEBCLAP_FLAGS -msimd128 -fwasm-exceptions)
+ 
++# Emscripten >= 4.0.7 can emit the standardised exnref exceptions (try_table) instead of the legacy ones (try). Hosts
++# built on a runtime that only knows exnref (Wasmtime) need this; off by default, which keeps what browsers load
++# today and builds with the tested Emscripten 3.1.51.
++option(WEBCLAP_EXNREF "Build with exnref wasm exceptions (-sWASM_LEGACY_EXCEPTIONS=0, needs Emscripten >= 4.0.7)" OFF)
++if(WEBCLAP_EXNREF)
++    list(APPEND JUCE_WEBCLAP_FLAGS -sWASM_LEGACY_EXCEPTIONS=0)
++endif()
++
+ set(JUCE_DEFINITIONS
+     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+     JUCE_STANDALONE_APPLICATION=0
+diff --git a/ports/surge-xt/CMakeLists.txt b/ports/surge-xt/CMakeLists.txt
+index 08c9587..e6d4bf6 100644
+--- a/ports/surge-xt/CMakeLists.txt
++++ b/ports/surge-xt/CMakeLists.txt
+@@ -24,6 +24,10 @@ set(BUNDLE "${CMAKE_BINARY_DIR}/web/surge-xt.wclap")
+ set(SURGE_VERSION "1.4.0")
+ 
+ # Every target (the libraries below too) is built with the kit's wasm flags (SIMD, wasm exceptions)
++option(WEBCLAP_EXNREF "Build with exnref wasm exceptions (-sWASM_LEGACY_EXCEPTIONS=0, needs Emscripten >= 4.0.7)" OFF)
++if(WEBCLAP_EXNREF)
++    add_compile_options(-sWASM_LEGACY_EXCEPTIONS=0)
++endif()
+ add_compile_options(-msimd128 -fwasm-exceptions -fno-math-errno -fno-trapping-math
+     $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>)
+ 
+diff --git a/scripts/build-obxf.sh b/scripts/build-obxf.sh
+index 2e972ad..92d267c 100755
+--- a/scripts/build-obxf.sh
++++ b/scripts/build-obxf.sh
+@@ -4,7 +4,7 @@
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+-BUILD="$ROOT/build/obxf"
++BUILD="${WEBCLAP_BUILD_DIR:-$ROOT/build/obxf}"
+ WEB="$BUILD/web"
+ BUNDLE="$WEB/obxf.wclap"
+ 
+diff --git a/scripts/build-odin2.sh b/scripts/build-odin2.sh
+index ddd74c2..21f76a6 100755
+--- a/scripts/build-odin2.sh
++++ b/scripts/build-odin2.sh
+@@ -4,7 +4,7 @@
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+-BUILD="$ROOT/build/odin2"
++BUILD="${WEBCLAP_BUILD_DIR:-$ROOT/build/odin2}"
+ WEB="$BUILD/web"
+ BUNDLE="$WEB/odin2.wclap"
+ 
+diff --git a/scripts/build-ripplerx.sh b/scripts/build-ripplerx.sh
+index d064d8b..e119350 100755
+--- a/scripts/build-ripplerx.sh
++++ b/scripts/build-ripplerx.sh
+@@ -4,7 +4,7 @@
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+-BUILD="$ROOT/build/ripplerx"
++BUILD="${WEBCLAP_BUILD_DIR:-$ROOT/build/ripplerx}"
+ WEB="$BUILD/web"
+ BUNDLE="$WEB/ripplerx.wclap"
+ 
+diff --git a/scripts/build-six-sines.sh b/scripts/build-six-sines.sh
+index 9d9d943..c1aaed4 100755
+--- a/scripts/build-six-sines.sh
++++ b/scripts/build-six-sines.sh
+@@ -4,7 +4,7 @@
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+-BUILD="$ROOT/build/six-sines"
++BUILD="${WEBCLAP_BUILD_DIR:-$ROOT/build/six-sines}"
+ WEB="$BUILD/web"
+ BUNDLE="$WEB/six-sines.wclap"
+ 
+diff --git a/scripts/build-surge-xt.sh b/scripts/build-surge-xt.sh
+index f10c154..c0dac97 100755
+--- a/scripts/build-surge-xt.sh
++++ b/scripts/build-surge-xt.sh
+@@ -4,7 +4,7 @@
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+-BUILD="$ROOT/build/surge-xt"
++BUILD="${WEBCLAP_BUILD_DIR:-$ROOT/build/surge-xt}"
+ WEB="$BUILD/web"
+ BUNDLE="$WEB/surge-xt.wclap"
+ SURGE="$ROOT/external/surge"
