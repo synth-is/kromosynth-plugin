@@ -58,60 +58,108 @@ static constexpr float kFaustCeiling = 1.0f;
 
 namespace
 {
-/** A float parameter whose DISPLAYED NAME can change after construction.
+/** One of the pool of host parameters a Faust genome's sliders are mapped onto.
 
-    EXPERIMENTAL, and narrow on purpose. It exists to answer one question before
-    any real work is built on the answer: does a host update a parameter's name
-    when the plugin changes it?
+    A host reads an AU or VST3 parameter list once, but every genome publishes a
+    different set of sliders -- 0 to 8 across the 41 installed instruments, 31
+    distinct names across the first 22 seeds. Per-instrument named parameters
+    are therefore impossible, and what is left is a fixed pool whose NAMES
+    change on load. That the rename reaches the host was the open question
+    (synthis-59r.4) and AUM answered it: a pool slot showed up as "bodyLvl"
+    beside Attack..Output.
 
-    The question matters because AU and VST3 parameter lists are fixed at
-    construction -- a host reads them once -- while each Faust genome exposes a
-    DIFFERENT set of sliders: 31 distinct names across 22 seeds, 6 to 10 per
-    seed. Per-instrument named parameters are therefore impossible, and the only
-    route is a fixed pool renamed on load. If names do not refresh, that pool is
-    eight knobs labelled "Macro 1..8" with no indication of what they do, which
-    is worse than four that work -- and MIDI CC mapping becomes the better
-    answer for hardware control.
+    ALWAYS 0..1, whatever the slider behind it. A pool slot cannot truthfully
+    advertise the slider's own range, because the host may have cached the range
+    of the instrument before this one, and an automation value read against a
+    stale range is a wrong value rather than a wrong label. The real value is
+    in the TEXT instead (getText), and the mapping onto it is linear -- the
+    same as the web preview's sliders, which is the parity this exists for.
 
-    GarageBand is the specific doubt: it cached parameter ORDER until the host
-    process was fully quit, so it is a poor bet for refreshing parameter NAMES.
-
-    This one does NOTHING to the audio. It renames itself to the first slider
-    the loaded genome exposes and stops there. Deliberately: the identical
-    change that also wrote to the genome was reverted an hour ago for measuring
-    the instrument after altering it, and the ordering that fixes that is not
-    what is being tested here.
+    CONTINUOUS, which AudioParameterFloat would not be if given an interval:
+    its setValue snaps to the interval, and a default of (init - min)/(max - min)
+    is almost never on a 0.001 grid. The processor tells a knob at its default
+    from a moved one by exact equality with that number, so it has to survive a
+    round trip through the parameter unaltered.
 */
-class RenamableParameter final : public juce::AudioParameterFloat
+class MacroParameter final : public juce::AudioParameterFloat
 {
 public:
-    using juce::AudioParameterFloat::AudioParameterFloat;
+    explicit MacroParameter (int slot)
+        : juce::AudioParameterFloat (juce::ParameterID { "macro" + juce::String (slot + 1), 1 },
+                                     "Macro " + juce::String (slot + 1),
+                                     juce::NormalisableRange<float> { 0.0f, 1.0f }, 0.0f),
+          unboundName_ ("Macro " + juce::String (slot + 1))
+    {
+    }
 
     juce::String getName (int maximumLength) const override
     {
-        const juce::ScopedLock sl (nameLock_);
-        return displayName_.isEmpty() ? juce::AudioParameterFloat::getName (maximumLength)
-                                      : displayName_.substring (0, maximumLength);
+        const juce::ScopedLock sl (lock_);
+        return boundName_.isEmpty() ? unboundName_.substring (0, maximumLength)
+                                    : boundName_.substring (0, maximumLength);
     }
 
-    void setDisplayName (const juce::String& name, juce::AudioProcessor& owner)
+    float getDefaultValue() const override
     {
-        {
-            const juce::ScopedLock sl (nameLock_);
-            if (displayName_ == name) return;
-            displayName_ = name;
-        }
+        const juce::ScopedLock sl (lock_);
+        return defaultNormalised_;
+    }
 
-        // withParameterInfoChanged is what asks the host to re-read names and
-        // ranges. Whether it acts on it is the experiment. The processor is
-        // passed in because AudioProcessorParameter does not expose its owner.
-        owner.updateHostDisplay (juce::AudioProcessorListener::ChangeDetails()
-                                     .withParameterInfoChanged (true));
+    juce::String getText (float normalised, int maximumLength) const override
+    {
+        const juce::ScopedLock sl (lock_);
+
+        // Unbound: the host sees 0..1 and there is nothing truer to say.
+        const float real = boundName_.isEmpty() ? normalised
+                                                : minimum_ + normalised * (maximum_ - minimum_);
+
+        // More places below 1, where the useful slider ranges (att 0.0005..4)
+        // live, fewer above it.
+        const auto text = juce::String (real, std::abs (real) < 1.0f ? 4 : 3);
+        return maximumLength > 0 ? text.substring (0, maximumLength) : text;
+    }
+
+    float getValueForText (const juce::String& text) const override
+    {
+        const juce::ScopedLock sl (lock_);
+        const auto typed = (float) text.getDoubleValue();
+
+        if (boundName_.isEmpty() || ! (maximum_ > minimum_))
+            return juce::jlimit (0.0f, 1.0f, typed);
+
+        return juce::jlimit (0.0f, 1.0f, (typed - minimum_) / (maximum_ - minimum_));
+    }
+
+    /** Message thread. Does not tell the host -- the caller does that once for
+        the whole pool, which is one notification rather than sixteen. */
+    void bind (const juce::String& displayName, float minimum, float maximum, float defaultNormalised)
+    {
+        const juce::ScopedLock sl (lock_);
+        boundName_ = displayName;
+        minimum_ = minimum;
+        maximum_ = maximum;
+        defaultNormalised_ = defaultNormalised;
+    }
+
+    void unbind()
+    {
+        const juce::ScopedLock sl (lock_);
+        boundName_ = {};
+        minimum_ = 0.0f;
+        maximum_ = 1.0f;
+        defaultNormalised_ = 0.0f;
+    }
+
+    bool isBound() const
+    {
+        const juce::ScopedLock sl (lock_);
+        return boundName_.isNotEmpty();
     }
 
 private:
-    mutable juce::CriticalSection nameLock_;
-    juce::String displayName_;
+    mutable juce::CriticalSection lock_;
+    juce::String unboundName_, boundName_;
+    float minimum_ = 0.0f, maximum_ = 1.0f, defaultNormalised_ = 0.0f;
 };
 } // namespace
 
@@ -201,16 +249,18 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
         -9.0f,
         juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
-    // EXPERIMENT, last so it cannot disturb the indices above. With legacy
+    // The macro pool, last so it cannot disturb the indices above. With legacy
     // param ids the AU id IS the index, so adding here leaves Attack..Output at
-    // 0..4 and any automation on them intact.
+    // 0..4 and any automation on them intact. "macro1" is the id the
+    // rename experiment used, so a session that already automated it keeps it.
     //
-    // It does nothing but rename itself to the first slider the loaded genome
-    // exposes. See RenamableParameter for why that question comes before
-    // building a pool of eight.
-    addParameter (macro1_ = new RenamableParameter (
-        juce::ParameterID { "macro1", 1 }, "Macro 1",
-        juce::NormalisableRange<float> { 0.0f, 1.0f, 0.001f }, 0.0f));
+    // Inert until an instrument binds them -- see bindMacros.
+    for (int i = 0; i < kNumMacros; ++i)
+    {
+        auto* macro = new MacroParameter (i);
+        addParameter (macro);
+        macros_[(size_t) i] = macro;
+    }
 
     // One log file per host process AND per plug-in format.
     //
@@ -600,6 +650,10 @@ KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() co
 static const juce::Identifier kStateTag ("SynthIsPluginState");
 static const juce::Identifier kStateVersion ("version");
 static const juce::Identifier kStateInstrument ("instrumentId");
+static const juce::Identifier kStateMacros ("macros");
+static const juce::Identifier kStateMacro ("macro");
+static const juce::Identifier kStateMacroLabel ("label");
+static const juce::Identifier kStateMacroValue ("value");
 
 void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
@@ -609,6 +663,33 @@ void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
     // current_.id is set on a successful load only, so a failed load does not
     // get saved and then fail again on every reopen.
     tree.setProperty (kStateInstrument, current_.ok ? current_.id : juce::String(), nullptr);
+
+    // The macro positions, by slider LABEL and in the slider's own units, so a
+    // session survives a genome that has since gained or lost a slider, and so
+    // it does not depend on a host also saving and restoring parameter values
+    // (hosts differ, and an AUv3 in AUM keeps its own).
+    //
+    // Only for the instrument the pool is actually bound to: between a load
+    // starting and its measurement finishing current_ still names the previous
+    // one, and its id with this one's knobs would restore the wrong thing.
+    if (current_.ok && current_.id.isNotEmpty() && current_.id == macroInstrumentId_)
+    {
+        juce::ValueTree macros (kStateMacros);
+        macros.setProperty (kStateInstrument, macroInstrumentId_, nullptr);
+
+        for (int i = 0; i < kNumMacros; ++i)
+        {
+            const auto b = macroBinding (i);
+            if (b.label.isEmpty()) continue;
+
+            juce::ValueTree m (kStateMacro);
+            m.setProperty (kStateMacroLabel, b.label, nullptr);
+            m.setProperty (kStateMacroValue, (double) b.value, nullptr);
+            macros.appendChild (m, nullptr);
+        }
+
+        tree.appendChild (macros, nullptr);
+    }
 
     juce::MemoryOutputStream out (dest, false);
     tree.writeToStream (out);
@@ -635,6 +716,20 @@ void KromosynthAudioProcessor::setStateInformation (const void* data, int size)
     {
         const juce::ScopedLock sl (pendingLock_);
         pendingInstrumentId_ = id;
+
+        // Absent in a session saved before the macro pool existed, which is
+        // fine: the instrument then loads with every knob at its default.
+        pendingMacroInstrumentId_.clear();
+        pendingMacroValues_.clear();
+
+        if (const auto macros = tree.getChildWithName (kStateMacros); macros.isValid())
+        {
+            pendingMacroInstrumentId_ = macros.getProperty (kStateInstrument).toString();
+
+            for (const auto& m : macros)
+                pendingMacroValues_.emplace_back (m.getProperty (kStateMacroLabel).toString(),
+                                                  (float) (double) m.getProperty (kStateMacroValue));
+        }
     }
 
     logEvent ("state_restored instrument=\"" + id + "\" version="
@@ -705,6 +800,7 @@ bool KromosynthAudioProcessor::removeInstrument (const juce::String& id)
 
         active_ = Active::none;
         current_ = LoadOutcome{};
+        clearMacros();
 
         suspendProcessing (false);
         updateHostDisplay();
@@ -1182,7 +1278,19 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
                                      faustBlock_, 1);
 
         if (r.ok)
+        {
             active_ = Active::faust;
+
+            // Before the measurement, which does not depend on it: the pool
+            // only needs the slider list, and that exists as soon as the JSON
+            // has been read. Inside the same suspend window, so the audio
+            // thread never sees a half-bound pool.
+            bindMacros (id);
+        }
+        else
+        {
+            clearMacros();
+        }
 
         // INSIDE the suspend window. applyFaustTrim renders through
         // FaustEngine::process, which is the same call the audio thread makes,
@@ -1351,6 +1459,11 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
 
     const auto result = engine_->load (file);
 
+    // A sample set has no sliders. Whatever the previous Faust genome bound
+    // would otherwise keep its names and hand the host knobs that do nothing.
+    if (result.ok)
+        clearMacros();
+
     suspendProcessing (false);
 
     outcome.ok = result.ok;
@@ -1494,6 +1607,210 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     // actually gets loaded -- the engines only exist now.
     loadPendingInstrument();
 }
+
+// ── macro pool ─────────────────────────────────────────────────────────────
+
+KromosynthAudioProcessor::MacroBinding KromosynthAudioProcessor::macroBinding (int slot) const
+{
+    MacroBinding b;
+
+    if (slot < 0 || slot >= kNumMacros || macros_[(size_t) slot] == nullptr)
+        return b;
+
+    const auto& s = macroSlots_[(size_t) slot];
+    if (s.byteOffset < 0)
+        return b;
+
+    b.label = s.label;
+    b.minimum = s.minimum;
+    b.maximum = s.maximum;
+    b.init = s.init;
+    b.value = s.minimum + macros_[(size_t) slot]->get() * (s.maximum - s.minimum);
+    return b;
+}
+
+void KromosynthAudioProcessor::clearMacros()
+{
+    // The caller holds the suspend window, so the audio thread is not reading
+    // the slots.
+    bool changed = macroInstrumentId_.isNotEmpty();
+
+    for (int i = 0; i < kNumMacros; ++i)
+    {
+        auto& s = macroSlots_[(size_t) i];
+        changed = changed || s.byteOffset >= 0;
+        s = MacroSlot{};
+
+        if (auto* macro = static_cast<MacroParameter*> (macros_[(size_t) i]))
+        {
+            const bool wasBound = macro->isBound();
+            macro->unbind();
+
+            // Only when there is something to undo. setValueNotifyingHost
+            // always tells the host, and sixteen "changes" to 0 on every
+            // sampler load is automation noise a recording host may keep.
+            if (wasBound || ! juce::exactlyEqual (macro->get(), 0.0f))
+                macro->setValueNotifyingHost (0.0f);
+        }
+    }
+
+    macroInstrumentId_.clear();
+
+    if (changed)
+        updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
+}
+
+#if KROMOSYNTH_HAS_FAUST
+
+void KromosynthAudioProcessor::bindMacros (const juce::String& instrumentId)
+{
+    // The caller holds the suspend window and faust_ has just loaded.
+    //
+    // WHICH SLIDERS: every one the genome publishes except freq, gain and gate,
+    // which the plugin already drives from MIDI. That is the web preview's own
+    // rule (FaustInstrumentPanel's VOICE_PARAMS), so a slider seen there is a
+    // macro here, in the same order -- the order the genome's ui tree declares.
+    std::vector<std::pair<juce::String, float>> restored;
+    {
+        const juce::ScopedLock sl (pendingLock_);
+        if (pendingMacroInstrumentId_ == instrumentId)
+            restored = std::move (pendingMacroValues_);
+
+        pendingMacroInstrumentId_.clear();
+        pendingMacroValues_.clear();
+    }
+
+    int slot = 0, overflow = 0, restoredCount = 0;
+    juce::StringArray names;
+
+    for (const auto& p : faust_->parameters())
+    {
+        if (p.label == "freq" || p.label == "gain" || p.label == "gate")
+            continue;
+
+        // A slider with no range has nothing to move, and dividing by it below
+        // would be a NaN default that every host then displays.
+        if (! (p.maximum > p.minimum))
+            continue;
+
+        if (slot >= kNumMacros)
+        {
+            ++overflow;
+            continue;
+        }
+
+        auto& s = macroSlots_[(size_t) slot];
+        s.label = p.label;
+        s.byteOffset = p.byteOffset;
+        s.minimum = p.minimum;
+        s.maximum = p.maximum;
+        s.init = p.init;
+        s.initNormalised = juce::jlimit (0.0f, 1.0f, (p.init - p.minimum) / (p.maximum - p.minimum));
+        s.offInit = false;
+
+        float normalised = s.initNormalised;
+
+        for (const auto& [label, value] : restored)
+            if (label == p.label)
+            {
+                normalised = juce::jlimit (0.0f, 1.0f, (value - p.minimum) / (p.maximum - p.minimum));
+                ++restoredCount;
+                break;
+            }
+
+        auto* macro = static_cast<MacroParameter*> (macros_[(size_t) slot]);
+        macro->bind (p.label, p.minimum, p.maximum, s.initNormalised);
+
+        if (! juce::exactlyEqual (macro->get(), normalised))
+            macro->setValueNotifyingHost (normalised);
+
+        names.add (p.label);
+        ++slot;
+    }
+
+    for (int i = slot; i < kNumMacros; ++i)
+    {
+        macroSlots_[(size_t) i] = MacroSlot{};
+
+        if (auto* macro = static_cast<MacroParameter*> (macros_[(size_t) i]))
+        {
+            macro->unbind();
+
+            if (! juce::exactlyEqual (macro->get(), 0.0f))
+                macro->setValueNotifyingHost (0.0f);
+        }
+    }
+
+    macroInstrumentId_ = instrumentId;
+
+    // One notification for the whole pool. Hosts re-read names, ranges and
+    // defaults on this; without it they keep showing the previous genome's.
+    updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
+
+    logEvent ("macros_bound id=" + instrumentId + " n=" + juce::String (slot)
+              + " names=\"" + names.joinIntoString (",") + "\""
+              + " restored=" + juce::String (restoredCount)
+              + (overflow > 0 ? " overflow=" + juce::String (overflow)
+                                    + " (sliders beyond the pool of "
+                                    + juce::String (kNumMacros) + " are not exposed)"
+                              : juce::String()));
+}
+
+void KromosynthAudioProcessor::applyMacros() noexcept
+{
+    // Audio thread, inside processBlock and therefore inside the barrier that
+    // bindMacros / clearMacros run behind.
+    //
+    // A knob AT ITS DEFAULT IS NOT WRITTEN. init() restores every slider to its
+    // declared init (139 of 139, measured 2026-09-05) whenever a voice idles or
+    // is stopped, so an untouched knob is already where it should be, and the
+    // write -- one wasm call per voice -- is the cost this avoids on sixteen
+    // knobs at up to 32 voices. It also means a user who never touches the pool
+    // gets output bit-identical to before the pool existed, which
+    // scripts/processor-diff.sh can and does check.
+    //
+    // A knob that has MOVED is written every block, not on change, for the same
+    // init() reason: a write-on-change design loses the value at the next voice
+    // recycle. The one write on the way BACK to the default is what `offInit`
+    // is for -- without it a knob returned to its default would leave the
+    // engine at the last moved value.
+    if (faust_ == nullptr || ! faust_->isLoaded())
+        return;
+
+    for (int i = 0; i < kNumMacros; ++i)
+    {
+        auto& s = macroSlots_[(size_t) i];
+        auto* macro = macros_[(size_t) i];
+
+        if (s.byteOffset < 0 || macro == nullptr)
+            continue;
+
+        const float norm = macro->get();
+
+        // EXACT equality, and meant: the parameter is continuous and was set to
+        // this very float, so a knob at its default compares equal. A near miss
+        // is a moved knob and is written.
+        if (juce::exactlyEqual (norm, s.initNormalised))
+        {
+            if (s.offInit)
+            {
+                faust_->writeParameter (s.byteOffset, s.init);
+                s.offInit = false;
+            }
+            continue;
+        }
+
+        faust_->writeParameter (s.byteOffset, s.minimum + norm * (s.maximum - s.minimum));
+        s.offInit = true;
+    }
+}
+
+#else
+
+void KromosynthAudioProcessor::bindMacros (const juce::String&) {}
+void KromosynthAudioProcessor::applyMacros() noexcept {}
+
+#endif
 
 // Outside the Faust guard, matching where the members it reads are now
 // declared. It was stranded inside it, so a sampler-only build declared the
@@ -1888,51 +2205,11 @@ void KromosynthAudioProcessor::applyFaustMeasurement (const FaustEngine::Measure
     // invented rather than the genome's.
     faust_->setOutputCeiling (true);
 
-    // EXPERIMENT: rename the macro to the first slider this genome exposes.
-    //
-    // freq, gain and gate are excluded because the plugin already drives them
-    // from MIDI -- they appear on 30, 24 and 29 of 30 instruments and are not
-    // the genome's character. What remains is what a player would actually want
-    // a knob for: lvl, cut, res, drv, att and so on.
-    //
-    // NOTHING IS WRITTEN to the slider. The name is the whole experiment; the
-    // version that also wrote was reverted for measuring an instrument after
-    // altering it.
-    if (macro1_ != nullptr)
-    {
-        juce::String first;
-
-        for (const auto& p : faust_->parameters())
-        {
-            if (p.label == "freq" || p.label == "gain" || p.label == "gate") continue;
-            first = p.label;
-            break;
-        }
-
-        if (auto* renamable = dynamic_cast<RenamableParameter*> (macro1_))
-            renamable->setDisplayName (first.isEmpty() ? "Macro 1" : first, *this);
-
-        // WHAT WAS ASKED FOR, AND NOTHING ELSE. This used to also log
-        // macro1_->getName(32) as `reported_as`, which is asking JUCE what it
-        // called the parameter immediately after telling JUCE what to call it.
-        // It agreed every time -- 149 matches on the phone, more on desktop
-        // back to 2026-09-05 -- and proved nothing at all.
-        //
-        // The question is whether the HOST picked the new name up, and that is
-        // not observable from in here: hosts cache the parameter list at
-        // construction and many ignore later changes. Björn reports seeing a
-        // parameter still called "macro" in AUM, which is the actual evidence
-        // and points the other way.
-        //
-        // So this records the intent and stops implying it was verified. The
-        // reading that settles it is done by LOOKING AT THE HOST: open AUM's
-        // parameter list, load a Faust genome declaring a slider like "att",
-        // and see whether the name changes. If it does not, renaming is dead
-        // and a fixed pool of Macro 1..8 with the mapping shown in our own UI
-        // is the design.
-        logEvent ("macro_rename_requested to=\"" + (first.isEmpty() ? juce::String ("Macro 1") : first)
-                  + "\" (host-side result NOT observable here)");
-    }
+    // The genome's sliders are bound to the macro pool at LOAD (bindMacros),
+    // not here: this runs again on a sample-rate change, and a user's knob
+    // positions must survive that. Nothing in the pool is written during a
+    // measurement either way -- measure() takes the genome's own init values,
+    // which is also what a knob at its default delivers.
 
     faust_->setOutputGain (trim);
     faustTrim_ = trim;
@@ -2156,6 +2433,7 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     if (active_ == Active::faust && faust_ != nullptr)
     {
         faust_->setOutputLevel (level);
+        applyMacros();
         faust_->process (buffer, midiMessages);
         return;
     }

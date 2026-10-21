@@ -48,6 +48,31 @@ re-downloads against extraction quota, not just time.
 
 ---
 
+# C51. THE GENOME'S SLIDERS ARE NOW HOST PARAMETERS (2026-10-20, uncommitted)
+
+AUM answered synthis-59r.4's first reading: a pool slot showed up renamed
+("bodyLvl") beside Attack..Output. It was rename-only and wired to nothing, so
+the knob did nothing. Now 16 pool slots ("macro1".."macro16", appended after
+Output so indices 0..4 keep their automation) are bound on load to every genome
+slider except freq/gain/gate, in the genome's own order (the web preview's rule).
+
+Design: always 0..1 in the host, mapped linearly onto the slider's min..max; real
+value in getText. Default = the genome's init, exact; a knob at its default is
+NOT written to the engine. Moved knobs are written every block (init() resets
+sliders on voice idle). Values saved in session state by label.
+
+Verified headless (tools/processor-probe, Xcode 27 beta, desktop wasmtime):
+- untouched macros: bit-identical audio and voice counts vs the pre-change build
+  on 3 fixtures (adsr, plain, body).
+- pad held across a reset: lvl 1.0 -> 5.56x the default level (= 1.0/0.18), back
+  to exactly 1.00x after the reset; stays 5.56x if not reset.
+- state round trip restores every knob. Archive max is 10 sliders (pool is 16).
+
+NOT verified: AUM/phone, any desktop DAW, auval, MIDI learn actually assigning a
+CC. iOS app + AUv3 compile (ios-build.sh) but nothing was installed on a device.
+Not built: an on-screen slider panel in the plugin window (needs C40's resync).
+Xcode-beta is the selected toolchain on the laptop; use release Xcode to ship.
+
 # C50. THE SAMPLED FAUST PATH RUNS, AND TWO OF ITS CONTROLS ARE COPIES (2026-09-26)
 
 Full record, with numbers:

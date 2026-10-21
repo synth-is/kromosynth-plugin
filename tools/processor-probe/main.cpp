@@ -109,7 +109,103 @@ int main (int argc, char** argv)
     if (! loadedOk)
         return 1;
 
-    auto events = script();
+    // What a HOST sees of the macro pool, read through the AudioProcessorParameter
+    // interface a host uses -- name, text and default as they stand after the
+    // load, not what bindMacros believes it set. Printed on every run, so a
+    // build without the pool simply has no `macros_bound` line to compare.
+    int macrosBound = 0;
+    for (int i = 0; i < KromosynthAudioProcessor::kNumMacros; ++i)
+    {
+        auto* param = findParam (*processor, ("macro" + juce::String (i + 1)).toRawUTF8());
+        if (param == nullptr) continue;
+
+        const auto b = processor->macroBinding (i);
+        if (b.label.isNotEmpty()) ++macrosBound;
+
+        std::printf ("macro%d=name:%s|bound:%s|range:%g..%g|init:%g|host_default_text:%s|host_value_text:%s\n",
+                     i + 1, param->getName (64).toRawUTF8(), b.label.isNotEmpty() ? "yes" : "no",
+                     (double) b.minimum, (double) b.maximum, (double) b.init,
+                     param->getText (param->getDefaultValue(), 32).toRawUTF8(),
+                     param->getText (param->getValue(), 32).toRawUTF8());
+    }
+    std::printf ("macros_bound=%d\n", macrosBound);
+
+    // KROMOSYNTH_PROBE_MACRO="1=0.5,3=0.2": move macros through the PARAMETER
+    // path a host automation write takes (a 0..1 value), the real value given
+    // here in the slider's own units and converted the way the host's text box
+    // would, via getValueForText. Applied before the first block, so the whole
+    // render hears it.
+    if (const auto spec = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_MACRO", {});
+        spec.isNotEmpty())
+    {
+        for (const auto& item : juce::StringArray::fromTokens (spec, ",", ""))
+        {
+            const int slot = item.upToFirstOccurrenceOf ("=", false, false).getIntValue();
+            const auto text = item.fromFirstOccurrenceOf ("=", false, false);
+            auto* param = findParam (*processor, ("macro" + juce::String (slot)).toRawUTF8());
+            if (param == nullptr) { std::printf ("macro_set_%d=missing\n", slot); continue; }
+
+            param->setValueNotifyingHost (param->getValueForText (text));
+            std::printf ("macro_set_%d=%s -> normalised %.6f -> text %s\n", slot, text.toRawUTF8(),
+                         (double) param->getValue(), param->getText (param->getValue(), 32).toRawUTF8());
+        }
+    }
+
+    // KROMOSYNTH_PROBE_STATE_ROUNDTRIP=1: save this processor's state and restore
+    // it into a SECOND processor, the way a host reopening a session does, then
+    // print what the second one holds. The instrument arrives by the
+    // setStateInformation route (an async load), not by a loadInstrument call.
+    if (juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_STATE_ROUNDTRIP", {}).isNotEmpty())
+    {
+        juce::MemoryBlock state;
+        processor->getStateInformation (state);
+
+        auto second = std::make_unique<KromosynthAudioProcessor>();
+        second->setPlayConfigDetails (0, 2, kRate, kBlock);
+        second->prepareToPlay (kRate, kBlock);
+        second->setStateInformation (state.getData(), (int) state.getSize());
+
+        const auto until = juce::Time::getMillisecondCounter() + 120000;
+        do { juce::MessageManager::getInstance()->runDispatchLoopUntil (20); }
+        while ((second->isMeasuring() || ! second->currentInstrument().ok)
+               && juce::Time::getMillisecondCounter() < until);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+        std::printf ("roundtrip_state_bytes=%d\nroundtrip_loaded=%d\n", (int) state.getSize(),
+                     second->currentInstrument().ok ? 1 : 0);
+        for (int i = 0; i < KromosynthAudioProcessor::kNumMacros; ++i)
+        {
+            const auto a = processor->macroBinding (i);
+            const auto b = second->macroBinding (i);
+            if (a.label.isEmpty() && b.label.isEmpty()) continue;
+            std::printf ("roundtrip_macro%d=%s|%g|restored:%s|%g\n", i + 1, a.label.toRawUTF8(),
+                         (double) a.value, b.label.toRawUTF8(), (double) b.value);
+        }
+        second.reset();
+    }
+
+    // KROMOSYNTH_PROBE_MACRO_RESET_AT=<seconds>: put every macro set above back to
+    // its default part-way through, with the note still held. Exists for the one
+    // path a fixed arpeggio cannot isolate -- a knob returned to its default must
+    // be written back, and voices going idle re-init anyway, so only a note held
+    // across the reset can tell the two apart.
+    std::vector<juce::RangedAudioParameter*> movedMacros;
+    if (const auto spec = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_MACRO", {});
+        spec.isNotEmpty())
+        for (const auto& item : juce::StringArray::fromTokens (spec, ",", ""))
+            if (auto* param = findParam (*processor,
+                    ("macro" + juce::String (item.upToFirstOccurrenceOf ("=", false, false).getIntValue())).toRawUTF8()))
+                movedMacros.push_back (param);
+
+    const auto resetAtText = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_MACRO_RESET_AT", {});
+    const double resetAt = resetAtText.isNotEmpty() ? resetAtText.getDoubleValue() : -1.0;
+    bool macrosReset = false;
+
+    // KROMOSYNTH_PROBE_SCRIPT=hold: one note, held for 6 s, nothing else.
+    // Not the reference script, so never compared against a recorded one.
+    auto events = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_SCRIPT", {}) == "hold"
+                      ? std::vector<Event> { { 0.0, true, 60, 100 }, { 6.0, false, 60, 0 } }
+                      : script();
     std::sort (events.begin(), events.end(), [] (const Event& a, const Event& b) { return a.at < b.at; });
 
     const int totalBlocks = (int) std::ceil (kSeconds * kRate / kBlock);
@@ -142,6 +238,14 @@ int main (int argc, char** argv)
                 release->setValueNotifyingHost (release->convertTo0to1 (0.35f));
             std::printf ("param_release_found=%d\n", findParam (*processor, "release") != nullptr ? 1 : 0);
             paramWritten = true;
+        }
+
+        if (! macrosReset && resetAt >= 0.0 && start >= (juce::int64) (resetAt * kRate))
+        {
+            for (auto* param : movedMacros)
+                param->setValueNotifyingHost (param->getDefaultValue());
+            std::printf ("macros_reset_at=%.3f\n", resetAt);
+            macrosReset = true;
         }
 
         block.clear();

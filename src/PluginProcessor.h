@@ -23,7 +23,10 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <array>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #if KROMOSYNTH_HAS_SAMPLER
 class SamplerEngine;
@@ -125,10 +128,33 @@ public:
     juce::AudioParameterFloat* sustain_ = nullptr;
     juce::AudioParameterFloat* releaseS_ = nullptr;
 
-    // Experiment: does a host refresh a parameter's displayed name? Renamed on
-    // load to the first slider the genome exposes, and does nothing else.
-    // Typed as the base class so the header need not see RenamableParameter.
-    juce::AudioParameterFloat* macro1_ = nullptr;
+    // The genome's own sliders. A host reads the parameter list once, but each
+    // Faust genome publishes a DIFFERENT set (0 to 8 on the 41 installed
+    // instruments, none of them the same), so the plugin offers a fixed pool
+    // and renames it on load: "Macro 1" becomes "bodyLvl", "Macro 2" becomes
+    // "res", and so on, in the order the genome declares them. AUM was seen to
+    // pick the rename up (synthis-59r.4).
+    //
+    // Every macro is 0..1 regardless of the slider behind it, mapped linearly
+    // onto that slider's declared min..max. That is deliberate: a host that
+    // cached a range from an earlier instrument would otherwise send values the
+    // plugin read against a different one. A knob at its default is the genome's
+    // own `init`, bit for bit, and is not written to the engine at all.
+    //
+    // Appended AFTER Output, so Attack..Output keep indices 0..4 and any
+    // automation on them survives. Typed as the base class so the header need
+    // not see MacroParameter.
+    static constexpr int kNumMacros = 16;
+    std::array<juce::AudioParameterFloat*, kNumMacros> macros_ {};
+
+    /** What a macro is bound to. Public for the processor probe and the log. */
+    struct MacroBinding
+    {
+        juce::String label;      // empty: unbound, the slot is inert
+        float minimum = 0.0f, maximum = 1.0f, init = 0.0f;
+        float value = 0.0f;      // the slider's own units, as the engine is told
+    };
+    MacroBinding macroBinding (int slot) const;
 
     // Exposed so async callbacks can capture the File BY VALUE and still log
     // after this processor is gone. juce::File is a value type holding a path
@@ -725,9 +751,41 @@ private:
     juce::CriticalSection pendingLock_;
     juce::String pendingInstrumentId_;
 
+    // The macro values a saved session held, keyed by the slider's label so a
+    // genome that gained or lost a slider cannot shift every value one place.
+    // Consumed by bindMacros when the instrument it names is loaded; guarded by
+    // pendingLock_ like the id it travels with.
+    juce::String pendingMacroInstrumentId_;
+    std::vector<std::pair<juce::String, float>> pendingMacroValues_;
+
     void loadPendingInstrument();
 
    #endif
+
+    // ── Macro slots ─────────────────────────────────────────────────────────
+    //
+    // Written only inside a suspend window (bindMacros / clearMacros), read on
+    // the audio thread in applyMacros -- the same barrier that already makes
+    // faust_ itself safe to swap. `offInit` belongs to the audio thread.
+    struct MacroSlot
+    {
+        juce::String label;
+        int byteOffset = -1;         // < 0: unbound
+        float minimum = 0.0f, maximum = 1.0f, init = 0.0f;
+        float initNormalised = 0.0f; // computed once, compared for EXACT equality
+        bool offInit = false;
+    };
+    std::array<MacroSlot, kNumMacros> macroSlots_ {};
+    juce::String macroInstrumentId_;
+
+    /** Points the pool at the loaded genome's sliders. Suspend window only. */
+    void bindMacros (const juce::String& instrumentId);
+
+    /** Returns every macro to "Macro N", inert. Suspend window only. */
+    void clearMacros();
+
+    /** Audio thread: pushes macros that are off their default into the engine. */
+    void applyMacros() noexcept;
 
     AcquisitionRunner acquisitions_;
 
