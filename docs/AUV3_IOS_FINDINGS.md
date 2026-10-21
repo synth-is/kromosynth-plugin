@@ -68,6 +68,32 @@ Verified headless (tools/processor-probe, Xcode 27 beta, desktop wasmtime):
   to exactly 1.00x after the reset; stays 5.56x if not reset.
 - state round trip restores every knob. Archive max is 10 sliders (pool is 16).
 
+FIRST PHONE TEST (2026-10-21): AUM showed "Macro 1..6", unbound, on the new build.
+The device log (scripts/ios-log.sh, which worked) shows the plugin DID bind: three
+instances, each state_restored -> macros_bound with the right names (one was
+att,dec,drv,rel,res,sus, the web preview's six) inside ~280 ms of
+processor_constructed, all within prepareToPlay. So the binding is right and AUM
+never saw it: it was not yet listening for parameter-tree changes during
+allocation. The old build's "bodyLvl" worked because that instrument was loaded
+BY HAND after the plugin was up. Fix: refreshMacroDisplayLater() re-sends the
+parameter-info change at +0.6 s, +2.5 s and +6 s after any bind (logged as
+macros_refresh). Unverified in AUM at the time of writing: it follows from the
+log, not from seeing AUM. If AUM still shows "Macro N" with those lines in the
+log, the next step is to rebuild the tree from the editor's creation instead.
+
+SECOND PHONE TEST (2026-10-21 17:14): the refresh worked. The log shows
+macros_refresh at 600/2500/6000 ms for all three instances, and AUM now lists the
+genome's real names and ranges ("echodel 0.0030 -> 0.5000"); the unused slots
+stay "Macro N" (this genome has 9 sliders, the pool 16). OPEN: every bracketed
+value in AUM sat at the slider's MINIMUM, not the genome's default (exdec
+[0.0020] where the default is 0.012). The wrapper serves AUM the plugin's current
+value (getValue), so either something zeroed the knobs after bind or AUM shows a
+stale one. The log did not record values, so this build adds macro_values lines
+(bound, refresh_before_N, refresh_after_N, state_saved), a 250 ms re-assert after
+each tree rebuild (logs macros_reasserted if it had to fire), and discards a
+restored state in which every knob (3 or more) is at its minimum. The next device
+log decides it: values at refresh_after_* tell which theory holds.
+
 NOT verified: AUM/phone, any desktop DAW, auval, MIDI learn actually assigning a
 CC. iOS app + AUv3 compile (ios-build.sh) but nothing was installed on a device.
 Not built: an on-screen slider panel in the plugin window (needs C40's resync).

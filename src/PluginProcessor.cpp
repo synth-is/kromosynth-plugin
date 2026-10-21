@@ -689,6 +689,7 @@ void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
         }
 
         tree.appendChild (macros, nullptr);
+        logMacroValues ("state_saved");
     }
 
     juce::MemoryOutputStream out (dest, false);
@@ -1657,7 +1658,78 @@ void KromosynthAudioProcessor::clearMacros()
     macroInstrumentId_.clear();
 
     if (changed)
+    {
         updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
+        refreshMacroDisplayLater();
+    }
+}
+
+void KromosynthAudioProcessor::refreshMacroDisplayLater()
+{
+    // Three, spread out, because nothing says when a given host starts
+    // listening: the first lands after a restore-at-creation has finished, the
+    // later ones cover a slower host. Each rebuilds the parameter tree, which a
+    // host already tolerates on every instrument load.
+    //
+    // WHAT A REBUILD MAY DO TO THE KNOBS. The first phone test showed every
+    // bound macro at its slider's MINIMUM in AUM after this ran, where the
+    // genome's own default was expected. The log does not say who zeroed them;
+    // one candidate is a host that re-applies the values it cached from the
+    // unbound tree onto each rebuilt one. So each pulse remembers where the
+    // knobs are, rebuilds, and 250 ms later puts back any that moved. It is a
+    // no-op on a host that does nothing, and the log says whether it fired.
+    for (const int delayMs : { 600, 2500, 6000 })
+        juce::Timer::callAfterDelay (delayMs, [weak = std::weak_ptr<int> (lifetime_), this, delayMs]
+        {
+            if (weak.expired()) return;   // the plugin went away first
+
+            std::array<float, kNumMacros> before {};
+            for (int i = 0; i < kNumMacros; ++i)
+                before[(size_t) i] = macros_[(size_t) i] != nullptr ? macros_[(size_t) i]->get() : 0.0f;
+
+            logMacroValues ("refresh_before_" + juce::String (delayMs));
+            updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
+            logEvent ("macros_refresh after_ms=" + juce::String (delayMs));
+
+            juce::Timer::callAfterDelay (250, [weak, this, before, delayMs]
+            {
+                if (weak.expired()) return;
+
+                int reasserted = 0;
+                for (int i = 0; i < kNumMacros; ++i)
+                {
+                    auto* macro = macros_[(size_t) i];
+                    if (macro == nullptr || macroSlots_[(size_t) i].byteOffset < 0) continue;
+
+                    if (! juce::exactlyEqual (macro->get(), before[(size_t) i]))
+                    {
+                        macro->setValueNotifyingHost (before[(size_t) i]);
+                        ++reasserted;
+                    }
+                }
+
+                logMacroValues ("refresh_after_" + juce::String (delayMs));
+                if (reasserted > 0)
+                    logEvent ("macros_reasserted n=" + juce::String (reasserted)
+                              + " -- the host changed knob values after a parameter-tree rebuild");
+            });
+        });
+}
+
+void KromosynthAudioProcessor::logMacroValues (const juce::String& why)
+{
+    juce::StringArray parts;
+
+    for (int i = 0; i < kNumMacros; ++i)
+    {
+        const auto b = macroBinding (i);
+        if (b.label.isEmpty()) continue;
+
+        parts.add (b.label + "=" + juce::String (b.value, 4)
+                   + "/" + juce::String (macros_[(size_t) i]->get(), 3));
+    }
+
+    logEvent ("macro_values why=" + why + " " + parts.joinIntoString (","));
 }
 
 #if KROMOSYNTH_HAS_FAUST
@@ -1680,8 +1752,9 @@ void KromosynthAudioProcessor::bindMacros (const juce::String& instrumentId)
         pendingMacroValues_.clear();
     }
 
-    int slot = 0, overflow = 0, restoredCount = 0;
+    int slot = 0, overflow = 0, restoredCount = 0, restoredAtMinimum = 0;
     juce::StringArray names;
+    std::array<float, kNumMacros> wanted {};
 
     for (const auto& p : faust_->parameters())
     {
@@ -1715,17 +1788,37 @@ void KromosynthAudioProcessor::bindMacros (const juce::String& instrumentId)
             {
                 normalised = juce::jlimit (0.0f, 1.0f, (value - p.minimum) / (p.maximum - p.minimum));
                 ++restoredCount;
+                if (juce::exactlyEqual (normalised, 0.0f)) ++restoredAtMinimum;
                 break;
             }
 
-        auto* macro = static_cast<MacroParameter*> (macros_[(size_t) slot]);
-        macro->bind (p.label, p.minimum, p.maximum, s.initNormalised);
+        wanted[(size_t) slot] = normalised;
 
-        if (! juce::exactlyEqual (macro->get(), normalised))
-            macro->setValueNotifyingHost (normalised);
+        static_cast<MacroParameter*> (macros_[(size_t) slot])
+            ->bind (p.label, p.minimum, p.maximum, s.initNormalised);
 
         names.add (p.label);
         ++slot;
+    }
+
+    // EVERY RESTORED KNOB AT ITS MINIMUM IS NOT A SETTING, IT IS A SYMPTOM.
+    // The first phone test left AUM showing every bound macro at its slider's
+    // minimum, and a session saved from there would bring all of them back
+    // as "where the user left them": an instrument that comes up with its
+    // level, feedback and cutoff all at the floor. Nobody sets six or more
+    // sliders to their minimums on purpose, so a restore like that is
+    // discarded and the genome's own defaults are used. Needs three or more,
+    // so a one-slider genome the user really did set to its minimum keeps it.
+    const bool staleRestore = restoredCount >= 3 && restoredAtMinimum == restoredCount;
+
+    for (int i = 0; i < slot; ++i)
+    {
+        const float target = staleRestore ? macroSlots_[(size_t) i].initNormalised
+                                          : wanted[(size_t) i];
+        auto* macro = macros_[(size_t) i];
+
+        if (! juce::exactlyEqual (macro->get(), target))
+            macro->setValueNotifyingHost (target);
     }
 
     for (int i = slot; i < kNumMacros; ++i)
@@ -1746,10 +1839,14 @@ void KromosynthAudioProcessor::bindMacros (const juce::String& instrumentId)
     // One notification for the whole pool. Hosts re-read names, ranges and
     // defaults on this; without it they keep showing the previous genome's.
     updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
+    refreshMacroDisplayLater();
+    logMacroValues ("bound");
 
     logEvent ("macros_bound id=" + instrumentId + " n=" + juce::String (slot)
               + " names=\"" + names.joinIntoString (",") + "\""
-              + " restored=" + juce::String (restoredCount)
+              + " restored=" + juce::String (staleRestore ? 0 : restoredCount)
+              + (staleRestore ? juce::String (" discarded_restore=all_" + juce::String (restoredCount)
+                                              + "_at_minimum") : juce::String())
               + (overflow > 0 ? " overflow=" + juce::String (overflow)
                                     + " (sliders beyond the pool of "
                                     + juce::String (kNumMacros) + " are not exposed)"

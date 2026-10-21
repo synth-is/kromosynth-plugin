@@ -787,6 +787,21 @@ private:
     /** Audio thread: pushes macros that are off their default into the engine. */
     void applyMacros() noexcept;
 
+    /** Tells the host to re-read the parameter list again, a little later.
+
+        A host that creates the plug-in and restores its session inside one
+        allocation (AUM does, in about 280 ms) is not yet listening for
+        parameter-tree changes when the names are bound, and keeps showing
+        "Macro N" for the whole session. The same rename done by hand after the
+        plug-in is up reaches it. See AUV3_IOS_FINDINGS C51.
+    */
+    void refreshMacroDisplayLater();
+
+    /** One log line with every bound macro's value, in the slider's units and
+        as the 0..1 the host sees. The only way to tell, from the log alone,
+        what a host did to the knobs after the names were bound. */
+    void logMacroValues (const juce::String& why);
+
     AcquisitionRunner acquisitions_;
 
     juce::File logFile_;
