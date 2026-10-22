@@ -111,7 +111,30 @@ has no OB-Xf build). Open-webclap legacy vs open-webclap exnref:
 | ui.wasm | 20 538 634 B | 20 845 686 B | 11 716 024 B | not translated (browser only) |
 | `try_table` / legacy `try` | 5912 / 0 | 6128 / 0 | 11785 / 0 | 12053 / 0 (translated: one `try_table` per legacy `try`: Surge 6128 = 6128, OB-Xf 12053) |
 | fingerprint vs legacy | identical | identical | **different** (section 3) | **identical** |
-| Wasmtime bridge probe (`/tmp/aa490` build, wclap-bridge `cd11d22` + the spike's two patches) | loads; PLAYS PASS; same-instance state round trip PASS; 775 params; CPU 0.0086 of realtime; RMS 0.152 | same: PASS/PASS, RMS 0.114 | no result: no output in 90 s or 300 s (cause not diagnosed; the legacy bundle is refused at open, immediately) | same: no output in 300 s (so it is the probe or OB-Xf init under Wasmtime, not the build route) |
+| Wasmtime bridge probe (`/tmp/aa490` build, wclap-bridge `cd11d22` + the spike's two patches) | loads; PLAYS PASS; same-instance state round trip PASS; 775 params; CPU 0.0086 of realtime; RMS 0.152 | same: PASS/PASS, RMS 0.114 | no result: **never gets past `wclap_open`**: Cranelift is still compiling `module.wasm` after 10 min (aa4.104, below); the legacy bundle is refused at open, immediately | same hang, same function (so it is neither the probe nor OB-Xf's init, and not the build route) |
+
+**Why OB-Xf hangs in Wasmtime (aa4.104, diagnosed 2026-10-22).** It is not the probe and not OB-Xf's init: the probe never
+runs a single plugin instruction. `sample` on the stuck process shows the main thread inside `wclap_open_with_dirs` ->
+`wasmtime_module_new` -> `CompileInputs::compile` waiting on rayon; every worker is idle except one, which spends all its
+samples in `cranelift_frontend::ssa::SSABuilder::run_state_machine` / `use_var` (`FuncTranslator::translate_body`). So
+Wasmtime's Cranelift is compiling one function, single-threaded, for longer than 10 minutes (RSS ~480 MB, 100 % of one core;
+the 80 % seen in aa4.95 is the same thing). Nothing prints because `wclap-probe` prints `MODE`/`PLUGIN_ID` only after
+open returns (and, piped to a file, stdout is block-buffered anyway; the probe now line-buffers).
+
+The function is `$0`, called only from `_initialize` (`$2849`, the wasm ctors): the whole static-initialisation of the
+plugin, inlined into one body. Binaryen `--func-metrics` on the native exnref `module.wasm`: `$0` is **1 357 921 B of the
+2 268 893 B module** (494 270 IR nodes, 719 locals, about 16 000 blocks, 10 391 of the module's 11 785 `try_table`), the next
+largest function is 32 853 B. Surge XT's biggest function is also its `$0`, but 275 KB (and 438 KB for another), and it compiles
+in seconds. Cranelift's SSA construction is superlinear in blocks x locals, so OB-Xf's `$0` is past the cliff. The wasm-opt
+translated bundle has the identical function (12 053 `try_table`, same stack in `sample`), so the build route is irrelevant;
+Node's V8 loads and renders all of them (not investigated why; presumably its baseline tier compiles first).
+
+Ways out, none tried here (each is its own piece of work): (1) build the OB-Xf port so the ctor is not one function
+(e.g. fewer inlined static initialisers, `-Wl,--no-inline`-style / `-fno-inline` on the translation units that hold the
+tables, or a post-link outliner); (2) have wclap-bridge's Wasmtime use Winch (`Strategy::Winch`, baseline compiler, linear
+time) for modules containing a function above a size threshold, or compile with lower `cranelift_opt_level` (may not help:
+the cost is in SSA construction, before optimisation); (3) accept OB-Xf as Node/browser-only for now. Not verified that
+the compile would ever finish: stopped at 10 min of CPU.
 
 Surge `RMS` differs between (a) and (b) in the probe (0.152 vs 0.114) although the Node host renders them bit-identically: the
 probe's note is not seed-controlled (it also logs `Surge Error [Filesystem Error]` for the missing user data directory), so its
@@ -171,7 +194,7 @@ unless the audience is on Chrome ≥ 137, Firefox ≥ 131, Safari ≥ 18.4.
 ## 7. Not done / open
 
 - No OB-Xf bundle from burst's actual pipeline was available; the OB-Xf comparison is between my own builds.
-- OB-Xf under the Wasmtime probe produced no output; a manual look is needed (could be the probe, which is Surge-oriented, or slow init).
+- OB-Xf under the Wasmtime probe: diagnosed (section 4, aa4.104): Cranelift compile blow-up on the 1.36 MB static-init function. The probe cannot print MODE/PLUGIN_ID/CHECK_PLAYS for it until that is fixed (see the three ways out).
 - Which Surge bundle burst reads cannot be read from the running process; all candidates were compared and all agree.
 - The exnref browser numbers are unverified against vendor sources (section 5). Only macOS arm64 was used.
 - Bundle sizes quoted in "Build time" come from the earlier logs (`~/wclap-native/pin-*.log`), not re-timed; the Surge exnref time reused cached objects.

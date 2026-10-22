@@ -99,6 +99,7 @@ double maxDiff(const std::vector<float>& a, const std::vector<float>& b) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);  // output must survive a hang/kill (aa4.104)
     if (argc < 2) {
         std::fprintf(stderr, "usage: wclap-probe <dir.wclap|x.clap> [--plugin-id ID] [--seconds N] [--block N] [--sr HZ]\n");
         return 2;
