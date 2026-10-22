@@ -1,0 +1,50 @@
+From f58f9a8f703b9af424c295d69ecf07066a79f8ee Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bj=C3=B6rn=20=C3=9E=C3=B3r=20J=C3=B3nsson?= <bangsi@bthj.is>
+Date: Thu, 22 Oct 2026 00:11:57 +0000
+Subject: [PATCH 2/3] Opt-in exnref wasm exceptions: -DWEBCLAP_EXNREF=ON
+
+Emscripten >= 4.0.7 can emit the standardised exnref exceptions (try_table) instead
+of the legacy ones (try). Wasmtime-based hosts load only exnref. Off by default, so the
+kit's tested Emscripten 3.1.51 build is unchanged. Applies to the JUCE-kit ports via
+juce_webclap.cmake and to the Surge XT port, which sets its own flags.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ modules/juce_webclap/juce_webclap.cmake | 8 ++++++++
+ ports/surge-xt/CMakeLists.txt           | 4 ++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/modules/juce_webclap/juce_webclap.cmake b/modules/juce_webclap/juce_webclap.cmake
+index 07bd22a..9e37589 100644
+--- a/modules/juce_webclap/juce_webclap.cmake
++++ b/modules/juce_webclap/juce_webclap.cmake
+@@ -14,6 +14,14 @@
+ set(JUCE_MODULES "${KIT_ROOT}/external/JUCE/modules")
+ set(JUCE_WEBCLAP_FLAGS -msimd128 -fwasm-exceptions)
+ 
++# Emscripten >= 4.0.7 can emit the standardised exnref exceptions (try_table) instead of the legacy ones (try). Hosts
++# built on a runtime that only knows exnref (Wasmtime) need this; off by default, which keeps what browsers load
++# today and builds with the tested Emscripten 3.1.51.
++option(WEBCLAP_EXNREF "Build with exnref wasm exceptions (-sWASM_LEGACY_EXCEPTIONS=0, needs Emscripten >= 4.0.7)" OFF)
++if(WEBCLAP_EXNREF)
++    list(APPEND JUCE_WEBCLAP_FLAGS -sWASM_LEGACY_EXCEPTIONS=0)
++endif()
++
+ set(JUCE_DEFINITIONS
+     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+     JUCE_STANDALONE_APPLICATION=0
+diff --git a/ports/surge-xt/CMakeLists.txt b/ports/surge-xt/CMakeLists.txt
+index 08c9587..e6d4bf6 100644
+--- a/ports/surge-xt/CMakeLists.txt
++++ b/ports/surge-xt/CMakeLists.txt
+@@ -24,6 +24,10 @@ set(BUNDLE "${CMAKE_BINARY_DIR}/web/surge-xt.wclap")
+ set(SURGE_VERSION "1.4.0")
+ 
+ # Every target (the libraries below too) is built with the kit's wasm flags (SIMD, wasm exceptions)
++option(WEBCLAP_EXNREF "Build with exnref wasm exceptions (-sWASM_LEGACY_EXCEPTIONS=0, needs Emscripten >= 4.0.7)" OFF)
++if(WEBCLAP_EXNREF)
++    add_compile_options(-sWASM_LEGACY_EXCEPTIONS=0)
++endif()
+ add_compile_options(-msimd128 -fwasm-exceptions -fno-math-errno -fno-trapping-math
+     $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>)
+ 
