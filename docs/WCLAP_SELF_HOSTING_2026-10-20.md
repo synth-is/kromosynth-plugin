@@ -332,3 +332,10 @@ Studio runs it; Studio-detached-process LAN block applies (use tailnet names for
 - No bundle was built, hashed, served or loaded; the byte-reproducibility, header and CORS rules are design, untested.
 - Section numbers of GPLv3 are cited from memory; check them against `ow:licenses/AGPL-3.0.txt` and the GPL-3.0 text before the lawyer sees this.
 - Whether assets.opendaw.studio blocks CORS from synth.is is taken from the task statement.
+
+## Update 2026-10-22 (synthis-aa4.95): source offer target
+
+The corresponding source for the engine bundles is the open-webclap pin recorded in `scripts/wclap-pins/open-webclap.json`
+(upstream commit `0833f5b`, plus our three-commit patch queue on branch `synthis/main` of the fork
+`https://github.com/synth-is/open-webclap`; the public commit URL is a placeholder until the first push). Workflow and
+comparisons: `docs/OPEN_WEBCLAP_UPSTREAM_2026-10-22.md`.

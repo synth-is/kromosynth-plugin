@@ -1,0 +1,48 @@
+{
+  "_comment": "synthis-aa4.95. The WCLAP engine builds track open-webclap as upstream, with a small patch queue on a pinned commit. Bundles are GPL-3.0 as built and are never committed; this file is what the source offer (docs/WCLAP_SELF_HOSTING_2026-10-20.md) points at.",
+  "upstream": {
+    "repo": "https://github.com/andremichelle/open-webclap",
+    "licence": "MIT",
+    "pinnedCommit": "0833f5b109eeb3b1e8c49853db4dd914d2207318",
+    "pinnedSubject": "README: a screenshot of OB-Xf on the site",
+    "movedOnSincePin": "upstream/main is ahead by 12+ commits (fetched 2026-10-21; e.g. 871ccc3 one shared test host, coopiano port). Not adopted yet: bump per docs/OPEN_WEBCLAP_UPSTREAM_2026-10-22.md section 1."
+  },
+  "fork": {
+    "repo": "https://github.com/synth-is/open-webclap",
+    "status": "created by Bjorn 2026-10-21, only branch main; nothing pushed from the Studio (no push credential yet)",
+    "studioRemotes": {"origin": "https://github.com/synth-is/open-webclap.git", "upstream": "https://github.com/andremichelle/open-webclap.git"},
+    "branch": "synthis/main",
+    "branchCommit": "a2e8984bbf882da912a0f0ab901d509368037517",
+    "publicCommitUrl": "https://github.com/synth-is/open-webclap/commit/<PLACEHOLDER: branchCommit, valid only after the first push>",
+    "publicTreeUrl": "https://github.com/synth-is/open-webclap/tree/synthis/main  (after the first push)"
+  },
+  "patchQueue": [
+    {"order": 1, "commit": "583c4ce", "file": "open-webclap-patches/0001-Build-scripts-WEBCLAP_BUILD_DIR-overrides-the-build-.patch",
+     "what": "WEBCLAP_BUILD_DIR overrides the build directory in scripts/build-*.sh (default unchanged), so legacy and exnref builds sit side by side"},
+    {"order": 2, "commit": "f58f9a8", "file": "open-webclap-patches/0002-Opt-in-exnref-wasm-exceptions-DWEBCLAP_EXNREF-ON.patch",
+     "what": "-DWEBCLAP_EXNREF=ON adds -sWASM_LEGACY_EXCEPTIONS=0 (JUCE-kit ports via juce_webclap.cmake, and the Surge XT port); OFF by default; needs Emscripten >= 4.0.7"},
+    {"order": 3, "commit": "a2e8984", "file": "open-webclap-patches/0003-OB-Xf-link-the-editor-module-at-O1-when-WEBCLAP_EXNR.patch",
+     "what": "OB-Xf ui.wasm: link at -O1 when WEBCLAP_EXNREF=ON, because Binaryen 124 (Emscripten 4.0.20) SIGBUSes in StackIR optimisation on that module"}
+  ],
+  "toolchains": {
+    "legacy": {"emscripten": "3.1.51 (c0c2ca13)", "emsdk": "~/wclap-native/emsdk (Studio)", "flag": "default (-fwasm-exceptions, legacy try)"},
+    "exnref": {"emscripten": "4.0.20 (6913738e)", "binaryen": "wasm-opt version 124", "emsdk": "~/wclap-native/emsdk-4 (Studio)", "flag": "-DWEBCLAP_EXNREF=ON"}
+  },
+  "enginePins": {
+    "authority": "scripts/fetch-deps.py at the pinned commit (blob 095338c0bc74, sha256 3864c814d32c2103...); it also applies patches/*.patch. Two ports' pins quoted here.",
+    "JUCE": "a8c7c714c7564b9248749e1e8cefcc5ef2b6f0cc",
+    "surge-xt": {"surge": "4f425b04b7c08cffa1f45ec3851607d269d47444", "licence": "GPL-3.0-or-later",
+      "submodules": "see SURGE block of fetch-deps.py (sst-basic-blocks 7209f145, sst-cpputils 52c4b749, sst-effects 5f2bd1a8, sst-filters 6bcf08bb, sst-waveshapers dd12f31a, sst-plugininfra ebdaf5e9, eurorack 888298b0, tuning-library 5a18353a, pffft d027f2a2)"},
+    "obxf": {"OB-Xf": "b08ffb6ab6cfa0f66cb057e855149ab640de0f78", "licence": "GPL-3.0",
+      "submodules": "see fetch-deps.py (sst-cpputils ca88c2e0, sst-basic-blocks 1f1825b0, sst-plugininfra f6deb258)"},
+    "six-sines": "baconpaul/six-sines 03f3b9af04511705148bca654a57f68742b5fb08 (full list in docs/OPEN_WEBCLAP_SIX_SINES_2026-10-20.md)"
+  },
+  "builds": {
+    "dir": "~/wclap-native/open-webclap/build/pin-<engine>-<form> (Studio, outside git)",
+    "surge-xt-legacy":  {"moduleWasmSha256": "a912b48bbb7e5695370035371679e27b5f5a902910306429df93c56186b51fa6", "tarGzBytes": 45777222},
+    "surge-xt-exnref":  {"moduleWasmSha256": "bab9b5b3e6a5cde55c622c74d8cb8ca86298af20596887b5dd86cfa7946d1919", "tarGzBytes": 45717730},
+    "obxf-legacy":      {"moduleWasmSha256": "73bc6e53eedef11730fc1be0dc310d8f03cbb6bf9cb4662f7179f3af2a2194d0", "tarGzBytes": 11916231},
+    "obxf-exnref":      {"moduleWasmSha256": "7cb7b937c433cc1db030ceea60bbb13f8a414910d5d3d843ee4446be568094da", "tarGzBytes": 11610968}
+  },
+  "fingerprintCheck": "scripts/wclap-upstream/compare.mjs (needs kromosynth-burst checked out beside; Node 22)"
+}
