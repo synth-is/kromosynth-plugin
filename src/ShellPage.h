@@ -467,9 +467,12 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
      Palette.h records is teal rather than blue. */
   nav#chrome button.current { background: var(--accent); color: var(--on-accent); }
 
+  /* Quiet until it is wanted. This was --success green, which made the one
+     button you should rarely press the loudest thing in the bar. It stays
+     because it is the only way to stop a drone that ignores its own gate. */
   nav#chrome button.panic {
     margin-left: auto; flex: 0 0 auto;
-    color: var(--success); border-color: var(--success-glow);
+    color: var(--text-muted); border-color: var(--border-subtle);
   }
   nav#chrome button.panic:hover {
     background: var(--danger-surface-dim); color: var(--danger);
@@ -710,7 +713,6 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
 <header>
   <h1>Instruments</h1>
   <span class="count" id="count"></span>
-  <button id="browse">Browse synth.is</button>
   <button id="refresh">Refresh</button>
   <button id="testnote">Test note</button>
 </header>
@@ -2103,18 +2105,12 @@ for (let i = 0; i < navTabs.length; i++) {
   });
 }
 
-// The other way into the site surface, kept because it is the one that does
-// NOT navigate -- openSite resumes wherever the user had got to, including a
-// half-completed sign-in, which is the whole reason showSite loads lazily and
-// once. Feed's tab lights because showSite's first load is the app root, and
-// that is a feed.
-document.getElementById('browse').addEventListener('click', function () {
-  setStrip(true, 1);
-  call('openSite').catch(function (e) {
-    setStrip(false, 0);
-    setStatus(String(e), 'err');
-  });
-});
+// There used to be a "Browse synth.is" button here. It was the one way into the
+// site surface that did NOT navigate (openSite resumes wherever the user had
+// got to, including a half-completed sign-in), and it cost a row of vertical
+// space that the nav bar's own tabs make redundant: Feed opens the site root,
+// which is the same surface. Removed 2026-10-26 on the owner's call; a
+// half-finished sign-in is now resumed by the Feed tab, not a dedicated button.
 
 // Downloads are polled, not pushed. They run on a pool thread owned by the
 // processor and outlive this editor, so there is nothing for them to push to.
