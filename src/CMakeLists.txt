@@ -252,6 +252,13 @@ if(KROMOSYNTH_BUILD_FAUST)
     )
 endif()
 
+if(SYNTHIS_WCLAP_HOST)
+    target_sources(KromosynthPlugin PRIVATE
+        WclapEngine.cpp
+        WclapEngine.h
+    )
+endif()
+
 kromosynth_configure_target(KromosynthPlugin)
 
 # Privacy manifest, iOS only: one PrivacyInfo.xcprivacy in BOTH bundles.
@@ -408,6 +415,11 @@ endif()
 # Same 1-or-0 convention as KROMOSYNTH_HAS_SAMPLER above, for the same reason:
 # `#if` on an undefined identifier is silently 0, which is correct C++ and a bad
 # place to rely on silence.
+if(SYNTHIS_WCLAP_HOST)
+    target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_WCLAP=1)
+    target_link_libraries(KromosynthPlugin PRIVATE kromosynth_wclap_bridge)
+endif()
+
 if(KROMOSYNTH_BUILD_FAUST)
     target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_FAUST=1)
 

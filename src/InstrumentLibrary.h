@@ -33,10 +33,19 @@
 
 #include <vector>
 
+// Set to 1 by SYNTHIS_WCLAP_HOST (src/CMakeLists.txt). Defaults to 0 so every other target -- the
+// probes included -- behaves exactly as before.
+#ifndef KROMOSYNTH_HAS_WCLAP
+#define KROMOSYNTH_HAS_WCLAP 0
+#endif
+
 class InstrumentLibrary
 {
 public:
-    enum class Kind { none, sampler, faust };
+    /** `wclap` is a hosted CLAP-in-WebAssembly guest (`instrument.wclap/module.wasm`). resolve()
+        returns it only in a build with SYNTHIS_WCLAP_HOST; everywhere else such a folder resolves as
+        before (its sfz preview, or nothing). Chosen by SubstrateRouting.h. */
+    enum class Kind { none, sampler, faust, wclap };
 
     /** The seven perceptual dimensions, in the index order of
         DescriptorLabelingService's DESCRIPTOR_DIMENSIONS. Fixed here rather
@@ -212,7 +221,7 @@ public:
     struct Resolved
     {
         Kind kind = Kind::none;
-        juce::File primary;    ///< instrument.sfz, or instrument.wasm
+        juce::File primary;    ///< instrument.sfz, instrument.wasm, or the instrument.wclap directory
         juce::File metadata;   ///< empty for sampler; instrument.json for Faust
     };
 

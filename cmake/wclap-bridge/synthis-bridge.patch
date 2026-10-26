@@ -1,0 +1,83 @@
+diff --git a/source/_generic/wclap-module-base.h b/source/_generic/wclap-module-base.h
+index 059277b..31d6459 100644
+--- a/source/_generic/wclap-module-base.h
++++ b/source/_generic/wclap-module-base.h
+@@ -124,7 +124,7 @@ struct WclapModuleBase {
+ 	}
+ 
+ 	// These will get filled with registered host functions.  If you put the `pluginList` index into the context pointer (as above) they will forward calls to the appropriate `Plugin`.
+-	wclap_host hostTemplate;
++	wclap_host hostTemplate{};
+ 	wclap_input_events inputEventsTemplate;
+ 	wclap_output_events outputEventsTemplate;
+ 	wclap_istream istreamTemplate;
+diff --git a/source/_generic/wclap-module.h b/source/_generic/wclap-module.h
+index 737ce82..dd5bbf8 100644
+--- a/source/_generic/wclap-module.h
++++ b/source/_generic/wclap-module.h
+@@ -28,6 +28,7 @@ struct WclapModule : public WclapModuleBase {
+ 
+ 	WclapModule(InstanceGroup *instanceGroup) : WclapModuleBase(instanceGroup) {
+ 		if (hasError) return; // base class failed
++		hostTemplate.clap_version = {CLAP_VERSION_MAJOR, CLAP_VERSION_MINOR, CLAP_VERSION_REVISION};
+ 		if (!addHostFunctions(mainThread.get())) return;
+ 		
+ 		instanceGroup->wasiThreadSpawnContext = this;
+diff --git a/source/wclap-instance-wasmtime/wclap-instance-wasmtime.cpp b/source/wclap-instance-wasmtime/wclap-instance-wasmtime.cpp
+index e5832fd..c1233f1 100644
+--- a/source/wclap-instance-wasmtime/wclap-instance-wasmtime.cpp
++++ b/source/wclap-instance-wasmtime/wclap-instance-wasmtime.cpp
+@@ -34,6 +34,8 @@ bool wclap_wasmtime::InstanceGroup::globalInit(unsigned int timeLimitMs) {
+ 		std::cerr << "couldn't create Wasmtime config\n";
+ 		return false;
+ 	}
++	// The Surge XT WCLAP is built with wasm exceptions (exnref form); Wasmtime refuses it unless asked.
++	wasmtime_config_wasm_exceptions_set(config, true);
+ 	auto error = wasmtime_config_cache_config_load(config, nullptr);
+ 	if (error) {
+ 		logError(error);
+@@ -197,22 +199,22 @@ bool wclap_wasmtime::InstanceImpl::setup() {
+ 	
+ 	// Link various directories
+ 	if (group.wclapDir) {
+-		if (!wasi_config_preopen_dir(wasiConfig, group.wclapDir->c_str(), "/plugin.wclap/", WASMTIME_WASI_DIR_PERMS_READ, WASMTIME_WASI_FILE_PERMS_READ)) {
++		if (!wasi_config_preopen_dir(wasiConfig, group.wclapDir->c_str(), "/plugin.wclap/", false)) {
+ 			std::cerr << "WASI: failed to link " << *group.wclapDir << std::endl;
+ 		}
+ 	}
+ 	if (group.presetDir) {
+-		if (!wasi_config_preopen_dir(wasiConfig, group.presetDir->c_str(), "/presets/", WASMTIME_WASI_DIR_PERMS_READ|WASMTIME_WASI_DIR_PERMS_WRITE, WASMTIME_WASI_FILE_PERMS_READ|WASMTIME_WASI_FILE_PERMS_WRITE)) {
++		if (!wasi_config_preopen_dir(wasiConfig, group.presetDir->c_str(), "/presets/", true)) {
+ 			std::cerr << "WASI: failed to link " << *group.presetDir << std::endl;
+ 		}
+ 	}
+ 	if (group.cacheDir) {
+-		if (!wasi_config_preopen_dir(wasiConfig, group.cacheDir->c_str(), "/cache/", WASMTIME_WASI_DIR_PERMS_READ|WASMTIME_WASI_DIR_PERMS_WRITE, WASMTIME_WASI_FILE_PERMS_READ|WASMTIME_WASI_FILE_PERMS_WRITE)) {
++		if (!wasi_config_preopen_dir(wasiConfig, group.cacheDir->c_str(), "/cache/", true)) {
+ 			std::cerr << "WASI: failed to link " << *group.cacheDir << std::endl;
+ 		}
+ 	}
+ 	if (group.varDir) {
+-		if (!wasi_config_preopen_dir(wasiConfig, group.varDir->c_str(), "/var/", WASMTIME_WASI_DIR_PERMS_READ|WASMTIME_WASI_DIR_PERMS_WRITE, WASMTIME_WASI_FILE_PERMS_READ|WASMTIME_WASI_FILE_PERMS_WRITE)) {
++		if (!wasi_config_preopen_dir(wasiConfig, group.varDir->c_str(), "/var/", true)) {
+ 			std::cerr << "WASI: failed to link " << *group.varDir << std::endl;
+ 		}
+ 	}
+diff --git a/source/wclap-instance-wasmtime/wclap-instance-wasmtime.h b/source/wclap-instance-wasmtime/wclap-instance-wasmtime.h
+index 2d56877..ae03a43 100644
+--- a/source/wclap-instance-wasmtime/wclap-instance-wasmtime.h
++++ b/source/wclap-instance-wasmtime/wclap-instance-wasmtime.h
+@@ -494,6 +494,13 @@ struct InstanceImpl {
+ 			if (argN > 0) argsAndResults[0].i64 = 0; // returns 0
+ 			return;
+ 		}
++		if (funcVal.kind == WASMTIME_FUNCREF && funcVal.of.funcref.store_id == 0) {
++			// A null funcref (table slot 0, e.g. an extension pointer not yet filled by get_extension()) has
++			// no store; calling it panics Wasmtime ("object used with the wrong store") and aborts the host.
++			group.setError("function pointer is null");
++			if (argN > 0) argsAndResults[0].i64 = 0; // returns 0
++			return;
++		}
+ 		if (funcVal.kind != WASMTIME_FUNCREF) {
+ 			// Shouldn't ever happen, but who knows
+ 			group.setError("function pointer doesn't resolve to a function");

@@ -56,6 +56,9 @@ static constexpr int kFaustVoices = 8;
 static constexpr float kFaustCeiling = 1.0f;
 #endif
 
+// The Output parameter's default. A named constant because a hosted WCLAP applies Output relative to it.
+static constexpr float kOutputDefaultDb = -9.0f;
+
 namespace
 {
 /** A float parameter whose DISPLAYED NAME can change after construction.
@@ -198,7 +201,7 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
         juce::ParameterID { "output", 1 },
         "Output",
         juce::NormalisableRange<float> { -36.0f, 6.0f, 0.1f },
-        -9.0f,
+        kOutputDefaultDb,
         juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
     // EXPERIMENT, last so it cannot disturb the indices above. With legacy
@@ -600,6 +603,7 @@ KromosynthAudioProcessor::EngineState KromosynthAudioProcessor::engineState() co
 static const juce::Identifier kStateTag ("SynthIsPluginState");
 static const juce::Identifier kStateVersion ("version");
 static const juce::Identifier kStateInstrument ("instrumentId");
+static const juce::Identifier kStateWclap ("wclapState");
 
 void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
@@ -609,6 +613,17 @@ void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
     // current_.id is set on a successful load only, so a failed load does not
     // get saved and then fail again on every reopen.
     tree.setProperty (kStateInstrument, current_.ok ? current_.id : juce::String(), nullptr);
+
+   #if KROMOSYNTH_HAS_WCLAP
+    // A hosted guest's own clap.state rides in the session beside the instrument id: the id names the
+    // bundle, the state is the patch. Written only while that guest is the active engine.
+    if (active_ == Active::wclap && wclap_ != nullptr && current_.ok)
+    {
+        juce::MemoryBlock clapState;
+        if (wclap_->saveState (clapState))
+            tree.setProperty (kStateWclap, clapState, nullptr);
+    }
+   #endif
 
     juce::MemoryOutputStream out (dest, false);
     tree.writeToStream (out);
@@ -635,6 +650,11 @@ void KromosynthAudioProcessor::setStateInformation (const void* data, int size)
     {
         const juce::ScopedLock sl (pendingLock_);
         pendingInstrumentId_ = id;
+       #if KROMOSYNTH_HAS_WCLAP
+        pendingWclapState_.reset();
+        if (const auto* mb = tree.getProperty (kStateWclap).getBinaryData())
+            pendingWclapState_ = *mb;
+       #endif
     }
 
     logEvent ("state_restored instrument=\"" + id + "\" version="
@@ -647,6 +667,10 @@ void KromosynthAudioProcessor::setStateInformation (const void* data, int size)
     // suspends processing and calls updateHostDisplay, and setStateInformation
     // carries no thread guarantee.
     bool ready = false;
+   #if KROMOSYNTH_HAS_WCLAP
+    // The WCLAP engine is created on demand by loadInstrument, so "ready" only needs a rate.
+    ready = ready || wclapRate_ > 0.0;
+   #endif
    #if KROMOSYNTH_HAS_FAUST
     ready = ready || faust_ != nullptr;
    #endif
@@ -701,6 +725,10 @@ bool KromosynthAudioProcessor::removeInstrument (const juce::String& id)
         faustJson_ = juce::File{};
         faustDeclared_ = InstrumentLibrary::Metadata{};
         faustSpectrogram_.clear();
+       #endif
+
+       #if KROMOSYNTH_HAS_WCLAP
+        if (wclap_ != nullptr) wclap_->unload();
        #endif
 
         active_ = Active::none;
@@ -763,7 +791,8 @@ void KromosynthAudioProcessor::triggerTestNote (int midiNote, float velocity, in
               + " vel=" + juce::String (velocity, 2)
               + " ms=" + juce::String (durationMs)
               + " active=" + juce::String (active_ == Active::none ? "none"
-                                           : (active_ == Active::sampler ? "sampler" : "faust"))
+                                           : (active_ == Active::sampler ? "sampler"
+                                              : (active_ == Active::wclap ? "wclap" : "faust")))
               + " blocks_so_far=" + juce::String (blocksSeen()));
 }
 
@@ -1132,6 +1161,74 @@ KromosynthAudioProcessor::loadInstrument (const juce::String& id)
         return outcome;
     }
 
+   #if KROMOSYNTH_HAS_WCLAP
+    if (resolved.kind == InstrumentLibrary::Kind::wclap)
+    {
+        if (wclapRate_ <= 0.0)
+        {
+            outcome.detail = "plugin not activated by the host yet";
+            logEvent ("instrument_load_deferred id=" + id);
+            return outcome;
+        }
+
+        suspendProcessing (true);
+
+        if (wclap_ == nullptr)
+            wclap_ = std::make_unique<WclapEngine>();
+
+        // Whatever was sounding goes with the previous engine's voices; the guest is created fresh.
+       #if KROMOSYNTH_HAS_FAUST
+        if (faust_ != nullptr) faust_->panic();
+       #endif
+
+        const auto dataDir = InstrumentLibrary::containerRoot().getChildFile ("wclap-data")
+                                                               .getChildFile (id);
+        const auto r = wclap_->load (resolved.primary, dataDir, wclapRate_, wclapBlock_);
+
+        if (r.ok)
+        {
+            active_ = Active::wclap;
+
+            juce::MemoryBlock saved;
+            {
+                const juce::ScopedLock sl (pendingLock_);
+                saved = pendingWclapState_;
+                pendingWclapState_.reset();
+            }
+
+            if (saved.getSize() > 0 && ! wclap_->loadState (saved.getData(), saved.getSize()))
+                logEvent ("wclap_state_load_failed id=" + id + " bytes=" + juce::String ((juce::int64) saved.getSize()));
+        }
+        else if (active_ == Active::wclap)
+            active_ = Active::none;
+
+        suspendProcessing (false);
+
+        outcome.ok = r.ok;
+        outcome.detail = r.detail;
+        outcome.tailSeconds = 2.0;   // a guest's tail is its own; a fixed allowance until it can say
+
+        logEvent ("instrument_load id=" + id + " kind=wclap ok=" + juce::String (r.ok ? 1 : 0)
+                  + " plugin=\"" + r.pluginName + "\" ms=" + juce::String (r.loadMs, 1)
+                  + (r.ok ? juce::String() : " detail=\"" + r.detail + "\""));
+
+        if (r.ok)
+            current_ = outcome;
+
+        updateHostDisplay();
+        return outcome;
+    }
+
+    // Any other engine is about to take over: let go of the guest (its Wasm memory is large).
+    if (wclap_ != nullptr && wclap_->isLoaded())
+    {
+        suspendProcessing (true);
+        wclap_->unload();
+        if (active_ == Active::wclap) active_ = Active::none;
+        suspendProcessing (false);
+    }
+   #endif
+
    #if KROMOSYNTH_HAS_FAUST
     if (resolved.kind == InstrumentLibrary::Kind::faust)
     {
@@ -1487,6 +1584,22 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
 
     reloadFaustIfNeeded (sampleRate, samplesPerBlock);
 
+    suspendProcessing (false);
+   #endif
+
+   #if KROMOSYNTH_HAS_WCLAP
+    suspendProcessing (true);
+    const bool wclapChanged = ! juce::approximatelyEqual (wclapRate_, sampleRate) || wclapBlock_ < samplesPerBlock;
+    wclapRate_ = sampleRate;
+    wclapBlock_ = samplesPerBlock;
+
+    // A loaded guest has the old rate and block size baked into its activation: re-activate it, with
+    // its own clap.state carried across.
+    if (wclapChanged && wclap_ != nullptr && wclap_->isLoaded() && ! wclap_->reactivate (sampleRate, samplesPerBlock))
+    {
+        logEvent ("wclap_reactivate_failed");
+        if (active_ == Active::wclap) active_ = Active::none;
+    }
     suspendProcessing (false);
    #endif
 
@@ -2148,6 +2261,18 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         engine_->process (buffer, midiMessages);
         buffer.applyGain (level);
+        return;
+    }
+   #endif
+
+   #if KROMOSYNTH_HAS_WCLAP
+    if (active_ == Active::wclap && wclap_ != nullptr)
+    {
+        // The Output default (-9 dB) is headroom for genome instruments, whose peaks are measured and
+        // trimmed to a ceiling. A hosted guest already plays at its own designed level, so Output is
+        // applied RELATIVE to its default: untouched = unity, and the control still moves it.
+        wclap_->process (buffer, midiMessages);
+        buffer.applyGain (juce::Decibels::decibelsToGain (levelDb - kOutputDefaultDb, -36.0f));
         return;
     }
    #endif
