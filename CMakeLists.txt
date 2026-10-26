@@ -34,6 +34,11 @@ option(KROMOSYNTH_BUILD_FAUST    "Build the wasmtime Faust engine (Stage 2)" OFF
 option(KROMOSYNTH_WASM3          "Use the wasm3 interpreter for the Faust engine" OFF)
 option(KROMOSYNTH_WEBVIEW_PROBE  "Inject the Stage 0 environment probe JS"  ON)
 
+# synthis-et4.3 spike: host WCLAPs (CLAP plugins compiled to WebAssembly, e.g. Surge XT) inside the plugin
+# through the wclap-bridge, on the SAME Wasmtime FaustEngine uses. OFF: the shipping build is unchanged,
+# no bridge is fetched and nothing below is compiled. macOS only. See cmake/WclapBridge.cmake.
+option(SYNTHIS_WCLAP_HOST "Host WCLAP instruments through the wclap-bridge (spike, macOS)" OFF)
+
 
 # How long after page load the probe fires. Default 3000 ms is enough for React
 # to mount.
@@ -287,6 +292,10 @@ if(KROMOSYNTH_BUILD_FAUST)
     endif()
 endif()
 
+if(SYNTHIS_WCLAP_HOST)
+    include(WclapBridge)
+endif()
+
 add_subdirectory(src)
 
 # ── Developer tools (never shipped) ──────────────────────────────────────────
@@ -308,6 +317,10 @@ endif()
 # deliberately does not follow VENDORING.md.
 if(KROMOSYNTH_BUILD_FAUST)
     add_subdirectory(tools/faust-probe)
+endif()
+
+if(SYNTHIS_WCLAP_HOST AND KROMOSYNTH_BUILD_SAMPLER)
+    add_subdirectory(tools/wclap-host-probe)
 endif()
 
 # processor-probe compiles the plugin's own processor, so it needs both engines

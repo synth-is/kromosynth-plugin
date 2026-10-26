@@ -173,3 +173,10 @@ only `wasmtime_config_wasm_exceptions_set(true)`. The `--translate-to-exnref` st
   support exnref; Safari may lag, so check it before shipping this bundle to a browser.
 - The bundle is GPL-3.0 and is not committed. The legacy 3.1.51 build tree was moved to
   `juce-webclap-plugins/build/surge-xt-legacy-3.1.51` (not usable for incremental builds any more).
+
+## 7. Follow-up (synthis-et4.3, 2026-10-26)
+
+The bridge now links into the plugin on its own Wasmtime 48.0.1 behind `SYNTHIS_WCLAP_HOST` (default
+OFF), with a fresh-instance state round trip and CPU measured in the plugin. See
+`PLUGIN_WCLAP_HOST_SPIKE.md`. `SubstrateRouting.h` is now called by `InstrumentLibrary::resolve()` in
+that build.

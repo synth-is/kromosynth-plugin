@@ -390,8 +390,9 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                 // instrument and a sample set behave differently enough --
                 // polyphony, tail, CPU -- that hiding the difference would be
                 // a disservice.
-                o->setProperty ("kind", e.kind == InstrumentLibrary::Kind::faust
-                                            ? "faust" : "sampler");
+                o->setProperty ("kind", e.kind == InstrumentLibrary::Kind::faust ? "faust"
+                                      : e.kind == InstrumentLibrary::Kind::wclap ? "wclap"
+                                                                                 : "sampler");
                 // Region count would mean loading every SFZ on every list, so
                 // it is reported as 0 here and filled in on load. Stated
                 // rather than silently omitted: the UI shows nothing instead
