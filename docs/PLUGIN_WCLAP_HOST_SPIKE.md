@@ -94,6 +94,19 @@ here is the safe one (a guest stuck in a loop times out instead of hanging the a
 needs a decision: either accept a hang risk, or run init under a limit and `process()` without one
 (separate engines), which is a bridge change.
 
+**Decision (steering 2026-10-26, closed bead synthis-et4.11): keep the per-call limit at 60000 ms.**
+A hung guest taking down the DAW is worse than the ~30 % more CPU the limit costs (Surge 2.5x vs
+1.7x native per voice, above). Rejected options:
+
+- **Drop the limit** (accept the hang risk). A guest stuck in a loop would hang the audio thread —
+  and with it the DAW — for as long as the host lives. Rejected.
+- **Init under a limit, `process()` without one** (two engines). Recovers the ~30 %, but the bridge
+  would need two Wasmtime engines: one with epoch interruption for init, one without for `process()`.
+  Later optimisation, not now. Rejected for now.
+
+`WclapEngine::timeLimitMs()` is pinned to 60000 with a comment pointing here; the
+`KROMOSYNTH_WCLAP_TIME_LIMIT_MS` override stays for measurement only.
+
 ## Build size (Release, arm64, same flags)
 
 | | OFF (default) | ON | change |

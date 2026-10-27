@@ -221,7 +221,9 @@ unsigned WclapEngine::timeLimitMs()
 {
     const auto env = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_WCLAP_TIME_LIMIT_MS", {});
     if (env.isNotEmpty()) return (unsigned) env.getIntValue();
-    return 60000;   // the bridge default is 2000 ms, which kills Surge XT's init (finding 2)
+    return 60000;   // PINNED (steering 2026-10-26, synthis-et4.11): a hung guest taking down the DAW is
+                    // worse than the ~30 % CPU the limit costs — docs/PLUGIN_WCLAP_HOST_SPIKE.md, CPU
+                    // section. The bridge default is 2000 ms, which kills Surge XT's init (finding 2).
 }
 
 WclapEngine::LoadResult WclapEngine::load (const juce::File& wclapDir, const juce::File& dataDir,

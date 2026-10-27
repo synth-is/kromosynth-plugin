@@ -107,6 +107,22 @@ int main (int argc, char** argv)
     int rc = 0;
     auto check = [&] (const char* what, bool ok) { std::printf ("%s=%s\n", what, ok ? "PASS" : "FAIL"); if (! ok) rc = 1; };
 
+    // ── 0. the pinned per-call time limit ────────────────────────────────────────────────────────────
+    // A decision, not a default: docs/PLUGIN_WCLAP_HOST_SPIKE.md (CPU section) keeps the limit at
+    // 60000 ms — a hung guest taking down the DAW is worse than the ~30 % CPU it costs. The env
+    // override exists for measurement; with it unset the pin is 60000.
+    {
+        const auto env = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_WCLAP_TIME_LIMIT_MS", {});
+        if (env.isEmpty())
+        {
+            const auto limit = WclapEngine::timeLimitMs();
+            std::printf ("TIME_LIMIT_MS=%u\n", limit);
+            check ("CHECK_TIME_LIMIT_MS_60000", limit == 60000);
+        }
+        else
+            std::printf ("TIME_LIMIT_MS_ENV_OVERRIDE=%s\n", env.toRawUTF8());
+    }
+
     // ── 1. routing: the library must pick the wclap substrate from the folder's file list ───────────
     {
         InstrumentLibrary lib;
