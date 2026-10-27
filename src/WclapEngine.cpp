@@ -4,7 +4,10 @@
 
 #include "WclapEngine.h"
 
+#include <juce_events/juce_events.h>
+
 #include <clap/clap.h>
+#include <clap/ext/draft/webview.h>
 #include <wclap-bridge.h>
 
 #ifdef KROMOSYNTH_WCLAP_NATIVE_REFERENCE
@@ -47,9 +50,6 @@ void bridgeRelease()
         wclap_global_deinit();
 }
 
-const clap_host_t kHost = { CLAP_VERSION, nullptr, "Synth.is", "Synth.is", "https://synth.is", "0",
-    [] (const clap_host_t*, const char*) -> const void* { return nullptr; },
-    [] (const clap_host_t*) {}, [] (const clap_host_t*) {}, [] (const clap_host_t*) {} };
 
 struct Mem
 {
@@ -76,6 +76,64 @@ struct EventSlot
 
 struct WclapEngine::Impl
 {
+    // One clap_host_t per engine: host_data finds us again in the callbacks. request_callback is what
+    // makes the guest's page updates timely: without it the guest falls back to sending from inside
+    // process(), on the audio thread.
+    clap_host_t host = { CLAP_VERSION, this, "Synth.is", "Synth.is", "https://synth.is", "0",
+        [] (const clap_host_t* h, const char* id) -> const void*
+        {
+            if (id != nullptr && std::strcmp (id, CLAP_EXT_WEBVIEW) == 0)
+            {
+                static const clap_host_webview_t ext {
+                    [] (const clap_host_t* hh, const void* buf, uint32_t size) -> bool
+                    {
+                        auto* self = static_cast<Impl*> (hh->host_data);
+                        const juce::SpinLock::ScopedLockType l (self->sinkLock);
+                        if (! self->toPage) return false;   // the extension: fail while the page is not open
+                        self->toPage (buf, size);
+                        return true;
+                    } };
+                return &ext;
+            }
+            (void) h;
+            return nullptr;
+        },
+        [] (const clap_host_t*) {}, [] (const clap_host_t*) {},
+        [] (const clap_host_t* h)
+        {
+            auto* self = static_cast<Impl*> (h->host_data);
+            if (self->mainThreadWanted.exchange (true)) return;   // one callback in flight is enough
+            auto alive = self->alive;
+            juce::MessageManager::callAsync ([self, alive]
+            {
+                if (*alive) self->runMainThreadCallback();
+            });
+        } };
+
+    std::shared_ptr<bool> alive = std::make_shared<bool> (true);   // message thread only
+    std::atomic<bool> mainThreadWanted { false };
+    juce::SpinLock sinkLock;
+    PageSink toPage;
+    const clap_plugin_gui_t* gui = nullptr;
+    const clap_plugin_webview_t* webview = nullptr;
+    bool guiCreated = false;
+
+    void runMainThreadCallback()
+    {
+        mainThreadWanted = false;
+        if (plugin != nullptr) plugin->on_main_thread (plugin);
+    }
+
+    void closeGui()
+    {
+        {
+            const juce::SpinLock::ScopedLockType l (sinkLock);
+            toPage = nullptr;
+        }
+        if (guiCreated && gui != nullptr && plugin != nullptr) gui->destroy (plugin);
+        guiCreated = false;
+    }
+
     void* module = nullptr;
     const clap_plugin_factory_t* factory = nullptr;
     const clap_plugin_t* plugin = nullptr;
@@ -115,6 +173,9 @@ struct WclapEngine::Impl
 
     void destroyPlugin()
     {
+        closeGui();
+        gui = nullptr;
+        webview = nullptr;
         if (plugin != nullptr)
         {
             plugin->stop_processing (plugin);
@@ -176,7 +237,7 @@ struct WclapEngine::Impl
     // create -> init -> activate -> start_processing -> one empty block.
     bool createPlugin (juce::String& why)
     {
-        plugin = factory->create_plugin (factory, &kHost, pluginId.toRawUTF8());
+        plugin = factory->create_plugin (factory, &host, pluginId.toRawUTF8());
         if (plugin == nullptr) { why = "create_plugin returned null " + juce::String (lastError()); return false; }
         if (! plugin->init (plugin)) { why = "plugin init failed " + juce::String (lastError()); destroyPlugin(); return false; }
         if (! plugin->activate (plugin, rate, 1, (uint32_t) maxBlock))
@@ -185,6 +246,8 @@ struct WclapEngine::Impl
         // CLAP: extensions are per plugin INSTANCE (finding 5); ask this instance.
         state = (const clap_plugin_state_t*) plugin->get_extension (plugin, CLAP_EXT_STATE);
         params = (const clap_plugin_params_t*) plugin->get_extension (plugin, CLAP_EXT_PARAMS);
+        gui = (const clap_plugin_gui_t*) plugin->get_extension (plugin, CLAP_EXT_GUI);
+        webview = (const clap_plugin_webview_t*) plugin->get_extension (plugin, CLAP_EXT_WEBVIEW);
         steady = 0;
         renderBlocks (kSettleFrames);
         return true;
@@ -215,7 +278,7 @@ struct WclapEngine::Impl
 };
 
 WclapEngine::WclapEngine() : impl_ (std::make_unique<Impl>()) {}
-WclapEngine::~WclapEngine() { unload(); }
+WclapEngine::~WclapEngine() { unload(); *impl_->alive = false; }
 
 unsigned WclapEngine::timeLimitMs()
 {
@@ -300,6 +363,7 @@ WclapEngine::LoadResult WclapEngine::load (const juce::File& wclapDir, const juc
     r.detail = r.pluginId;
     r.loadMs = juce::Time::getMillisecondCounterHiRes() - t0;
     loaded_ = true;
+    ++generation_;
     return r;
 }
 
@@ -312,6 +376,7 @@ bool WclapEngine::reactivate (double sampleRate, int maxBlock)
     juce::MemoryBlock saved;
     const bool haveState = s.save (saved);
 
+    guiOpen_ = false;
     s.destroyPlugin();
     s.rate = sampleRate;
     s.maxBlock = std::max (maxBlock, 1);
@@ -321,6 +386,7 @@ bool WclapEngine::reactivate (double sampleRate, int maxBlock)
     juce::String why;
     if (! s.createPlugin (why)) { loaded_ = false; return false; }
     if (haveState) s.load (saved.getData(), saved.getSize());
+    ++generation_;
     return true;
 }
 
@@ -329,6 +395,7 @@ void WclapEngine::unload()
     auto& s = *impl_;
     const juce::ScopedLock sl (s.lock);
     loaded_ = false;
+    guiOpen_ = false;
     s.closeAll();
 }
 
@@ -485,4 +552,69 @@ void WclapEngine::process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& m
 
     lastPeak_.store (peak, std::memory_order_relaxed);
     blocks_.fetch_add (1, std::memory_order_relaxed);
+}
+
+bool WclapEngine::paramValue (juce::uint32 id, double& out)
+{
+    const juce::ScopedLock sl (impl_->lock);
+    return loaded_ && impl_->params != nullptr && impl_->params->get_value (impl_->plugin, id, &out);
+}
+
+juce::File WclapEngine::bundleDir() const { return impl_->wclapDir; }
+
+WclapEngine::GuiOpenResult WclapEngine::guiOpen (PageSink toPage)
+{
+    GuiOpenResult r;
+    auto& s = *impl_;
+    if (! loaded_) { r.detail = "no engine loaded"; return r; }
+    if (s.gui == nullptr || s.webview == nullptr) { r.detail = "the guest has no clap.gui / clap.webview"; return r; }
+    if (guiOpen_) guiClose();
+
+    // get_uri before anything else: clap.webview says the host must call it before messages flow.
+    char uri[1024] = {};
+    const auto n = s.webview->get_uri (s.plugin, uri, (uint32_t) sizeof (uri));
+    if (n <= 0 || n > (int32_t) sizeof (uri)) { r.detail = "get_uri failed (" + juce::String (n) + ")"; return r; }
+    r.uri = juce::String::fromUTF8 (uri);
+
+    if (! s.gui->is_api_supported (s.plugin, CLAP_WINDOW_API_WEBVIEW, false))
+    { r.detail = "gui api \"webview\" not supported"; return r; }
+
+    {
+        const juce::SpinLock::ScopedLockType l (s.sinkLock);
+        s.toPage = std::move (toPage);
+    }
+
+    if (! s.gui->create (s.plugin, CLAP_WINDOW_API_WEBVIEW, false))
+    {
+        const juce::SpinLock::ScopedLockType l (s.sinkLock);
+        s.toPage = nullptr;
+        r.detail = "gui create(webview) failed " + juce::String (s.lastError());
+        return r;
+    }
+
+    s.guiCreated = true;
+    uint32_t w = 0, h = 0;
+    if (s.gui->get_size (s.plugin, &w, &h)) { r.width = w; r.height = h; }
+
+    guiOpen_ = true;
+    r.ok = true;
+    return r;
+}
+
+void WclapEngine::guiClose()
+{
+    guiOpen_ = false;
+    impl_->closeGui();
+}
+
+bool WclapEngine::guiReceive (const void* data, size_t size)
+{
+    auto& s = *impl_;
+    if (! guiOpen_ || ! loaded_ || s.webview == nullptr || s.plugin == nullptr || size == 0) return false;
+    return s.webview->receive (s.plugin, data, (uint32_t) size);
+}
+
+void WclapEngine::guiService()
+{
+    if (impl_->mainThreadWanted.load()) impl_->runMainThreadCallback();
 }
