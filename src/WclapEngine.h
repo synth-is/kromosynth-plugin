@@ -24,6 +24,7 @@
 #include <juce_core/juce_core.h>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 
 class WclapEngine
@@ -78,6 +79,40 @@ public:
     juce::int64 blocksRendered() const noexcept { return blocks_.load (std::memory_order_relaxed); }
     juce::String pluginName() const { return name_; }
 
+    /** The value CLAP reports for `id` now, for probes. */
+    bool paramValue (juce::uint32 id, double& out);
+
+    // ── the engine's own page (synthis-et4.4) ───────────────────────────────────────────────────────────
+    // A WCLAP built from the open-webclap kit carries its editor as a web page (the bundle's ui/) and
+    // talks to the DSP side through clap.webview: binary frames in both directions, protocol in
+    // open-webclap's juce_webclap_protocol.h. This engine is the DSP side's host: it opens the guest's gui
+    // in the "webview" API (no native window; the bridge's own cocoa webview is NOT used, see
+    // docs/WCLAP_ENGINE_UI_2026-10-27.md for why), and relays frames. The page itself is WclapEngineView's.
+    //
+    // Message thread only, every call. `toPage` may be called from ANY thread (the guest also sends from
+    // inside process()); it must only queue.
+    using PageSink = std::function<void (const void* data, size_t size)>;
+    struct GuiOpenResult
+    {
+        bool ok = false;
+        juce::String detail;
+        juce::String uri;                    ///< start page, e.g. "/ui/index.html"
+        juce::uint32 width = 0, height = 0;  ///< the guest's idea of the editor size, logical pixels
+    };
+    GuiOpenResult guiOpen (PageSink toPage);
+    void guiClose();
+    bool guiIsOpen() const noexcept { return guiOpen_.load(); }
+
+    /** page -> engine. One protocol frame, exactly the bytes the page posted. */
+    bool guiReceive (const void* data, size_t size);
+
+    /** The guest asked for a main-thread callback (request_callback); runs it. Cheap when nothing is due. */
+    void guiService();
+
+    /** Bumped each time a guest instance is created (load, reactivate): a view built for an older one is stale. */
+    int generation() const noexcept { return generation_.load(); }
+    juce::File bundleDir() const;
+
     /** Per-call time limit handed to wclap_global_init, ms. Surge XT's init needs far more than the
         bridge's 2000 ms default. 0 = no limit (and no epoch thread). Overridable for measurement with
         KROMOSYNTH_WCLAP_TIME_LIMIT_MS. */
@@ -87,6 +122,8 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::atomic<bool> loaded_ { false };
+    std::atomic<bool> guiOpen_ { false };
+    std::atomic<int> generation_ { 0 };
     std::atomic<float> lastPeak_ { 0.0f };
     std::atomic<juce::int64> blocks_ { 0 };
     juce::String name_;

@@ -256,6 +256,8 @@ if(SYNTHIS_WCLAP_HOST)
     target_sources(KromosynthPlugin PRIVATE
         WclapEngine.cpp
         WclapEngine.h
+        WclapEngineView.cpp
+        WclapEngineView.h
     )
 endif()
 

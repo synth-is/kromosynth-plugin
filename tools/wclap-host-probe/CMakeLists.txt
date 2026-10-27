@@ -13,6 +13,7 @@ set(_src ${CMAKE_CURRENT_LIST_DIR}/../../src)
 
 target_sources(wclap_host_probe PRIVATE
     main.cpp
+    WebViewSnapshot.mm
     ${_src}/PluginProcessor.cpp
     ${_src}/PluginEditor.cpp
     ${_src}/InstrumentLibrary.cpp
@@ -24,6 +25,7 @@ target_sources(wclap_host_probe PRIVATE
     ${_src}/SamplerEngine.cpp
     ${_src}/FaustEngine.cpp
     ${_src}/WclapEngine.cpp
+    ${_src}/WclapEngineView.cpp
 )
 
 kromosynth_configure_target(wclap_host_probe)
@@ -56,6 +58,7 @@ target_link_libraries(wclap_host_probe PRIVATE
     sfizz::sfizz
     juce::juce_audio_utils
     juce::juce_gui_extra
+    "-framework WebKit"
     juce::juce_dsp
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags)
