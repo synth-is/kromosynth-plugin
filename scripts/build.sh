@@ -122,8 +122,8 @@ cmake -S . -B "$BUILD_DIR" -G "Unix Makefiles" \
       -DKROMOSYNTH_SIGN_IDENTITY="$IDENTITY" \
       >/dev/null
 
-echo "Building AU and VST3 with $JOBS jobs..."
-cmake --build "$BUILD_DIR" --target KromosynthPlugin_AU KromosynthPlugin_VST3 -j "$JOBS"
+echo "Building AU, VST3 and Standalone with $JOBS jobs..."
+cmake --build "$BUILD_DIR" --target KromosynthPlugin_AU KromosynthPlugin_VST3 KromosynthPlugin_Standalone -j "$JOBS"
 
 # ── Did it do what it said? ──────────────────────────────────────────────────
 #
