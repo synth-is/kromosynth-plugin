@@ -38,6 +38,10 @@ class SamplerEngine;
 // include -- FaustEngine.h pulls juce_audio_basics and four standard headers,
 // and keeps wasmtime entirely inside its .cpp.
 #include "FaustEngine.h"
+
+#if KROMOSYNTH_HAS_WCLAP
+#include "WclapEngine.h"
+#endif
 #endif
 
 #include "InstrumentLibrary.h"
@@ -286,6 +290,15 @@ public:
 
     EngineState engineState() const;
 
+   #if KROMOSYNTH_HAS_WCLAP
+    /** The hosted WCLAP engine, or nullptr when none is loaded. For the wclap-host-probe and the log;
+        the audio thread must not call anything but process() on it. */
+    WclapEngine* wclapEngine() const noexcept
+    {
+        return active_ == Active::wclap ? wclap_.get() : nullptr;
+    }
+   #endif
+
     /** What is loaded now. An empty id means the compiled-in default. */
     LoadOutcome currentInstrument() const { return current_; }
 
@@ -341,6 +354,19 @@ private:
     // shell being asked again.
     std::unique_ptr<FaustEngine> faust_;
     juce::File faustWasm_, faustJson_;
+
+   #if KROMOSYNTH_HAS_WCLAP
+    // The hosted-WCLAP engine (synthis-et4.3 spike). Same lazy construction and suspend discipline as
+    // the others. wclapRate_/wclapBlock_ are what prepareToPlay last said; a change re-activates the
+    // guest with its own clap.state carried over (WclapEngine::reactivate).
+    std::unique_ptr<WclapEngine> wclap_;
+    double wclapRate_ = 0.0;
+    int wclapBlock_ = 0;
+
+    // A clap.state read from the session, waiting for the instrument that owns it to be loaded.
+    // Guarded by pendingLock_ like pendingInstrumentId_.
+    juce::MemoryBlock pendingWclapState_;
+   #endif
 
     // What the artefact SAYS about itself, read from synthis.json at load.
     // Empty for instruments that predate the contract or were placed by hand,
@@ -737,7 +763,7 @@ private:
    #if KROMOSYNTH_HAS_SAMPLER || KROMOSYNTH_HAS_FAUST
     // Which engine processBlock should call. Message-thread writes happen only
     // inside the suspend window; see prepareToPlay.
-    enum class Active { none, sampler, faust };
+    enum class Active { none, sampler, faust, wclap };
     Active active_ = Active::none;
 
     InstrumentLibrary library_;

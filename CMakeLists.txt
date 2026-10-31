@@ -34,6 +34,16 @@ option(KROMOSYNTH_BUILD_FAUST    "Build the wasmtime Faust engine (Stage 2)" OFF
 option(KROMOSYNTH_WASM3          "Use the wasm3 interpreter for the Faust engine" OFF)
 option(KROMOSYNTH_WEBVIEW_PROBE  "Inject the Stage 0 environment probe JS"  ON)
 
+# synthis-et4.3 spike: host WCLAPs (CLAP plugins compiled to WebAssembly, e.g. Surge XT) inside the plugin
+# through the wclap-bridge, on the SAME Wasmtime FaustEngine uses. OFF: the shipping build is unchanged,
+# no bridge is fetched and nothing below is compiled. macOS only. See cmake/WclapBridge.cmake.
+option(SYNTHIS_WCLAP_HOST "Host WCLAP instruments through the wclap-bridge (spike, macOS)" OFF)
+
+# synthis-et4.9: the plugin as a WCLAP itself (skeleton: a sine voice, no Faust, no sampler). Different toolchain
+# (Emscripten, from the open-webclap kit), so this only adds the `synthis_webclap` custom target to the native tree,
+# which runs scripts/webclap-skeleton.sh. OFF: nothing is added, checked or fetched. See
+# docs/PLUGIN_AS_WCLAP_2026-10-27.md and webclap/CMakeLists.txt.
+option(SYNTHIS_WEBCLAP_TARGET "Add the skeleton WCLAP build target (Emscripten, out of tree)" OFF)
 
 # How long after page load the probe fires. Default 3000 ms is enough for React
 # to mount.
@@ -287,7 +297,15 @@ if(KROMOSYNTH_BUILD_FAUST)
     endif()
 endif()
 
+if(SYNTHIS_WCLAP_HOST)
+    include(WclapBridge)
+endif()
+
 add_subdirectory(src)
+
+if(SYNTHIS_WEBCLAP_TARGET)
+    add_subdirectory(webclap)
+endif()
 
 # ── Developer tools (never shipped) ──────────────────────────────────────────
 # sfz-probe answers the Task 2 format questions without a plugin, a host or an
@@ -308,6 +326,10 @@ endif()
 # deliberately does not follow VENDORING.md.
 if(KROMOSYNTH_BUILD_FAUST)
     add_subdirectory(tools/faust-probe)
+endif()
+
+if(SYNTHIS_WCLAP_HOST AND KROMOSYNTH_BUILD_SAMPLER)
+    add_subdirectory(tools/wclap-host-probe)
 endif()
 
 # processor-probe compiles the plugin's own processor, so it needs both engines

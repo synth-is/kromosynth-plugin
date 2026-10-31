@@ -40,7 +40,10 @@
 if(KROMOSYNTH_IOS)
     set(_kromosynth_formats Standalone AUv3)
 else()
-    set(_kromosynth_formats AU VST3)
+    # Standalone on desktop too: the app is the cheapest host-free way to
+    # exercise the editor (keyboard focus, webview) that a DAW does not
+    # check, and the gate compiles it so that code stays buildable.
+    set(_kromosynth_formats AU VST3 Standalone)
 endif()
 
 # ONE string, two consumers, and they must not be able to disagree.
@@ -252,6 +255,15 @@ if(KROMOSYNTH_BUILD_FAUST)
     )
 endif()
 
+if(SYNTHIS_WCLAP_HOST)
+    target_sources(KromosynthPlugin PRIVATE
+        WclapEngine.cpp
+        WclapEngine.h
+        WclapEngineView.cpp
+        WclapEngineView.h
+    )
+endif()
+
 kromosynth_configure_target(KromosynthPlugin)
 
 # Privacy manifest, iOS only: one PrivacyInfo.xcprivacy in BOTH bundles.
@@ -408,6 +420,11 @@ endif()
 # Same 1-or-0 convention as KROMOSYNTH_HAS_SAMPLER above, for the same reason:
 # `#if` on an undefined identifier is silently 0, which is correct C++ and a bad
 # place to rely on silence.
+if(SYNTHIS_WCLAP_HOST)
+    target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_WCLAP=1)
+    target_link_libraries(KromosynthPlugin PRIVATE kromosynth_wclap_bridge)
+endif()
+
 if(KROMOSYNTH_BUILD_FAUST)
     target_compile_definitions(KromosynthPlugin PRIVATE KROMOSYNTH_HAS_FAUST=1)
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Björn Þór Jónsson
 #include "InstrumentLibrary.h"
+#include "SubstrateRouting.h"
 
 namespace
 {
@@ -454,6 +455,21 @@ InstrumentLibrary::Resolved InstrumentLibrary::resolve (const juce::String& id) 
         return {};
 
     const auto folder = root().getChildFile (id);
+
+   #if KROMOSYNTH_HAS_WCLAP
+    // The pure routing function decides, from the file list alone, so that this and its test
+    // (tools/wclap-probe/routing_test.cpp) cannot disagree about which substrate an entry is.
+    // A hosted guest wins over a bare Faust or SFZ file (an sfz preview may ship beside it).
+    {
+        std::vector<std::string> files;
+        for (const auto& name : { "instrument.sfz", "instrument.wasm", "instrument.wclap/module.wasm" })
+            if (folder.getChildFile (name).existsAsFile())
+                files.push_back (name);
+
+        if (kromosynth::substrateForFiles (files) == kromosynth::Substrate::wclap)
+            return { Kind::wclap, folder.getChildFile ("instrument.wclap"), {} };
+    }
+   #endif
 
     const auto sfz = folder.getChildFile ("instrument.sfz");
     if (sfz.existsAsFile())

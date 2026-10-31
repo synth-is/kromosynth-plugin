@@ -1,0 +1,31 @@
+From a2e8984bbf882da912a0f0ab901d509368037517 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bj=C3=B6rn=20=C3=9E=C3=B3r=20J=C3=B3nsson?= <bangsi@bthj.is>
+Date: Thu, 22 Oct 2026 03:02:01 +0000
+Subject: [PATCH 3/3] OB-Xf: link the editor module at -O1 when
+ WEBCLAP_EXNREF=ON
+
+Binaryen 124 (Emscripten 4.0.20) dies with SIGBUS in StackIR optimisation on ui.wasm when
+it holds exnref exceptions (reproduced with wasm-opt directly: --optimize-level=2 or
+--optimize-stack-ir crash, level 0/1 and --no-stack-ir are fine). Off unless WEBCLAP_EXNREF.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ ports/obxf/CMakeLists.txt | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/ports/obxf/CMakeLists.txt b/ports/obxf/CMakeLists.txt
+index 31bad41..ddb0244 100644
+--- a/ports/obxf/CMakeLists.txt
++++ b/ports/obxf/CMakeLists.txt
+@@ -153,6 +153,11 @@ endif()
+ 
+ list(APPEND UI_LINK_OPTIONS "SHELL:--preload-file ${FACTORY_DIR}@/factory")
+ 
++# Binaryen 124 (Emscripten 4.0.x) crashes (SIGBUS) in its StackIR optimisation on this module when it contains exnref
++# exceptions; -O1 at the ui link skips that pass. Only the editor module, only with WEBCLAP_EXNREF.
++if(WEBCLAP_EXNREF)
++    list(APPEND UI_LINK_OPTIONS -O1)
++endif()
+ target_link_options(ui PRIVATE ${UI_LINK_OPTIONS})
+ set_target_properties(ui PROPERTIES
+     SUFFIX ".js"

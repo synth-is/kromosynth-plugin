@@ -12,10 +12,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT="$PWD"
 WORK="${WORK:-/tmp/aa423}"
+# The exnref build (wclap-exnref-build.sh) writes here; a legacy-exception build will not load.
 WCLAP_SRC="${WCLAP_SRC:-$HOME/wclap-native/juce-webclap-plugins/build/surge-xt/web/surge-xt.wclap}"
 NATIVE_CLAP="${NATIVE_CLAP:-$HOME/wclap-native/surge-native/build/surge_xt_products/Surge XT.clap}"
 BRIDGE_REV=cd11d22afbe2af350f24cd56e6e0536e5ca86452
-BINARYEN_URL=https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-arm64-macos.tar.gz
 mkdir -p "$WORK"
 
 routing() {
@@ -57,16 +57,9 @@ PY
   cmake --build "$WORK/wclap-bridge/build" -j"$(sysctl -n hw.ncpu)" >/dev/null
   cmake -S tools/wclap-probe -B "$WORK/probe-build" -DCMAKE_BUILD_TYPE=Release -DWCLAP_BRIDGE_DIR="$WORK/wclap-bridge" >/dev/null
   cmake --build "$WORK/probe-build" >/dev/null
-  if [[ ! -x "$WORK/bin/bin/wasm-opt" ]]; then
-    mkdir -p "$WORK/bin"; curl -sL "$BINARYEN_URL" | tar xz -C "$WORK/bin" --strip-components=1
-  fi
-  # The Surge XT WCLAP is built with legacy wasm exceptions (-fwasm-exceptions); Wasmtime only
-  # implements the exnref form. Translate a copy.
+  # The WCLAP must be built with exnref exceptions (scripts/wclap-exnref-build.sh, synthis-aa4.52): Wasmtime loads
+  # nothing else, so there is no wasm-opt translation step any more.
   rm -rf "$WORK/surge.wclap"; cp -R "$WCLAP_SRC" "$WORK/surge.wclap"
-  "$WORK/bin/bin/wasm-opt" "$WCLAP_SRC/module.wasm" --translate-to-exnref \
-    --enable-exception-handling --enable-simd --enable-bulk-memory --enable-sign-ext \
-    --enable-nontrapping-float-to-int --enable-mutable-globals --enable-multivalue \
-    --enable-reference-types --enable-threads --enable-gc -o "$WORK/surge.wclap/module.wasm"
 }
 
 run() {

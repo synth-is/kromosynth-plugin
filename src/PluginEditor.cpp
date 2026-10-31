@@ -390,8 +390,9 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
                 // instrument and a sample set behave differently enough --
                 // polyphony, tail, CPU -- that hiding the difference would be
                 // a disservice.
-                o->setProperty ("kind", e.kind == InstrumentLibrary::Kind::faust
-                                            ? "faust" : "sampler");
+                o->setProperty ("kind", e.kind == InstrumentLibrary::Kind::faust ? "faust"
+                                      : e.kind == InstrumentLibrary::Kind::wclap ? "wclap"
+                                                                                 : "sampler");
                 // Region count would mean loading every SFZ on every list, so
                 // it is reported as 0 here and filled in on load. Stated
                 // rather than silently omitted: the UI shows nothing instead
@@ -1015,12 +1016,76 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     proc_.logEvent ("navigating to shell " + shellRoot);
     browser_->goToURL (shellRoot);
 #endif
+
+   #if KROMOSYNTH_HAS_WCLAP
+    startTimer (250);
+   #endif
 }
 
 KromosynthAudioProcessorEditor::~KromosynthAudioProcessorEditor()
 {
+    stopTimer();
+   #if KROMOSYNTH_HAS_WCLAP
+    engineView_.reset();   // closes the engine's gui before the processor can unload the engine
+   #endif
     proc_.logEvent ("editor_destroyed");
 }
+
+void KromosynthAudioProcessorEditor::timerCallback()
+{
+   #if KROMOSYNTH_HAS_WCLAP
+    syncEngineView();
+   #endif
+}
+
+#if KROMOSYNTH_HAS_WCLAP
+void KromosynthAudioProcessorEditor::syncEngineView()
+{
+    auto* eng = proc_.wclapEngine();
+    const bool want = eng != nullptr && eng->isLoaded()
+                   && juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_WCLAP_UI", "1") != "0";
+
+    if (engineView_ != nullptr && (! want || engineView_->generation() != eng->generation()))
+    {
+        // The guest instance the page was talking to is gone (another instrument, or a re-activation):
+        // the page's picture of the parameters is stale, so rebuild rather than patch.
+        engineView_.reset();
+        resized();
+    }
+
+    if (engineView_ != nullptr || ! want || engineViewFailedGeneration_ == eng->generation())
+        return;
+
+    auto view = std::make_unique<WclapEngineView> (*eng, [this] (const juce::String& line) { proc_.logEvent (line); });
+
+    if (! view->ok())
+    {
+        engineViewFailedGeneration_ = eng->generation();   // do not retry every tick
+        return;
+    }
+
+    engineView_ = std::move (view);
+    addAndMakeVisible (*engineView_);
+
+    // Room for the page beside a shell of at least kShellMinWidth, never wider than the screen. The page
+    // says its real size a moment after it starts (Surge XT: 1130x711, where get_size said 904x569), so fit
+    // again then.
+    auto fit = [this]
+    {
+        if (engineView_ == nullptr) return;
+        const auto pref = engineView_->preferredSize();
+        const auto screen = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userBounds.toNearestInt();
+        const int w = juce::jmin (screen.getWidth(), kShellMinWidth + (pref.x > 0 ? pref.x : 900));
+        const int h = juce::jmin (screen.getHeight(), juce::jmax (400, pref.y));
+        setSize (w, h);
+        resized();
+        proc_.logEvent ("wclap_ui_editor_size editor=" + juce::String (getWidth()) + "x" + juce::String (getHeight())
+                        + " engineGui=" + juce::String (pref.x) + "x" + juce::String (pref.y));
+    };
+    engineView_->onPageSize = [fit] (juce::Point<int>) { fit(); };
+    fit();
+}
+#endif
 
 void KromosynthAudioProcessorEditor::paint (juce::Graphics& g)
 {
@@ -1043,6 +1108,16 @@ void KromosynthAudioProcessorEditor::paint (juce::Graphics& g)
 void KromosynthAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
+
+   #if KROMOSYNTH_HAS_WCLAP
+    if (engineView_ != nullptr)
+    {
+        const auto pref = engineView_->preferredSize();
+        const int w = juce::jmin (pref.x > 0 ? pref.x : 900, bounds.getWidth() - kShellMinWidth);
+        engineView_->setVisible (w >= 200);
+        if (w >= 200) engineView_->setBounds (bounds.removeFromRight (w));
+    }
+   #endif
 
 
     if (browser_ != nullptr)

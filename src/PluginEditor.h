@@ -25,7 +25,12 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
-class KromosynthAudioProcessorEditor : public juce::AudioProcessorEditor
+#if KROMOSYNTH_HAS_WCLAP
+#include "WclapEngineView.h"
+#endif
+
+class KromosynthAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                       private juce::Timer
 {
 public:
     explicit KromosynthAudioProcessorEditor (KromosynthAudioProcessor&);
@@ -189,6 +194,19 @@ private:
     */
     bool soundsVisible_ = false;
 
+
+   #if KROMOSYNTH_HAS_WCLAP
+    /** The hosted engine's own editor page (synthis-et4.4), beside the shell. A native webview cannot be
+        overlapped, so it takes a rectangle off the right of the editor, exactly as the Sounds list takes one
+        off the bottom; the shell (and so the plugin's own macro controls) keeps the rest. Built when a WCLAP
+        engine is the active one and torn down when it goes or is re-created: see syncEngineView. */
+    std::unique_ptr<WclapEngineView> engineView_;
+    int engineViewFailedGeneration_ = -1;
+    void syncEngineView();
+    static constexpr int kShellMinWidth = 480;
+   #endif
+
+    void timerCallback() override;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KromosynthAudioProcessorEditor)
 };

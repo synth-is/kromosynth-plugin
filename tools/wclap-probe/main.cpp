@@ -45,12 +45,15 @@ clap_istream_t mkIn(Mem* m) {
         return (int64_t)k; }};
 }
 
-struct Events { clap_event_note_t on{}; bool sent = false; };
+// One note-on per voice, all in the first block (synthis-et4.3: --voices N; 0 = idle plugin, for the
+// per-voice CPU cost = (rt_fraction(N) - rt_fraction(0)) / N).
+struct Events { std::vector<clap_event_note_t> on; bool sent = false; };
 
 struct Run { std::vector<float> L; double seconds = 0; };
 
 // One note-on in the first block, then silence of events.
-Run render(const clap_plugin_t* p, double sr, uint32_t block, double secs, int key) {
+Run render(const clap_plugin_t* p, double sr, uint32_t block, double secs, int key, int voices = 1) {
+    (void)key;  // superseded by the chord table below
     Run r;
     const uint32_t total = (uint32_t)(sr * secs);
     std::vector<float> l(block), rr(block);
@@ -59,14 +62,22 @@ Run render(const clap_plugin_t* p, double sr, uint32_t block, double secs, int k
     out.channel_count = 2;
     out.data32 = ch;
     Events ev;
-    ev.on.header = {sizeof(clap_event_note_t), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_ON, 0};
-    ev.on.note_id = 1;
-    ev.on.key = (int16_t)key;
-    ev.on.velocity = 0.9;
+    // The same chords as tools/wclap-host-probe, so the in-plugin and native numbers play the same notes:
+    // N=1 {60}, N=4 {60,64,67,72}, N=8 {48..76}, N=16 {36..96}. Velocity 100/127 as in that probe.
+    static const int kChord[16] = {36, 40, 43, 48, 52, 55, 60, 64, 67, 72, 76, 79, 84, 88, 91, 96};
+    const int first = voices >= 16 ? 0 : voices >= 8 ? 3 : voices >= 4 ? 6 : 6;
+    for (int v = 0; v < voices; ++v) {
+        clap_event_note_t n{};
+        n.header = {sizeof(clap_event_note_t), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_ON, 0};
+        n.note_id = v + 1;
+        n.key = (int16_t)kChord[(first + v) % 16];
+        n.velocity = 100.0 / 127.0;
+        ev.on.push_back(n);
+    }
     clap_input_events_t in{&ev,
-        [](const clap_input_events_t* x) -> uint32_t { return ((Events*)x->ctx)->sent ? 0 : 1; },
-        [](const clap_input_events_t* x, uint32_t) -> const clap_event_header_t* {
-            return &((Events*)x->ctx)->on.header; }};
+        [](const clap_input_events_t* x) -> uint32_t { auto* e = (Events*)x->ctx; return e->sent ? 0 : (uint32_t)e->on.size(); },
+        [](const clap_input_events_t* x, uint32_t i) -> const clap_event_header_t* {
+            return &((Events*)x->ctx)->on[i].header; }};
     clap_output_events_t outEv{nullptr, [](const clap_output_events_t*, const clap_event_header_t*) { return true; }};
     auto t0 = std::chrono::steady_clock::now();
     for (uint32_t done = 0; done < total; done += block) {
@@ -99,6 +110,7 @@ double maxDiff(const std::vector<float>& a, const std::vector<float>& b) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);  // output must survive a hang/kill (aa4.104)
     if (argc < 2) {
         std::fprintf(stderr, "usage: wclap-probe <dir.wclap|x.clap> [--plugin-id ID] [--seconds N] [--block N] [--sr HZ]\n");
         return 2;
@@ -106,12 +118,14 @@ int main(int argc, char** argv) {
     std::string path = argv[1], wantId;
     double secs = 4, sr = 48000;
     uint32_t block = 256;
+    int voices = 1;
     for (int i = 2; i + 1 < argc; i += 2) {
         std::string k = argv[i];
         if (k == "--plugin-id") wantId = argv[i + 1];
         else if (k == "--seconds") secs = atof(argv[i + 1]);
         else if (k == "--block") block = (uint32_t)atoi(argv[i + 1]);
         else if (k == "--sr") sr = atof(argv[i + 1]);
+        else if (k == "--voices") voices = atoi(argv[i + 1]);
     }
     while (path.size() > 1 && path.back() == '/') path.pop_back();
     const bool isWclap = path.size() < 5 || path.substr(path.size() - 5) != ".clap";
@@ -173,11 +187,12 @@ int main(int argc, char** argv) {
                 gui != nullptr, params ? params->count(a) : 0);
 
     int rc = 0;
-    render(a, sr, block, 0.5, 60);  // warm-up (JIT/caches), discarded
-    Run r1 = render(a, sr, block, secs, 60);
+    render(a, sr, block, 0.5, 60, voices);  // warm-up (JIT/caches), discarded
+    Run r1 = render(a, sr, block, secs, 60, voices);
     double lvl = rms(r1.L);
-    std::printf("RMS=%g\nCPU_RT_FRACTION=%g\n", lvl, r1.seconds / secs);
-    if (lvl > 1e-5) std::puts("CHECK_PLAYS=PASS"); else { std::puts("CHECK_PLAYS=FAIL"); rc = 1; }
+    std::printf("VOICES=%d\nRMS=%g\nCPU_RT_FRACTION=%g\n", voices, lvl, r1.seconds / secs);
+    if (voices == 0) std::puts("CHECK_PLAYS=SKIPPED(idle)");
+    else if (lvl > 1e-5) std::puts("CHECK_PLAYS=PASS"); else { std::puts("CHECK_PLAYS=FAIL"); rc = 1; }
 
     if (state) {
         // Stage 1, one instance: save, load the same bytes back into it, save again.
