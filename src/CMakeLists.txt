@@ -40,7 +40,10 @@
 if(KROMOSYNTH_IOS)
     set(_kromosynth_formats Standalone AUv3)
 else()
-    set(_kromosynth_formats AU VST3)
+    # Standalone on desktop too: the app is the cheapest host-free way to
+    # exercise the editor (keyboard focus, webview) that a DAW does not
+    # check, and the gate compiles it so that code stays buildable.
+    set(_kromosynth_formats AU VST3 Standalone)
 endif()
 
 # ONE string, two consumers, and they must not be able to disagree.

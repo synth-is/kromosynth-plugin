@@ -37,3 +37,38 @@ Suggest: if `fnP == 0`, record an error and return instead of calling.
 
 `wasi_config_preopen_dir` now takes a bool, not the `WASMTIME_WASI_*_PERMS_*` constants, so the
 bridge does not compile as is.
+
+## 4. webview-gui: a relative `get_uri` 404s the page (read-only)
+
+From `docs/WCLAP_ENGINE_UI_2026-10-27.md` "Why not the bridge's own webview" (synthis-et4.16).
+Read from the bridge source at the pinned revision `cd11d22`, NOT run: **read-only**.
+
+`get_uri` returns the relative `/ui/index.html`; the bridge then serves resources by asking the
+guest's `get_resource`, and juce_webclap's answer is `false` ("hosts serve the bundle"). Only a
+`file:` URI makes the bridge serve from disk. So the bundle's page would 404.
+
+Source: `source/_generic/wclap-plugin.h` — `webview_get_uri` at :1132 (the `file:` check at :1143
+sets `wasFileUri`, :1152 clears it) and `webview_get_resource` at :1155 (serves from disk only
+when `wasFileUri`, :1156; otherwise forwards to the guest's `get_resource` at :1209).
+
+## 5. webview-gui: `WebviewGui::send` dispatches without `source` (read-only)
+
+Same provenance as item 4: **read-only**.
+
+`WebviewGui::send` builds `new MessageEvent('message', {data})` with no `source`, and
+`webclap-ui.js` drops every message whose `source !== window.parent`. Every engine-to-page
+frame (snapshot, parameter updates) would be lost.
+
+Source: `modules/webview-gui/include/webview-gui/_impl/platform/apple-osx.h:310-315`
+(`WebviewGui::send`; the `MessageEvent` construction is at :311). The page side is open-webclap's
+`webclap-ui.js`.
+
+## 6. webview-gui: the `Uint8Array.fromBase64` polyfill over-allocates (read-only)
+
+Same provenance as item 4: **read-only**.
+
+Its `Uint8Array.fromBase64` polyfill allocates `b64.length` bytes, not the decoded length (trailing
+zeros on every frame).
+
+Source: `modules/webview-gui/include/webview-gui/_impl/platform/apple-osx.h:190-199`
+(`new Uint8Array(b64.length)` at :193).
