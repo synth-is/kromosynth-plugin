@@ -918,6 +918,23 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     addChildComponent (*site_);
 #endif
 
+    // ── The on-screen keyboard, STANDALONE ONLY ─────────────────────────
+    //
+    // wrapperType, not a compile-time switch: the same sources build the AU,
+    // VST3, AUv3 and Standalone, and the keyboard must exist in NONE of the
+    // first three — a DAW host owns the MIDI input there. The state it reads
+    // lives in the processor (proc_.keyboardState), which processBlock merges
+    // into the host's MidiBuffer, so the notes reach whichever engine is active
+    // by the same route a host note takes.
+    if (proc_.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+    {
+        keyboard_ = std::make_unique<juce::MidiKeyboardComponent> (
+            proc_.keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard);
+        keyboard_->setLowestVisibleKey (36);   // C2; about two octaves visible at the default width
+        keyboard_->setScrollButtonsVisible (true);
+        addAndMakeVisible (*keyboard_);
+    }
+
     // Resizable with a wide range, because "does it resize" is a gate
     // question and a fixed-size editor cannot answer it. Lower bound is
     // small enough to catch layout collapse; upper bound is large enough
@@ -947,10 +964,10 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     setSize (safeArea.getWidth(), safeArea.getHeight());
 #else
     setResizable (true, true);
-    // Back to a plain 400 now that nothing is reserved at the bottom. The
-    // gutter's height used to be added here so the minimum window still left
-    // 400 points for the webviews; the Sounds list takes the body instead of a
-    // slice of it, so there is nothing to compensate for.
+    // A plain 400: the Sounds list takes the body instead of a slice of it, so
+    // there is nothing to compensate for. The standalone keyboard's strip
+    // (kKeyboardHeight) is reserved inside resized() on top of this minimum,
+    // not added to it.
     setResizeLimits (640, 400, 3840, 2400);
     setSize (1280, 800);
 #endif
@@ -1025,6 +1042,14 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
 KromosynthAudioProcessorEditor::~KromosynthAudioProcessorEditor()
 {
     stopTimer();
+
+    // A key still held on the on-screen keyboard when the editor goes away
+    // must not stay stuck — a lost touch is exactly the case where no note-off
+    // will ever arrive. The state lives in the processor, and the next block's
+    // processNextMidiBuffer injects the note-offs. No-op in AU/VST3/AUv3,
+    // where no key was ever pressed.
+    proc_.keyboardState.allNotesOff (0);
+
    #if KROMOSYNTH_HAS_WCLAP
     engineView_.reset();   // closes the engine's gui before the processor can unload the engine
    #endif
@@ -1108,6 +1133,23 @@ void KromosynthAudioProcessorEditor::paint (juce::Graphics& g)
 void KromosynthAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
+
+    // THE ON-SCREEN KEYBOARD'S STRIP, taken off the bottom FIRST so nothing
+    // below (the render-list handle) can overlap it — two native components
+    // must not share a rectangle, and a native component over a webview is
+    // invisible. Exists only in the Standalone wrapper; the webviews take the
+    // rest. The shell's own chromeHeight() reporting is unaffected: the strip
+    // is below the shell's rectangle, not inside it.
+    if (keyboard_ != nullptr)
+    {
+        keyboard_->setBounds (bounds.removeFromBottom (kKeyboardHeight));
+
+        // About two octaves visible at whatever width the editor has — 28
+        // white keys is two octaves — floored so a key never gets narrower
+        // than a touch target on a phone. setKeyWidth no-ops when the value
+        // is unchanged, so this costs nothing on resizes that keep it.
+        keyboard_->setKeyWidth (juce::jmax (24.0f, getWidth() / 28.0f));
+    }
 
    #if KROMOSYNTH_HAS_WCLAP
     if (engineView_ != nullptr)

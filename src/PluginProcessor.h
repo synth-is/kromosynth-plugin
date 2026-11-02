@@ -725,6 +725,17 @@ private:
     void timerCallback() override;
 
 public:
+    /** State for the STANDALONE on-screen keyboard (synthis-o2a.1).
+
+        Owned here rather than in the editor so it survives the editor being
+        destroyed and recreated, and so processBlock can merge its events into
+        the host's MidiBuffer with processNextMidiBuffer. Only the editor's
+        MidiKeyboardComponent ever presses keys on it, and that component is
+        constructed only when wrapperType is Standalone — in AU, VST3 and AUv3
+        nothing feeds this state and processBlock skips it entirely.
+    */
+    juce::MidiKeyboardState keyboardState;
+
     /** How many blocks the host has asked for. 0 means no audio callback has
         ever run, whatever is or is not loaded. */
     std::uint64_t blocksSeen() const noexcept
