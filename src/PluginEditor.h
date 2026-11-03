@@ -24,6 +24,11 @@
 #include "ShellPage.h"
 
 #include <juce_gui_extra/juce_gui_extra.h>
+// For juce::MidiKeyboardComponent, the standalone on-screen keyboard
+// (synthis-o2a.1). The module header, not the gui sub-header: JUCE module
+// sub-headers rely on the module's own include order. juce_audio_utils is
+// linked by the plugin target on every platform, iOS included.
+#include <juce_audio_utils/juce_audio_utils.h>
 
 #if KROMOSYNTH_HAS_WCLAP
 #include "WclapEngineView.h"
@@ -193,6 +198,20 @@ private:
         and why non-overlapping matters.
     */
     bool soundsVisible_ = false;
+
+    /** The on-screen keyboard, STANDALONE ONLY (synthis-o2a.1).
+
+        Constructed only when proc_.wrapperType is wrapperType_Standalone — in
+        AU, VST3 and AUv3 it never exists, because a DAW host owns the MIDI
+        input there. The component holds no state of its own: the
+        MidiKeyboardState lives in the processor (proc_.keyboardState), so it
+        survives this editor being destroyed and recreated, and resized() gives
+        the component a strip at the bottom of the editor.
+    */
+    std::unique_ptr<juce::MidiKeyboardComponent> keyboard_;
+
+    /** Height of the keyboard strip reserved at the bottom in resized(). */
+    static constexpr int kKeyboardHeight = 80;
 
 
    #if KROMOSYNTH_HAS_WCLAP

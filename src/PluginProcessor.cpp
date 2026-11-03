@@ -852,6 +852,12 @@ void KromosynthAudioProcessor::panic()
     if (faust_ != nullptr) faust_->panic();
    #endif
 
+    // A key still held on the standalone on-screen keyboard must not stay
+    // stuck when panic is pressed. Channel 0 releases every channel; the next
+    // block's processNextMidiBuffer injects the note-offs. Inside the suspend
+    // window, so the audio thread is not inside processNextMidiBuffer now.
+    keyboardState.allNotesOff (0);
+
     suspendProcessing (false);
     logEvent ("panic");
 }
@@ -2600,6 +2606,15 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         if (inThisBlock > midiMaxPerBlock_.load (std::memory_order_relaxed))
             midiMaxPerBlock_.store (inThisBlock, std::memory_order_relaxed);
     }
+
+    // The STANDALONE on-screen keyboard's own notes, merged into the host
+    // buffer (synthis-o2a.1). Placed AFTER the test-note drain above, so a test
+    // note is tracked by the keyboard state like any other, and AFTER the
+    // diagnostics block, so those counters see exactly what they saw before.
+    // Standalone only: in AU/VST3/AUv3 no component ever presses a key on
+    // keyboardState, and skipping the call keeps those paths untouched.
+    if (wrapperType == wrapperType_Standalone)
+        keyboardState.processNextMidiBuffer (midiMessages, 0, buffer.getNumSamples(), true);
 
     // Read once per block. Faust takes it as an engine setting so that it lands
     // BEFORE the limiter -- turning the level down has to move the signal out
