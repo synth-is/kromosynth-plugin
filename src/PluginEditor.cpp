@@ -872,6 +872,34 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             done (juce::var (true));
         });
 
+    // ── Computer-keyboard play, STANDALONE ONLY (synthis-o2a.5) ──────────
+    //
+    // On macOS a focused WKWebView takes the key presses, so JUCE key handling
+    // on the MidiKeyboardComponent below only works while that component itself
+    // has focus. The shell page therefore forwards keydown / keyup / blur here
+    // (see ShellPage.h), and the notes go onto the same proc_.keyboardState the
+    // on-screen keyboard uses, so processBlock merges them exactly like a host
+    // note.
+    //
+    // Registered ONLY under the Standalone wrapper: in AU, VST3 and AUv3 a DAW
+    // host owns the MIDI input, the page's __juce__functions list will not
+    // contain "keyEvent", and the page never calls it.
+    if (proc_.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+        options = options.withNativeFunction ("keyEvent",
+            [this] (const juce::Array<juce::var>& args,
+                    juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // args: [down, key, repeat] for a key event, or ["blur"] when the
+            // window lost focus and every held key must be released.
+            if (args.size() > 0 && args[0].isString() && args[0].toString() == "blur")
+                releaseHeldKeys();
+            else if (args.size() >= 2)
+                handleKeyEvent ((bool) args[0], args[1].toString(),
+                                args.size() > 2 && (bool) args[2]);
+
+            done (juce::var (true));
+        });
+
     browser_ = std::make_unique<InstrumentedBrowser> (options, proc_);
     browser_->allowedOrigin = juce::WebBrowserComponent::getResourceProviderRoot();
     // ── keyboard focus ──────────────────────────────────────────────────
@@ -932,7 +960,28 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             proc_.keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard);
         keyboard_->setLowestVisibleKey (36);   // C2; about two octaves visible at the default width
         keyboard_->setScrollButtonsVisible (true);
+        // The component's own key mapping starts at JUCE's default base octave
+        // 6, which plays nothing the visible keyboard shows. Pin it to the
+        // octave the view starts on (3 = C2 = note 36), so a key played with the
+        // component focused and the same key played from the QWERTY keyboard
+        // (synthis-o2a.5) sound the same note. Z/X move both together.
+        keyboard_->setKeyPressBaseOctave (keyOctave_);
         addAndMakeVisible (*keyboard_);
+
+        // The octave readout, at the right end of the strip beside the
+        // keyboard's up-octave scroll button, so the current octave is visible
+        // while playing from the computer keyboard.
+        octaveLabel_ = std::make_unique<juce::Label> ("keyOctave", juce::String());
+        octaveLabel_->setColour (juce::Label::backgroundColourId,
+                                 kromosynth::palette::colour (kromosynth::palette::surfaceBase));
+        octaveLabel_->setColour (juce::Label::textColourId,
+                                 kromosynth::palette::colour (kromosynth::palette::textBody));
+        octaveLabel_->setColour (juce::Label::outlineColourId,
+                                 kromosynth::palette::colour (kromosynth::palette::border));
+        octaveLabel_->setJustificationType (juce::Justification::centred);
+        octaveLabel_->setFont (juce::Font (juce::FontOptions (13.0f)));
+        updateOctaveLabel();
+        addAndMakeVisible (*octaveLabel_);
     }
 
     // Resizable with a wide range, because "does it resize" is a gate
@@ -1056,6 +1105,132 @@ KromosynthAudioProcessorEditor::~KromosynthAudioProcessorEditor()
     proc_.logEvent ("editor_destroyed");
 }
 
+void KromosynthAudioProcessorEditor::focusLost (juce::Component::FocusChangeType cause)
+{
+    // Losing focus must release every key still held from the computer
+    // keyboard (synthis-o2a.5): no key-up will ever arrive for them. The shell
+    // page reports the same event from its own window blur; this covers the
+    // cases where the webview does not fire one. No-op unless a key was held,
+    // which only the Standalone-only keyEvent path can set.
+    releaseHeldKeys();
+
+    juce::AudioProcessorEditor::focusLost (cause);
+}
+
+// ── Computer-keyboard play (synthis-o2a.5), STANDALONE ONLY ────────────────
+//
+// Reached only through the "keyEvent" native function, which is registered
+// under the Standalone guard in the constructor; the wrapper check is repeated
+// here so no future caller can feed keys in AU / VST3 / AUv3, where a DAW host
+// owns the MIDI input.
+
+void KromosynthAudioProcessorEditor::handleKeyEvent (bool down, const juce::String& key, bool repeat)
+{
+    if (proc_.wrapperType != juce::AudioProcessor::wrapperType_Standalone)
+        return;
+
+    const auto k = key.toLowerCase();
+    if (k.isEmpty())
+        return;
+
+    // Z lowers, X raises the octave by one.
+    if (k == "z" || k == "x")
+    {
+        if (down && ! repeat)
+            setKeyOctave (keyOctave_ + (k == "x" ? 1 : -1));
+        return;
+    }
+
+    // Optional extra: C lowers, V raises the velocity of computer-key notes.
+    if (k == "c" || k == "v")
+    {
+        if (down && ! repeat)
+            keyVelocity_ = juce::jlimit (0.1f, 1.0f, keyVelocity_ + (k == "v" ? 0.1f : -0.1f));
+        return;
+    }
+
+    // The common DAW layout, identical to MidiKeyboardComponent's own default
+    // mapping ("awsedftgyhujkolp;"): A S D F G H J K are the white keys and
+    // W E T Y U the black ones, each an offset from the base C of the current
+    // octave — the same arithmetic the component applies to its key presses.
+    static const char* const kPlayKeys = "awsedftgyhujkolp;";
+    const auto offset = [&k]() -> int
+    {
+        for (int i = 0; kPlayKeys[i] != '\0'; ++i)
+            if (kPlayKeys[i] == k[0])
+                return i;
+        return -1;
+    }();
+
+    if (offset < 0)
+        return;
+
+    if (down)
+    {
+        // Auto-repeat must not retrigger: a key already held is already on.
+        if (! repeat && ! heldKeyNotesByKey_.contains (k))
+        {
+            const int note = 12 * keyOctave_ + offset;
+            if (note < 0 || note > 127)
+                return;
+
+            // Remember the sounding note per physical key, so the key-up sends
+            // the note-off for THIS note even if Z/X moved the octave between
+            // the key-down and the key-up.
+            heldKeyNotesByKey_.set (k, note);
+            proc_.keyboardState.noteOn (1, note, keyVelocity_);
+        }
+    }
+    else
+    {
+        // A key release sends the note off for the note this key actually
+        // started — remembered at key-down, not recomputed from the octave
+        // current now, which Z/X may have moved since the key went down.
+        if (heldKeyNotesByKey_.contains (k))
+        {
+            const int note = heldKeyNotesByKey_[k];
+            heldKeyNotesByKey_.remove (k);
+            proc_.keyboardState.noteOff (1, note, 0.0f);
+        }
+    }
+}
+
+void KromosynthAudioProcessorEditor::setKeyOctave (int octave)
+{
+    // Clamped to the playable range: the highest mapped key (';', offset 16)
+    // must stay inside MIDI's 0..127, so 12 * octave + 16 <= 127 -> octave <= 9.
+    keyOctave_ = juce::jlimit (0, 9, octave);
+
+    if (keyboard_ != nullptr)
+    {
+        // Keep the on-screen keyboard on the same octave: its own key mapping
+        // (so keys played with the component focused match), and the visible
+        // range, moved exactly as the on-screen octave buttons move it.
+        keyboard_->setKeyPressBaseOctave (keyOctave_);
+        keyboard_->setLowestVisibleKey (12 * keyOctave_);
+    }
+
+    updateOctaveLabel();
+}
+
+void KromosynthAudioProcessorEditor::updateOctaveLabel()
+{
+    if (octaveLabel_ != nullptr)
+        octaveLabel_->setText ("Octave " + juce::String (keyOctave_),
+                               juce::NotificationType::dontSendNotification);
+}
+
+void KromosynthAudioProcessorEditor::releaseHeldKeys()
+{
+    // The window lost focus: no key-up will ever arrive for a key still held,
+    // so every one of them goes off now. The map is only cleared after the
+    // loop — a non-const call invalidates its iterators.
+    for (auto i = heldKeyNotesByKey_.begin(); i != heldKeyNotesByKey_.end(); ++i)
+        proc_.keyboardState.noteOff (1, i.getValue(), 0.0f);
+
+    heldKeyNotesByKey_.clear();
+}
+
 void KromosynthAudioProcessorEditor::timerCallback()
 {
    #if KROMOSYNTH_HAS_WCLAP
@@ -1142,13 +1317,20 @@ void KromosynthAudioProcessorEditor::resized()
     // is below the shell's rectangle, not inside it.
     if (keyboard_ != nullptr)
     {
-        keyboard_->setBounds (bounds.removeFromBottom (kKeyboardHeight));
+        auto strip = bounds.removeFromBottom (kKeyboardHeight);
 
-        // About two octaves visible at whatever width the editor has — 28
+        // The octave readout takes the right end of the strip, immediately
+        // beside the keyboard's up-octave scroll button.
+        if (octaveLabel_ != nullptr)
+            octaveLabel_->setBounds (strip.removeFromRight (kOctaveLabelWidth));
+
+        keyboard_->setBounds (strip);
+
+        // About two octaves visible at whatever width the keyboard has — 28
         // white keys is two octaves — floored so a key never gets narrower
         // than a touch target on a phone. setKeyWidth no-ops when the value
         // is unchanged, so this costs nothing on resizes that keep it.
-        keyboard_->setKeyWidth (juce::jmax (24.0f, getWidth() / 28.0f));
+        keyboard_->setKeyWidth (juce::jmax (24.0f, strip.getWidth() / 28.0f));
     }
 
    #if KROMOSYNTH_HAS_WCLAP

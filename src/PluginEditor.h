@@ -43,6 +43,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void focusLost (juce::Component::FocusChangeType) override;
 
 private:
     // Subclassed only to hook the lifecycle virtuals. Every one of them feeds
@@ -212,6 +213,59 @@ private:
 
     /** Height of the keyboard strip reserved at the bottom in resized(). */
     static constexpr int kKeyboardHeight = 80;
+
+    /** Readout of the octave the computer keyboard currently plays, drawn at
+        the right end of the keyboard strip — immediately beside the keyboard
+        component's own up-octave scroll button (synthis-o2a.5).
+
+        STANDALONE ONLY, constructed together with keyboard_ under the same
+        wrapperType guard.
+    */
+    std::unique_ptr<juce::Label> octaveLabel_;
+
+    /** Width of the octave readout inside the keyboard strip. */
+    static constexpr int kOctaveLabelWidth = 76;
+
+    /** The octave computer-keyboard notes are played in: note = 12 * keyOctave_
+        + offset, the same arithmetic MidiKeyboardComponent uses for its own
+        key mapping (setKeyPressBaseOctave). Starts at 3 because the on-screen
+        keyboard's lowest visible key is 36 (C2), so a QWERTY 'a' and a click
+        on the visible C2 sound the same note. Changed by Z (down) and X (up),
+        clamped to [0, 9] — the playable range, since the highest mapped key
+        (';', offset 16) must stay within MIDI's 0..127.
+    */
+    int keyOctave_ = 3;
+
+    /** Velocity used for computer-keyboard note-ons. C lowers it, V raises it
+        (optional extra from synthis-o2a.5), clamped to [0.1, 1.0]. */
+    float keyVelocity_ = 1.0f;
+
+    /** The note each physical computer key is currently sounding, keyed by the
+        lower-case key char. Remembered at key-down so that the key-up sends
+        the note-off for the note that key actually started — even if Z/X moved
+        the octave in between — and so key repeat can be ignored and a lost
+        window focus can release everything. */
+    juce::HashMap<juce::String, int> heldKeyNotesByKey_;
+
+    /** Handles one forwarded key event from the shell page (synthis-o2a.5).
+
+        down: key pressed (true) or released (false). key: the lower-case
+        KeyboardEvent.key. repeat: the browser's auto-repeat flag, which must
+        not retrigger a note that is already on.
+    */
+    void handleKeyEvent (bool down, const juce::String& key, bool repeat);
+
+    /** Moves the computer-keyboard octave by one, clamped, and keeps the
+        on-screen keyboard (visible range + its own key mapping) and the octave
+        readout on the same value. */
+    void setKeyOctave (int octave);
+
+    /** Rewrites the octave readout from keyOctave_. */
+    void updateOctaveLabel();
+
+    /** Sends a note-off for every note still held from the computer keyboard —
+        called when the window loses focus, where no key-up will ever arrive. */
+    void releaseHeldKeys();
 
 
    #if KROMOSYNTH_HAS_WCLAP
