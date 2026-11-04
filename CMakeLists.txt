@@ -41,9 +41,10 @@ option(SYNTHIS_WCLAP_HOST "Host WCLAP instruments through the wclap-bridge (spik
 
 # synthis-et4.9: the plugin as a WCLAP itself (skeleton: a sine voice, no Faust, no sampler). Different toolchain
 # (Emscripten, from the open-webclap kit), so this only adds the `synthis_webclap` custom target to the native tree,
-# which runs scripts/webclap-skeleton.sh. OFF: nothing is added, checked or fetched. See
+# which runs scripts/webclap-skeleton.sh, and synthis_webclap_faust (the Faust spike, scripts/webclap-faust.sh).
+# OFF: nothing is added, checked or fetched. See docs/PLUGIN_AS_WCLAP_FAUST_SPIKE_2026-11-04.md,
 # docs/PLUGIN_AS_WCLAP_2026-10-27.md and webclap/CMakeLists.txt.
-option(SYNTHIS_WEBCLAP_TARGET "Add the skeleton WCLAP build target (Emscripten, out of tree)" OFF)
+option(SYNTHIS_WEBCLAP_TARGET "Add the WCLAP build targets: skeleton and Faust spike (Emscripten, out of tree)" OFF)
 
 # How long after page load the probe fires. Default 3000 ms is enough for React
 # to mount.

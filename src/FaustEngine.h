@@ -109,6 +109,17 @@ public:
                      int maxBlockSize,
                      int numVoices);
 
+    // The same, from bytes already in memory. load() reads the two files and
+    // calls this. A WebCLAP module has no file system (the host gives it no
+    // preopened directories), so the plugin-as-WCLAP spike (synthis-et4.17,
+    // webclap/emscripten/FaustProcessor.cpp) hands the artefact in this way.
+    LoadResult loadFromMemory (const void* wasmBytes,
+                               size_t wasmSize,
+                               const juce::String& dspJson,
+                               double sampleRate,
+                               int maxBlockSize,
+                               int numVoices);
+
     void reset() noexcept;
 
     // Renders into `buffer`, which may have one or two channels. Faust modules

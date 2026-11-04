@@ -731,10 +731,30 @@ FaustEngine::load (const juce::File& wasmFile,
 
     if (! wasmFile.existsAsFile()) { r.detail = "no such .wasm: " + wasmFile.getFullPathName(); return r; }
     if (! jsonFile.existsAsFile()) { r.detail = "no such .json: " + jsonFile.getFullPathName(); return r; }
+
+    juce::MemoryBlock mb;
+    if (! wasmFile.loadFileAsData (mb)) { r.detail = "could not read the .wasm"; return r; }
+
+    return loadFromMemory (mb.getData(), mb.getSize(), jsonFile.loadFileAsString(),
+                           sampleRate, maxBlockSize, numVoices);
+}
+
+FaustEngine::LoadResult
+FaustEngine::loadFromMemory (const void* wasmBytes,
+                             size_t wasmSize,
+                             const juce::String& dspJson,
+                             double sampleRate,
+                             int maxBlockSize,
+                             int numVoices)
+{
+    LoadResult r;
+    loaded_ = false;
+
+    if (wasmBytes == nullptr || wasmSize == 0) { r.detail = "empty .wasm"; return r; }
     if (numVoices < 1 || maxBlockSize < 1) { r.detail = "voices and block size must be positive"; return r; }
 
     // ── metadata ────────────────────────────────────────────────────────────
-    const auto parsed = juce::JSON::parse (jsonFile.loadFileAsString());
+    const auto parsed = juce::JSON::parse (dspJson);
 
     if (! parsed.isObject()) { r.detail = "DSP JSON did not parse as an object"; return r; }
 
@@ -786,10 +806,8 @@ FaustEngine::load (const juce::File& wasmFile,
     r.hasGate = impl_->idxGate >= 0;
 
     // ── module bytes ────────────────────────────────────────────────────────
-    juce::MemoryBlock mb;
-    if (! wasmFile.loadFileAsData (mb)) { r.detail = "could not read the .wasm"; return r; }
-    impl_->wasm.assign ((const std::uint8_t*) mb.getData(),
-                        (const std::uint8_t*) mb.getData() + mb.getSize());
+    impl_->wasm.assign ((const std::uint8_t*) wasmBytes,
+                        (const std::uint8_t*) wasmBytes + wasmSize);
 
     impl_->sampleRate = sampleRate;
     impl_->maxBlockSize = maxBlockSize;
