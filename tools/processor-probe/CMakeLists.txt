@@ -73,5 +73,7 @@ target_link_libraries(processor_probe PRIVATE
     juce::juce_audio_utils
     juce::juce_gui_extra
     juce::juce_dsp
+    # juce::OSCSender for the KROMOSYNTH_PROBE_OSC path (synthis-cda.2).
+    juce::juce_osc
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags)

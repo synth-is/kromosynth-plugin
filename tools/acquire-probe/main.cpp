@@ -23,6 +23,11 @@
 // has five branches and no server in it, so it is exactly the sort of thing
 // this probe exists to pin down.
 #include "../../src/RenderOutbox.h"
+// The render-progress sentinel and the activity list it feeds (synthis-7o3.2).
+// Both header-only and juce_core-only, so the probe can exercise them with no
+// window, exactly like the acquisition parser above.
+#include "../../src/ProgressSentinel.h"
+#include "../../src/ActivityList.h"
 
 #include <juce_core/juce_core.h>
 
@@ -669,6 +674,313 @@ int selftest (const juce::File& scratch)
 
             check (! InstrumentLibrary::readSidecar (shortVector).hasDescriptors,
                    "a six-element descriptor vector is refused rather than partly read");
+        }
+    }
+
+    line ("");
+    line ("the progress sentinel (synthis-7o3.2)");
+    {
+        namespace prog = kromosynth::progress;
+
+        const juce::String valid = "synthis://progress?job=job-1&phase=rendering&pct=42&title=Pluck%2014";
+
+        check (prog::isProgressSentinel (valid), "recognises synthis://progress");
+        check (! prog::isProgressSentinel ("synthis://progressive?job=a&phase=queued"),
+               "a longer host segment does not match");
+        check (! prog::isProgressSentinel ("synthis://acquire?artifact=a&file=f.zip&ticket=t"),
+               "the acquire verb is not a progress sentinel");
+        check (! prog::isProgressSentinel ("synthis://render?artifact=a&file=f.wav&ticket=t"),
+               "the render verb is not a progress sentinel");
+        check (! prog::isProgressSentinel ("synthis://auth?state=registered&label=bj"),
+               "the auth verb is not a progress sentinel");
+        check (! prog::isProgressSentinel ("synthis://checkout?url=https%3A%2F%2Fsynth.is%2Fpricing"),
+               "the checkout verb is not a progress sentinel");
+        check (! prog::isProgressSentinel ("https://synth.is/garden"),
+               "an ordinary navigation is not a progress sentinel");
+
+        // The greedy-match trap this branch defends against: acquisition's
+        // isSentinel matches ANY synthis:// URL, which is why the progress
+        // check has to run before it in pageAboutToLoad.
+        check (isSentinel (valid),
+               "acquisition::isSentinel greedily matches the progress verb too");
+        check (! prog::parse ("synthis://acquire?artifact=a&file=f.zip&ticket=t").has_value(),
+               "parse refuses the acquire verb");
+
+        auto ev = prog::parse (valid);
+        check (ev.has_value(), "parses a valid progress sentinel");
+        if (ev.has_value())
+        {
+            check (ev->job == "job-1", "reads the job id");
+            check (ev->phase == prog::Phase::rendering, "reads the phase");
+            check (ev->pct == 42, "reads the percentage");
+            check (ev->title == "Pluck 14", "decodes the title");
+        }
+
+        // Each site phase parses.
+        check (prog::parse ("synthis://progress?job=j&phase=queued").has_value()
+               && prog::parse ("synthis://progress?job=j&phase=queued")->phase == prog::Phase::queued,
+               "phase=queued parses");
+        check (prog::parse ("synthis://progress?job=j&phase=rendering&pct=7").has_value()
+               && prog::parse ("synthis://progress?job=j&phase=rendering&pct=7")->phase == prog::Phase::rendering,
+               "phase=rendering parses");
+        {
+            auto delivering = prog::parse ("synthis://progress?job=j&phase=delivering&artifact=art-9");
+            check (delivering.has_value() && delivering->phase == prog::Phase::delivering
+                   && delivering->artifact == "art-9",
+                   "phase=delivering parses and carries the artifact join key");
+        }
+        {
+            auto failed = prog::parse ("synthis://progress?job=j&phase=failed&reason=quota");
+            check (failed.has_value() && failed->phase == prog::Phase::failed
+                   && failed->reason == prog::Reason::quota
+                   && prog::toWire (failed->reason) == "quota",
+                   "phase=failed parses with its reason");
+        }
+
+        // An unknown phase is blocked but not parsed: a newer site may add
+        // phases and an older plugin must not misread them.
+        const juce::String unknownPhase = "synthis://progress?job=j&phase=downloading";
+        check (prog::isProgressSentinel (unknownPhase), "an unknown phase is still blocked");
+        check (! prog::parse (unknownPhase).has_value(), "an unknown phase is not parsed");
+        check (prog::hasUnknownPhase (unknownPhase), "the caller can log it as unknown_phase");
+        check (! prog::hasUnknownPhase (valid), "a known phase is not unknown_phase");
+
+        // landed and lost are native-only: rejected by the parser, still blocked.
+        check (prog::isProgressSentinel ("synthis://progress?job=j&phase=landed")
+               && ! prog::parse ("synthis://progress?job=j&phase=landed").has_value(),
+               "phase=landed is blocked and rejected (native-only)");
+        check (prog::isProgressSentinel ("synthis://progress?job=j&phase=lost")
+               && ! prog::parse ("synthis://progress?job=j&phase=lost").has_value(),
+               "phase=lost is blocked and rejected (native-only)");
+
+        // Missing fields.
+        check (! prog::parse ("synthis://progress?phase=queued").has_value(),
+               "a missing job is malformed");
+        check (! prog::parse ("synthis://progress?job=j").has_value(),
+               "a missing phase is malformed");
+
+        // Job charset and length: [A-Za-z0-9_-]{1,64}, anything else malformed.
+        check (! prog::parse ("synthis://progress?job=" + juce::String::repeatedString ("x", 65)
+                              + "&phase=queued").has_value(),
+               "a 65-character job is malformed");
+        check (prog::parse ("synthis://progress?job=" + juce::String::repeatedString ("x", 64)
+                            + "&phase=queued").has_value(),
+               "a 64-character job is accepted");
+        check (! prog::parse ("synthis://progress?job=bad%20id&phase=queued").has_value(),
+               "a job with a space is malformed");
+        check (! prog::parse ("synthis://progress?job=bad.id&phase=queued").has_value(),
+               "a job with a dot is malformed");
+
+        // Title: clamped, not rejected; control characters out.
+        auto longTitle = prog::parse ("synthis://progress?job=j&phase=queued&title="
+                                      + juce::String::repeatedString ("y", 100));
+        check (longTitle.has_value() && longTitle->title.length() == prog::kMaxTitle,
+               "an over-long title is clamped, not rejected");
+        auto nastyTitle = prog::parse ("synthis://progress?job=j&phase=queued&title=%09bad%0Aname");
+        check (nastyTitle.has_value() && ! nastyTitle->title.containsChar ('\n')
+               && ! nastyTitle->title.containsChar ('\t'),
+               "control characters are stripped from the title");
+
+        // pct: clamped, rendering-only, absent means indeterminate.
+        check (prog::parse ("synthis://progress?job=j&phase=rendering&pct=150")->pct == 100,
+               "pct above 100 is clamped");
+        check (prog::parse ("synthis://progress?job=j&phase=rendering&pct=-5")->pct == 0,
+               "a negative pct is clamped to 0");
+        check (prog::parse ("synthis://progress?job=j&phase=queued&pct=42")->pct == -1,
+               "pct with a non-rendering phase is ignored");
+        check (prog::parse ("synthis://progress?job=j&phase=rendering")->pct == -1,
+               "an absent pct is indeterminate");
+        check (! prog::parse ("synthis://progress?job=j&phase=rendering&pct=abc").has_value(),
+               "a non-numeric pct is malformed");
+
+        check (! prog::parse ("synthis://progress?job=j&phase=delivering").has_value(),
+               "delivering without an artifact is malformed (the join key is required)");
+    }
+
+    line ("");
+    line ("the activity list (synthis-7o3.2)");
+    {
+        namespace prog = kromosynth::progress;
+
+        int64_t now = 100000;
+        kromosynth::activity::List list ([&now] { return now; });
+        list.setSiteHidden (false);   // the site view is showing
+
+        auto send = [&] (const juce::String& url) -> bool
+        {
+            const auto ev = prog::parse (url);
+            if (! ev.has_value())
+            {
+                check (false, juce::String ("test url parses: ") + url);
+                return false;
+            }
+            return list.apply (*ev);
+        };
+
+        check (send ("synthis://progress?job=j1&phase=queued&title=Pluck%2014"),
+               "a first event creates an entry");
+        {
+            const auto json = list.toJson();
+            check ((int) json["active"] == 1, "one active entry");
+            check (json["entries"].size() == 1, "one entry in the json");
+            check (json["entries"][0]["job"].toString() == "j1"
+                   && json["entries"][0]["phase"].toString() == "queued"
+                   && json["entries"][0]["title"].toString() == "Pluck 14",
+                   "the entry carries job, phase and title");
+        }
+
+        check (send ("synthis://progress?job=j1&phase=rendering&pct=40"), "a forward event applies");
+        check (! send ("synthis://progress?job=j1&phase=queued"),
+               "a lower rank is ignored (out-of-order event)");
+        {
+            const auto json = list.toJson();
+            check (json["entries"][0]["phase"].toString() == "rendering"
+                   && (int) json["entries"][0]["pct"] == 40,
+                   "the entry stayed at rendering with its pct");
+        }
+        check (send ("synthis://progress?job=j1&phase=rendering&pct=55"), "a same-phase pct update applies");
+        check (send ("synthis://progress?job=j1&phase=delivering&artifact=art-1"),
+               "delivering applies and stores the artifact");
+        {
+            const auto json = list.toJson();
+            check (json["entries"][0]["phase"].toString() == "delivering"
+                   && json["entries"][0]["artifact"].toString() == "art-1",
+                   "the artifact join key is stored");
+        }
+
+        // Lease: 60 s of silence drops the pct to indeterminate, 180 s loses the entry.
+        send ("synthis://progress?job=j2&phase=rendering&pct=30&title=Q");
+        now += 61 * 1000;
+        check (list.tick(), "the 60 s silence boundary changes the list");
+        check ((int) list.toJson()["entries"][1]["pct"] == -1,
+               "pct is reported as -1 after 60 s of silence");
+        now += 120 * 1000;   // 181 s since the last event
+        check (list.tick(), "the 180 s silence boundary changes the list");
+        check (list.toJson()["entries"][0]["phase"].toString() == "lost",
+               "the entry is lost after 180 s of silence");
+
+        // A landing revives a lost entry.
+        check (list.land ("art-1", "Pluck 14", true), "a landing revives the lost entry");
+        {
+            const auto json = list.toJson();
+            check (json["entries"][0]["phase"].toString() == "landed", "the revived entry is landed");
+            check ((int) json["unseenLanded"] == 1, "the landing counts as unseen");
+            check ((int) json["active"] == 0, "a landed entry is not active");
+        }
+        check (! send ("synthis://progress?job=j1&phase=rendering&pct=10"),
+               "a terminal entry ignores sentinel events");
+
+        // Terminal entries expire after 8 s.
+        now += 8 * 1000;
+        check (list.tick(), "the 8 s terminal expiry changes the list");
+        check (list.toJson()["entries"].size() == 0, "the landed entry expired");
+
+        // An acquisition with no known job still lands, titled from the request's name.
+        check (list.land ("art-9", "Bell 3", true), "a landing with no known job creates an entry");
+        {
+            const auto json = list.toJson();
+            check (json["entries"][0]["job"].toString() == "art-9"
+                   && json["entries"][0]["title"].toString() == "Bell 3"
+                   && json["entries"][0]["phase"].toString() == "landed",
+                   "the new landed entry is titled from the request's name");
+        }
+        now += 8 * 1000;
+        list.tick();
+
+        // A failed acquisition marks the matching entry failed; a landing does
+        // not revive a failed one.
+        send ("synthis://progress?job=j2&phase=rendering&pct=10&title=X");
+        send ("synthis://progress?job=j2&phase=delivering&artifact=art-2");
+        check (list.fail ("art-2", "network"), "a failed acquisition marks the entry failed");
+        {
+            const auto json = list.toJson();
+            check (json["entries"][0]["phase"].toString() == "failed"
+                   && json["entries"][0]["reason"].toString() == "network",
+                   "the failed entry carries the reason");
+        }
+        check (! list.land ("art-2", "X", true), "a landing does not revive a failed entry");
+        now += 8 * 1000;
+        list.tick();
+
+        // No silence clock while the site view is hidden; it restarts from zero
+        // when the site is shown again.
+        send ("synthis://progress?job=j3&phase=rendering&pct=20&title=Y");
+        now += 5 * 1000;
+        list.setSiteHidden (true);
+        now += 200 * 1000;
+        check (! list.tick(), "no silence clock runs while the site view is hidden");
+        check (list.toJson()["entries"][0]["phase"].toString() == "rendering",
+               "the entry survives 200 s hidden");
+        list.setSiteHidden (false);   // shown again: the clock restarts from zero
+        now += 30 * 1000;
+        check (! list.tick(), "the silence clock restarted from zero on show");
+        now += 151 * 1000;            // 181 s since the show
+        check (list.tick(), "the entry is lost 181 s after the site was shown again");
+        check (list.toJson()["entries"][0]["phase"].toString() == "lost",
+               "lost after the restarted clock ran out");
+        now += 8 * 1000;
+        list.tick();
+
+        // A full load of the site view loses every non-terminal entry at once.
+        send ("synthis://progress?job=j4&phase=queued&title=Z");
+        send ("synthis://progress?job=j5&phase=rendering&pct=5&title=W");
+        check (list.siteReloaded(), "a site reload changes the list");
+        {
+            const auto json = list.toJson();
+            check (json["entries"][0]["phase"].toString() == "lost"
+                   && json["entries"][1]["phase"].toString() == "lost",
+                   "every non-terminal entry is lost at once");
+        }
+        now += 8 * 1000;
+        list.tick();
+
+        // The 25 min hard cap applies even with heartbeats renewing the lease.
+        send ("synthis://progress?job=j6&phase=rendering&pct=1&title=H");
+        for (int i = 0; i < 149; ++i)   // 149 * 10 s of heartbeats = 24 min 50 s
+        {
+            now += 10 * 1000;
+            send ("synthis://progress?job=j6&phase=rendering&pct=1");
+        }
+        now += 10 * 1000;               // 25 min since the first event
+        check (list.tick(), "the hard cap fires");
+        check (list.toJson()["entries"][0]["phase"].toString() == "lost",
+               "the entry is lost at the 25 min cap");
+
+        // The badge count outlives the entries: a landed entry expires after
+        // 8 s, but unseenLanded keeps counting until the Library is opened.
+        {
+            int64_t t = 900000;
+            kromosynth::activity::List badge ([&t] { return t; });
+            badge.setSiteHidden (false);
+
+            check (badge.land ("b-1", "Pluck 14", true), "a landing with no known job lands");
+            t += 8 * 1000;
+            check (badge.tick(), "the landed entry expires after 8 s");
+            check (badge.toJson()["entries"].size() == 0, "the entry is gone");
+            check ((int) badge.toJson()["unseenLanded"] == 1,
+                   "unseenLanded is still 1 after the entry expired");
+
+            check (badge.land ("b-2", "Bell 3", true), "a second landing lands");
+            check ((int) badge.toJson()["unseenLanded"] == 2, "a second landing counts: 2");
+            t += 8 * 1000;
+            badge.tick();
+            check ((int) badge.toJson()["unseenLanded"] == 2,
+                   "the count survives the second expiry too");
+
+            check (badge.land ("b-3", "One-shot", false), "a non-instrument landing still lands");
+            check ((int) badge.toJson()["unseenLanded"] == 2,
+                   "a landing with instrument=false does not count");
+
+            check (badge.land ("b-4", "Pad 2", true), "a fourth landing lands");
+            check ((int) badge.toJson()["unseenLanded"] == 3, "it counts: 3");
+            check (! badge.land ("b-4", "Pad 2", true),
+                   "landing an already-landed artefact returns false");
+            check ((int) badge.toJson()["unseenLanded"] == 3,
+                   "a repeated landing does not count again");
+
+            check (badge.clearUnseen(), "clearUnseen reports a change when the count was above 0");
+            check ((int) badge.toJson()["unseenLanded"] == 0, "clearUnseen zeroes the count");
+            check (! badge.clearUnseen(), "a second clearUnseen reports no change");
         }
     }
 

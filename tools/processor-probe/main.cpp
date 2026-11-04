@@ -25,6 +25,12 @@
 #include <cmath>
 #include <cstdio>
 
+#if ! JUCE_WINDOWS
+ #include <sys/socket.h>
+ #include <netinet/in.h>
+ #include <unistd.h>
+#endif
+
 namespace
 {
 constexpr double kRate = 48000.0;
@@ -71,6 +77,26 @@ std::vector<CcCmd> parseCcScript (const juce::String& spec)
     return out;
 }
 
+// KROMOSYNTH_PROBE_OSC="0.5=send /synthis/slot/1 0.5, 1.0=show, ..." — comma-
+// separated timed commands, in the same style as KROMOSYNTH_PROBE_CC, that send
+// UDP OSC packets to the processor's own receiver on localhost (juce::OSCSender
+// is enough). When this variable is set the processor is constructed with
+// wrapperType_Standalone — the same setTypeOfNextNewPlugin the Standalone
+// wrapper calls — so the OSC receiver exists; when it is unset nothing here
+// runs and the default output is unchanged. Verbs:
+//   send <address> <value>   one float32 argument to 127.0.0.1:<port>
+//   learn <target>           arm learn (the target shared with MIDI learn)
+//   unlearn                  disarm learn
+//   show                     print every target's value at <seconds>
+//   port <n>                 set the OSC port (reconnects) and print the state
+//   occupy <port>            hold <port> (default: current+1) with a raw socket
+//                            (no reuse options), so the next `port <same>`
+//                            fails and the failure is reported, not silent
+//   ips                      print this device's IP addresses
+// Target values are printed after every block that ran a command, and the
+// mapping table, the input-monitor ring, the receiver state and macro 1 in the
+// slider's own units at the end.
+
 juce::String ccTargetsLine (KromosynthAudioProcessor& p, double t)
 {
     juce::String line = "cc_targets t=" + juce::String (t, 3);
@@ -78,6 +104,46 @@ juce::String ccTargetsLine (KromosynthAudioProcessor& p, double t)
         line += " " + KromosynthAudioProcessor::ccTargetName (i) + "="
                 + juce::String (p.ccTargetValue (i), 6);
     return line;
+}
+
+// The same line under the osc_ prefix, so a KROMOSYNTH_PROBE_OSC run is
+// greppable on its own and the default (CC) output is untouched.
+juce::String oscTargetsLine (KromosynthAudioProcessor& p, double t)
+{
+    juce::String line = "osc_targets t=" + juce::String (t, 3);
+    for (int i = 0; i < KromosynthAudioProcessor::kNumCcTargets; ++i)
+        line += " " + KromosynthAudioProcessor::ccTargetName (i) + "="
+                + juce::String (p.ccTargetValue (i), 6);
+    return line;
+}
+
+juce::String oscSlidersLine (KromosynthAudioProcessor& p, double t)
+{
+    juce::String sliders = "osc_sliders t=" + juce::String (t, 3);
+    for (int i = 0; i < KromosynthAudioProcessor::kNumMacros; ++i)
+    {
+        const auto b = p.macroBinding (i);
+        if (b.label.isEmpty()) continue;
+        sliders += " macro" + juce::String (i + 1) + "=" + juce::String (b.value, 6)
+                   + "/" + juce::String (b.maximum, 6);
+    }
+    return sliders;
+}
+
+juce::String oscStateLine (const KromosynthAudioProcessor::OscState& st)
+{
+    return "osc_state port=" + juce::String (st.port)
+           + " receiver=" + (st.receiverExists ? "1" : "0")
+           + " listening=" + (st.listening ? "1" : "0")
+           + " error=" + (st.error.isEmpty() ? juce::String ("-") : st.error);
+}
+
+juce::String oscIpsLine()
+{
+    juce::String ips;
+    for (const auto& a : KromosynthAudioProcessor::localIpAddresses())
+        ips += (ips.isEmpty() ? "" : ",") + a;
+    return "osc_ips=" + ips;
 }
 
 // A fixed script. Every number here is part of what two builds are compared on,
@@ -133,6 +199,15 @@ int main (int argc, char** argv)
 
     juce::ScopedJuceInitialiser_GUI juceInit;
     const juce::String id (argv[1]);
+
+    // KROMOSYNTH_PROBE_OSC: construct the processor the way the Standalone
+    // wrapper does, so the OSC receiver (Standalone-only) exists and the probe
+    // can send to it. Unset: wrapperType stays Undefined, no receiver, and the
+    // default output is byte-for-byte what it was.
+    const auto oscSpec = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_OSC", {});
+    const bool oscProbe = oscSpec.isNotEmpty();
+    if (oscProbe)
+        juce::AudioProcessor::setTypeOfNextNewPlugin (juce::AudioProcessor::wrapperType_Standalone);
 
     // Heap, so it can be destroyed before the initialiser.
     auto processor = std::make_unique<KromosynthAudioProcessor>();
@@ -261,6 +336,20 @@ int main (int argc, char** argv)
     const bool ccProbe = ! ccScript.empty();
     size_t ccNext = 0;
 
+    // KROMOSYNTH_PROBE_OSC: timed OSC commands, sent to the receiver on
+    // localhost. The sender is (re)connected whenever the port changes.
+    const auto oscScript = parseCcScript (oscSpec);
+    size_t oscNext = 0;
+    juce::OSCSender oscSender;
+    std::vector<int> occupiedFds;
+    if (oscProbe)
+    {
+        oscSender.connect ("127.0.0.1", processor->oscPort());
+        std::printf ("osc_probe=1 port=%d\n", processor->oscPort());
+        std::printf ("%s\n", oscStateLine (processor->oscState()).toRawUTF8());
+        std::printf ("%s\n", oscIpsLine().toRawUTF8());
+    }
+
     const int totalBlocks = (int) std::ceil (kSeconds * kRate / kBlock);
     juce::AudioBuffer<float> out (2, totalBlocks * kBlock);
     out.clear();
@@ -334,6 +423,81 @@ int main (int argc, char** argv)
             }
         }
 
+        // KROMOSYNTH_PROBE_OSC commands whose time falls in this block, run
+        // before processBlock so the block hears them. After a send, the
+        // message loop is pumped so the receiver's message-thread callback
+        // has run before this block is processed.
+        bool oscPrintThisBlock = false;
+        while (oscNext < oscScript.size()
+               && (juce::int64) std::llround (oscScript[oscNext].at * kRate) < start + kBlock)
+        {
+            const auto& c = oscScript[oscNext++];
+
+            if (c.verb == "send" && c.args.size() >= 2)
+            {
+                juce::OSCMessage msg (juce::OSCAddressPattern (c.args[0]));
+                msg.addFloat32 ((float) c.args[1].getDoubleValue());
+                const bool ok = oscSender.send (msg);
+                std::printf ("osc_cmd t=%.3f send %s %s ok=%d\n", c.at,
+                             c.args[0].toRawUTF8(), c.args[1].toRawUTF8(), ok ? 1 : 0);
+
+                // The receiver thread reads the socket and posts to the
+                // message loop; give it a moment, then pump the loop so
+                // oscMessageReceived has run before this block renders.
+                juce::Thread::sleep (20);
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+                oscPrintThisBlock = true;
+            }
+            else if (c.verb == "learn" || c.verb == "unlearn")
+            {
+                const int t = c.verb == "unlearn" || c.args.isEmpty()
+                                ? -1 : KromosynthAudioProcessor::ccTargetFromName (c.args[0]);
+                processor->setCcLearnTarget (t);
+                std::printf ("osc_cmd t=%.3f %s target=%d name=%s\n", c.at, c.verb.toRawUTF8(), t,
+                             t >= 0 ? KromosynthAudioProcessor::ccTargetName (t).toRawUTF8() : "-");
+            }
+            else if (c.verb == "show")
+            {
+                oscPrintThisBlock = true;
+            }
+            else if (c.verb == "port" && ! c.args.isEmpty())
+            {
+                const int p = c.args[0].getIntValue();
+                const bool ok = processor->setOscPort (p);
+                if (ok)
+                    oscSender.connect ("127.0.0.1", p);
+                std::printf ("osc_cmd t=%.3f port %d ok=%d\n", c.at, p, ok ? 1 : 0);
+                std::printf ("%s\n", oscStateLine (processor->oscState()).toRawUTF8());
+            }
+            else if (c.verb == "occupy")
+            {
+               #if ! JUCE_WINDOWS
+                // A raw UDP socket with NO reuse options holds the given port
+                // (default: one the receiver is NOT on), so the receiver's
+                // next bind of it fails with EADDRINUSE — the "port already
+                // in use" case.
+                const int port = c.args.isEmpty() ? processor->oscPort() + 1
+                                                  : c.args[0].getIntValue();
+                const int fd = ::socket (AF_INET, SOCK_DGRAM, 0);
+                sockaddr_in addr {};
+                addr.sin_family = AF_INET;
+                addr.sin_addr.s_addr = htonl (INADDR_ANY);
+                addr.sin_port = htons ((uint16_t) port);
+                const bool ok = fd >= 0
+                                && ::bind (fd, reinterpret_cast<sockaddr*> (&addr), sizeof (addr)) == 0;
+                std::printf ("osc_cmd t=%.3f occupy port=%d ok=%d\n", c.at, port,
+                             ok ? 1 : 0);
+                if (ok) occupiedFds.push_back (fd);
+               #else
+                std::printf ("osc_cmd t=%.3f occupy unsupported-on-windows\n", c.at);
+               #endif
+            }
+            else if (c.verb == "ips")
+            {
+                std::printf ("%s\n", oscIpsLine().toRawUTF8());
+            }
+        }
+
         // The parameter path: a host automation write, once, at 5 s.
         if (! paramWritten && start >= (juce::int64) (5.0 * kRate))
         {
@@ -371,6 +535,12 @@ int main (int argc, char** argv)
                            + "/" + juce::String (b.maximum, 6);
             }
             std::printf ("%s\n", sliders.toRawUTF8());
+        }
+
+        if (oscPrintThisBlock)
+        {
+            std::printf ("%s\n", oscTargetsLine (*processor, (double) start / kRate).toRawUTF8());
+            std::printf ("%s\n", oscSlidersLine (*processor, (double) start / kRate).toRawUTF8());
         }
 
         maxActive = juce::jmax (maxActive, processor->engineState().activeVoices);
@@ -419,6 +589,50 @@ int main (int argc, char** argv)
                          m.invert ? 1 : 0, (double) m.smoothing);
         }
         second.reset();
+    }
+
+    // KROMOSYNTH_PROBE_OSC: what the OSC path ended up with — final target
+    // values, the mapping table (OSC sources included), the input-monitor
+    // ring, macro 1 in the slider's own units with its normalised position,
+    // and the receiver state.
+    if (oscProbe)
+    {
+        std::printf ("%s\n", oscTargetsLine (*processor, kSeconds).toRawUTF8());
+
+        for (int t = 0; t < KromosynthAudioProcessor::kNumCcTargets; ++t)
+        {
+            const auto m = processor->ccMapping (t);
+            if (! m.mapped) continue;
+            std::printf ("osc_mapping target=%d name=%s source=%s cc=%d channel=%d min=%g max=%g inv=%d smooth=%g\n",
+                         t, KromosynthAudioProcessor::ccTargetName (t).toRawUTF8(), m.source.toRawUTF8(),
+                         m.ccNumber, m.channel, (double) m.rangeMin, (double) m.rangeMax,
+                         m.invert ? 1 : 0, (double) m.smoothing);
+        }
+
+        const auto monitor = processor->ccMonitor();
+        for (size_t i = 0; i < monitor.size(); ++i)
+            std::printf ("osc_monitor %d source=%s number=%d value=%d arg=%.6f time=%llu\n", (int) i,
+                         monitor[i].source.toRawUTF8(), monitor[i].number, monitor[i].value,
+                         (double) monitor[i].arg, (unsigned long long) monitor[i].time);
+
+        const auto b = processor->macroBinding (0);
+        if (b.label.isNotEmpty())
+        {
+            const double norm = b.maximum > b.minimum
+                                  ? (double) (b.value - b.minimum) / (double) (b.maximum - b.minimum)
+                                  : 0.0;
+            std::printf ("osc_macro1_slider label=%s value=%g min=%g max=%g norm=%.6f\n",
+                         b.label.toRawUTF8(), (double) b.value, (double) b.minimum,
+                         (double) b.maximum, norm);
+        }
+
+        std::printf ("%s\n", oscStateLine (processor->oscState()).toRawUTF8());
+        std::printf ("%s\n", oscIpsLine().toRawUTF8());
+
+        for (const int fd : occupiedFds)
+           #if ! JUCE_WINDOWS
+            ::close (fd);
+           #endif
     }
 
     const auto st = processor->engineState();

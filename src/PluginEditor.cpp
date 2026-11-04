@@ -543,6 +543,52 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             o->setProperty ("smoothing", (double) m.smoothing);
             done (juce::var (o));
         })
+        // ── OSC receiver (synthis-cda.2) ─────────────────────────────────────
+        // Port get/set, receiver state (a bind failure is reported here, not
+        // swallowed) and this device's IP addresses, so the shell can show
+        // where to send. All message-thread calls into the processor; the
+        // receiver itself exists only in the Standalone wrapper.
+        .withNativeFunction ("getOscPort",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            done (juce::var (proc_.oscPort()));
+        })
+        .withNativeFunction ("setOscPort",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            const int port = args.size() > 0 ? (int) args[0] : KromosynthAudioProcessor::kOscDefaultPort;
+            const bool ok = proc_.setOscPort (port);
+            const auto st = proc_.oscState();
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("ok", ok);
+            o->setProperty ("port", st.port);
+            o->setProperty ("listening", st.listening);
+            o->setProperty ("error", st.error);
+            done (juce::var (o));
+        })
+        .withNativeFunction ("getOscState",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            const auto st = proc_.oscState();
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("receiverExists", st.receiverExists);
+            o->setProperty ("listening", st.listening);
+            o->setProperty ("port", st.port);
+            o->setProperty ("error", st.error);
+            done (juce::var (o));
+        })
+        .withNativeFunction ("getLocalIpAddresses",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            juce::Array<juce::var> out;
+            for (const auto& a : KromosynthAudioProcessor::localIpAddresses())
+                out.add (a);
+            done (juce::var (out));
+        })
         .withNativeFunction ("removeInstrument",
                              [this] (const juce::Array<juce::var>& args,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
@@ -881,6 +927,16 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
 
             done (juce::var (o));
         })
+        .withNativeFunction ("getActivity",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // The PULL half of the activity push (synthis-7o3.2): the page
+            // calls this on "activityChanged" and on its own timer while
+            // anything is active, so a throttled or lost push costs one stale
+            // frame, never wrong state. The event itself carries no data.
+            done (activity_.toJson());
+        })
         .withNativeFunction ("showLibrary",
                              [this] (const juce::Array<juce::var>&,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
@@ -893,6 +949,11 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             // `withKeepPageLoadedWhenBrowserIsHidden`, so coming back resumes
             // wherever the user was, half-completed sign-in included.
             showSite (false);
+
+            // Opening the Library is what the landed badge counts as "seen".
+            if (activity_.clearUnseen())
+                pushActivity();
+
             done (juce::var (true));
         })
         .withNativeFunction ("openSitePath",
@@ -1155,6 +1216,32 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     // does, only what the bar can show.
     site_->onAuthState = [this] (const kromosynth::auth::State& s) { authState_ = s; };
 
+    // The progress sentinel feeds the activity list (synthis-7o3.2); the page
+    // is told about every change with a content-free activityChanged push.
+    site_->onProgress = [this] (const kromosynth::progress::Event& ev) { onProgressEvent (ev); };
+
+    // A full load of the site view kills every follower on the old document.
+    site_->onSiteReloaded = [this]
+    {
+        if (activity_.siteReloaded())
+            pushActivity();
+    };
+
+    // The landed push: AcquisitionRunner finishes on the message thread, and
+    // the editor is the one that owns the activity list. Cleared in the
+    // destructor; the SafePointer guards the case where this editor is gone by
+    // the time the message arrives (a download outlives the editor).
+    proc_.acquisitions().setLandedHandler (
+        [safeEditor = juce::Component::SafePointer<KromosynthAudioProcessorEditor> (this)]
+        (juce::String artifactId, bool ok, juce::String name,
+         kromosynth::acquisition::Verb verb)
+        {
+            if (safeEditor == nullptr)
+                return;
+
+            safeEditor->onAcquisitionFinished (artifactId, ok, name, verb);
+        });
+
     addChildComponent (*site_);
 
     // Sentinel rate probe only (synthis-7o3.1; see pageFinishedLoading): the
@@ -1323,14 +1410,18 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     browser_->goToURL (shellRoot);
 #endif
 
-   #if KROMOSYNTH_HAS_WCLAP
+    // The activity lease runs on this timer (timerCallback), so it runs in
+    // EVERY build, not only the WCLAP one.
     startTimer (250);
-   #endif
 }
 
 KromosynthAudioProcessorEditor::~KromosynthAudioProcessorEditor()
 {
     stopTimer();
+
+    // The landed handler is editor-set; clear it so a download finishing after
+    // this editor is gone does not call into it.
+    proc_.acquisitions().setLandedHandler (nullptr);
 
     // A key still held on the on-screen keyboard when the editor goes away
     // must not stay stuck — a lost touch is exactly the case where no note-off
@@ -1505,9 +1596,47 @@ void KromosynthAudioProcessorEditor::releaseHeldKeys()
 
 void KromosynthAudioProcessorEditor::timerCallback()
 {
+    // The activity lease (synthis-7o3.2): indeterminate after 60 s of
+    // silence, lost after 180 s, no silence clock while the site view is
+    // hidden, 25 min hard cap, terminal entries expire after 8 s.
+    if (activity_.tick())
+        pushActivity();
+
    #if KROMOSYNTH_HAS_WCLAP
     syncEngineView();
    #endif
+}
+
+void KromosynthAudioProcessorEditor::onProgressEvent (const kromosynth::progress::Event& ev)
+{
+    if (activity_.apply (ev))
+        pushActivity();
+}
+
+void KromosynthAudioProcessorEditor::onAcquisitionFinished (const juce::String& artifactId,
+                                                            bool ok,
+                                                            const juce::String& name,
+                                                            kromosynth::acquisition::Verb verb)
+{
+    // The landed push: the moment the runner finishes, not when the page's
+    // poll happens to wake up. Joins on the artefact id the delivering
+    // sentinel carried; an acquisition with no known job still lands, titled
+    // from the request's name. A failed download marks the matching entry
+    // failed — with no known job there is nothing to mark, the shell's own
+    // poll already shows the failure message.
+    const bool changed = ok
+        ? activity_.land (artifactId, name, verb == kromosynth::acquisition::Verb::acquire)
+        : activity_.fail (artifactId, "network");
+
+    if (changed)
+        pushActivity();
+}
+
+void KromosynthAudioProcessorEditor::pushActivity()
+{
+    // Content-free, like rendersChanged: the page answers with getActivity.
+    if (browser_ != nullptr)
+        browser_->emitEventIfBrowserIsVisible ("activityChanged", juce::var (true));
 }
 
 #if KROMOSYNTH_HAS_WCLAP
@@ -1792,6 +1921,10 @@ void KromosynthAudioProcessorEditor::showSite (bool shouldShowSite)
 
     siteVisible_ = shouldShowSite;
 
+    // While the site view is hidden no silence clock runs on the activity
+    // list; showing it again restarts the clocks from zero.
+    activity_.setSiteHidden (! shouldShowSite);
+
     // Loaded lazily, and only once. Navigating on every open would throw away
     // whatever the user had reached -- including a half-completed sign-in.
     if (shouldShowSite && ! siteLoaded_)
@@ -1886,6 +2019,41 @@ bool KromosynthAudioProcessorEditor::InstrumentedBrowser::pageAboutToLoad (const
         else
         {
             proc_.logEvent ("auth_sentinel_malformed");
+        }
+
+        return false;
+    }
+
+    // PROGRESS BEFORE CHECKOUT AND ACQUISITION, same greedy-match reason as
+    // auth above: `acquisition::isSentinel` matches ANY synthis:// URL, so a
+    // progress URL reaching that branch would be blocked (right) and logged
+    // `acquisition_sentinel_malformed` (wrong).
+    if (interceptsSentinels && kromosynth::progress::isProgressSentinel (url))
+    {
+        if (auto ev = kromosynth::progress::parse (url))
+        {
+            // No credential in a progress sentinel, so the fields are
+            // loggable whole — unlike acquisition's, which needs redactForLog.
+            proc_.logEvent ("progress_sentinel " + ev->job + " "
+                            + kromosynth::progress::toWire (ev->phase)
+                            + " pct=" + juce::String (ev->pct)
+                            + (ev->title.isNotEmpty() ? " title=" + ev->title : juce::String())
+                            + (ev->artifact.isNotEmpty() ? " artifact=" + ev->artifact : juce::String()));
+
+            if (onProgress != nullptr)
+                onProgress (*ev);
+        }
+        else if (kromosynth::progress::hasUnknownPhase (url))
+        {
+            // A newer site may add phases; an older plugin must not misread
+            // them. Blocked and logged, never let through.
+            proc_.logEvent ("progress_sentinel_unknown_phase " + url);
+        }
+        else
+        {
+            // Same contract as the other verbs: isProgressSentinel said yes
+            // and parse said no, so this is malformed and still blocked.
+            proc_.logEvent ("progress_sentinel_malformed " + url);
         }
 
         return false;
@@ -1989,6 +2157,13 @@ void KromosynthAudioProcessorEditor::InstrumentedBrowser::pageFinishedLoading (c
 {
     proc_.logEvent ("page_finished_loading " + url);
 
+    // A full load of the site view means the document was replaced and every
+    // follower on it died: every non-terminal activity entry is lost at once
+    // rather than waiting out the silence lease. Set on the site component
+    // only, so the shell's own loads do not fire it.
+    if (onSiteReloaded != nullptr)
+        onSiteReloaded();
+
 #if KROMOSYNTH_WEBVIEW_PROBE
     // Delayed so React has actually mounted — pageFinishedLoading fires on
     // document load, not on app render, and rootChildren would always read 0.
@@ -2069,8 +2244,7 @@ void KromosynthAudioProcessorEditor::InstrumentedBrowser::pageFinishedLoading (c
     // `0:30` runs the same measurement with no sentinels, which is the baseline
     // the other runs are read against. The script and its counters are in
     // kSentinelProbeScript below; the result is logged as `SENTINEL_PROBE {...}`
-    // and the sentinels themselves land in the log as
-    // `acquisition_sentinel_malformed` until the progress verb has a parser,
+    // and the sentinels themselves land in the log as `progress_sentinel ...`,
     // which is the count of events that actually reached pageAboutToLoad.
     //
     // Same SafePointer discipline as the probe above, for the same reason.

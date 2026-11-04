@@ -112,11 +112,28 @@ public:
     void setCompletionHandler (
         std::function<void (juce::String, bool, kromosynth::acquisition::Verb)> handler);
 
+    /** Called on the MESSAGE THREAD when a job finishes, BESIDE the completion
+        handler, with the artefact id, the outcome, the request's display name
+        and the verb.
+
+        This is the landed push for the render-progress bar
+        (docs/RENDER_PROGRESS_DESIGN.md §4, synthis-7o3.2): the editor owns the
+        activity list, and the shell's poll can miss a hidden-view window
+        entirely, so the landing has to be pushed the moment the runner
+        finishes. Set by the editor and cleared in the editor's destructor;
+        the artefact id is the join key with the progress sentinel's
+        `artifact` field, and an acquisition with no known job still lands,
+        titled from the request's name.
+    */
+    void setLandedHandler (
+        std::function<void (juce::String, bool, juce::String, kromosynth::acquisition::Verb)> handler);
+
 private:
     void update (const juce::String& artifactId,
                  std::function<void (Status&)> mutate);
 
     std::function<void (juce::String, bool, kromosynth::acquisition::Verb)> onFinished_;
+    std::function<void (juce::String, bool, juce::String, kromosynth::acquisition::Verb)> onLanded_;
 
     juce::ThreadPool pool_ { 1 };
     mutable juce::CriticalSection lock_;
