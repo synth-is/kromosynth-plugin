@@ -945,6 +945,43 @@ int selftest (const juce::File& scratch)
         check (list.tick(), "the hard cap fires");
         check (list.toJson()["entries"][0]["phase"].toString() == "lost",
                "the entry is lost at the 25 min cap");
+
+        // The badge count outlives the entries: a landed entry expires after
+        // 8 s, but unseenLanded keeps counting until the Library is opened.
+        {
+            int64_t t = 900000;
+            kromosynth::activity::List badge ([&t] { return t; });
+            badge.setSiteHidden (false);
+
+            check (badge.land ("b-1", "Pluck 14", true), "a landing with no known job lands");
+            t += 8 * 1000;
+            check (badge.tick(), "the landed entry expires after 8 s");
+            check (badge.toJson()["entries"].size() == 0, "the entry is gone");
+            check ((int) badge.toJson()["unseenLanded"] == 1,
+                   "unseenLanded is still 1 after the entry expired");
+
+            check (badge.land ("b-2", "Bell 3", true), "a second landing lands");
+            check ((int) badge.toJson()["unseenLanded"] == 2, "a second landing counts: 2");
+            t += 8 * 1000;
+            badge.tick();
+            check ((int) badge.toJson()["unseenLanded"] == 2,
+                   "the count survives the second expiry too");
+
+            check (badge.land ("b-3", "One-shot", false), "a non-instrument landing still lands");
+            check ((int) badge.toJson()["unseenLanded"] == 2,
+                   "a landing with instrument=false does not count");
+
+            check (badge.land ("b-4", "Pad 2", true), "a fourth landing lands");
+            check ((int) badge.toJson()["unseenLanded"] == 3, "it counts: 3");
+            check (! badge.land ("b-4", "Pad 2", true),
+                   "landing an already-landed artefact returns false");
+            check ((int) badge.toJson()["unseenLanded"] == 3,
+                   "a repeated landing does not count again");
+
+            check (badge.clearUnseen(), "clearUnseen reports a change when the count was above 0");
+            check ((int) badge.toJson()["unseenLanded"] == 0, "clearUnseen zeroes the count");
+            check (! badge.clearUnseen(), "a second clearUnseen reports no change");
+        }
     }
 
     line ("");

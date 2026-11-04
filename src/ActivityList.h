@@ -84,7 +84,6 @@ struct Entry
     juce::String artifact;   // join key, set by the delivering sentinel
     juce::String reason;     // wire code, set on failed
     bool instrument = true;  // landed via the acquire verb (counts toward the badge)
-    bool unseen = false;     // landed and not yet seen in the Library
     int64_t startedMs = 0;
     int64_t updatedMs = 0;
     int64_t silenceBaseMs = 0;   // last event, or the last time the site was shown
@@ -170,7 +169,10 @@ public:
             fresh.artifact = artifactId;
             fresh.phase = progress::Phase::landed;
             fresh.instrument = instrument;
-            fresh.unseen = true;
+
+            if (instrument)
+                ++unseenLanded_;
+
             fresh.startedMs = fresh.updatedMs = fresh.silenceBaseMs = now;
             entries_.push_back (fresh);
             return true;
@@ -187,7 +189,10 @@ public:
             e->title = title;
 
         e->instrument = instrument;
-        e->unseen = true;
+
+        if (instrument)
+            ++unseenLanded_;
+
         e->pct = -1;
         e->updatedMs = e->silenceBaseMs = now;
         return true;
@@ -318,19 +323,17 @@ public:
         return changed;
     }
 
-    /** Opening the Library counts as having seen the landings. */
+    /** Opening the Library counts as having seen the landings. The count is
+        kept apart from the entries so it outlives their 8 s expiry; returns
+        true only when something was actually unseen.
+    */
     bool clearUnseen()
     {
-        bool changed = false;
+        if (unseenLanded_ == 0)
+            return false;
 
-        for (auto& e : entries_)
-            if (e.unseen)
-            {
-                e.unseen = false;
-                changed = true;
-            }
-
-        return changed;
+        unseenLanded_ = 0;
+        return true;
     }
 
     /** The getActivity JSON (design §4): now, active, unseenLanded, entries. */
@@ -342,16 +345,12 @@ public:
         root->setProperty ("now", juce::var (now));
 
         int active = 0;
-        int unseenLanded = 0;
         juce::Array<juce::var> entries;
 
         for (const auto& e : entries_)
         {
             if (! isTerminal (e.phase))
                 ++active;
-
-            if (e.phase == progress::Phase::landed && e.unseen && e.instrument)
-                ++unseenLanded;
 
             auto* o = new juce::DynamicObject();
             o->setProperty ("job", e.job);
@@ -371,7 +370,7 @@ public:
         }
 
         root->setProperty ("active", active);
-        root->setProperty ("unseenLanded", unseenLanded);
+        root->setProperty ("unseenLanded", unseenLanded_);
         root->setProperty ("entries", juce::var (entries));
 
         return juce::var (root);
@@ -398,6 +397,12 @@ private:
 
     Clock clock_;
     std::vector<Entry> entries_;
+
+    /** Landed-and-unseen instruments (the Library badge, design §6). Kept
+        apart from the entries because a terminal entry expires after 8 s
+        while the badge must keep counting until the Library is opened.
+    */
+    int unseenLanded_ = 0;
 
     /** The site view starts hidden behind the shell, and no silence clock
         runs in that state.
