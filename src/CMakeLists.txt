@@ -89,6 +89,8 @@ if(KROMOSYNTH_IOS)
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <plist version=\"1.0\"><dict>
   <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Synth.is receives OSC control messages from your motion sensors on the local network.</string>
 </dict></plist>")
 else()
     set(KROMOSYNTH_PLIST_MERGE "")
@@ -366,6 +368,11 @@ target_link_libraries(KromosynthPlugin
         juce::juce_audio_utils
         juce::juce_audio_plugin_client
         juce::juce_gui_extra
+        # For the OSC receiver (synthis-cda.2): juce::OSCReceiver/OSCSender/
+        # OSCMessage. The receiver is created only under the Standalone
+        # wrapper, but the module is linked for every format so the shared
+        # code compiles identically everywhere.
+        juce::juce_osc
         # For juce::dsp::FFT, used to turn the measurement render into a
         # spectrogram. On Apple platforms it wraps vDSP, so this is both the
         # correct choice and the fast one -- and hand-rolling numerics when the

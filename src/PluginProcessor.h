@@ -22,6 +22,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_osc/juce_osc.h>
 
 #include <array>
 #include <memory>
@@ -48,6 +49,7 @@ class SamplerEngine;
 #include "AcquisitionRunner.h"
 
 class KromosynthAudioProcessor : public juce::AudioProcessor,
+                                 private juce::OSCReceiver::Listener<juce::OSCReceiver::MessageLoopCallback>,
                                  private juce::Timer
 {
 public:
@@ -184,9 +186,13 @@ public:
     /** One incoming message in the input-monitor ring buffer. */
     struct CcMonitorEntry
     {
-        juce::String source;                        // "cc:21:1" / "note:60:1"
+        juce::String source;                        // "cc:21:1" / "note:60:1" / "osc:/synthis/slot/1"
         int number = 0, value = 0;
         std::uint64_t time = 0;                     // ms counter when it arrived
+        // OSC entries (synthis-cda.2) carry the first argument as a float;
+        // MIDI entries leave these at their defaults.
+        float arg = 0.0f;
+        bool hasFloat = false;
     };
 
     static juce::String ccTargetName (int target);      // "macro1".."macro16","attack",...
@@ -207,6 +213,49 @@ public:
     std::vector<CcMonitorEntry> ccMonitor() const;
     /** The target parameter's current normalised value (0..1). */
     float ccTargetValue (int target) const;
+
+    // ── OSC receiver (synthis-cda.2) ─────────────────────────────────────
+    //
+    // STANDALONE ONLY: the receiver is created in the constructor only when
+    // wrapperType == wrapperType_Standalone, so an AU, VST3 or AUv3 never
+    // opens a UDP port. Callbacks arrive on the MESSAGE thread; values are
+    // handed to the audio thread through the same atomics the CC mapping uses
+    // (ccLastRaw_, plus an oscPending_ bit for targets with no mapping) and
+    // the existing block-rate smoothing in applyCcMappings does the rest, so
+    // the audio thread stays lock-free.
+    //
+    // Fixed addresses that need no learning: /synthis/slot/<n> (n = 1..16),
+    // /synthis/<slider name> for the loaded instrument's sliders (as the
+    // genome declares them, case-sensitive), and /synthis/attack,
+    // /synthis/decay, /synthis/sustain, /synthis/release, /synthis/output.
+    // One float argument 0..1 (an int is accepted too, clamped); with several
+    // arguments the first is used. Any other address is learned when a learn
+    // target is armed (the same target the MIDI learn uses): the first
+    // message that arrives becomes an OSC-address mapping in the same table,
+    // then learn clears.
+    static constexpr int kOscDefaultPort = 9000;
+
+    /** Receiver state, for the editor's native functions and the probe. */
+    struct OscState
+    {
+        bool receiverExists = false;    // false unless wrapperType is Standalone
+        bool listening = false;
+        int port = kOscDefaultPort;
+        juce::String error;             // bind-failure text, empty when healthy
+    };
+
+    int oscPort() const noexcept { return oscPort_.load (std::memory_order_acquire); }
+
+    /** Sets the port and reconnects when the receiver exists. Message thread.
+        Returns false when the bind failed (port in use) or there is no
+        receiver (not Standalone); the reason is in oscState().error. */
+    bool setOscPort (int port);
+
+    OscState oscState() const;
+
+    /** This device's IP addresses (juce::IPAddress::getAllAddresses), so the
+        UI can show where to send. Message thread. */
+    static juce::StringArray localIpAddresses();
 
     // Exposed so async callbacks can capture the File BY VALUE and still log
     // after this processor is gone. juce::File is a value type holding a path
@@ -780,13 +829,17 @@ private:
     struct CcMapping
     {
         std::atomic<bool> mapped { false };
-        std::atomic<int> sourceKind { 0 };   // 1 = MIDI CC (an OSC string would be 2)
+        std::atomic<int> sourceKind { 0 };   // 1 = MIDI CC, 2 = OSC address
         std::atomic<int> ccNumber { -1 };
         std::atomic<int> channel { -1 };
         std::atomic<float> rangeMin { 0.0f };
         std::atomic<float> rangeMax { 1.0f };
         std::atomic<bool> invert { false };
         std::atomic<float> smoothing { 0.0f };
+        // The OSC address when sourceKind == 2. MESSAGE THREAD ONLY: OSC
+        // matching happens in the OSC callback, never on the audio thread,
+        // which reads only the atomic fields above.
+        juce::String oscAddress;
     };
     std::array<CcMapping, kNumCcTargets> ccMappings_ {};
 
@@ -817,10 +870,47 @@ private:
 
     juce::AudioParameterFloat* ccTargetParam (int target) const noexcept;
     float ccMappedValue (int target, int sevenBitValue) const noexcept;
+    float ccMappedValue01 (int target, float x01) const noexcept;
     void seedCcFilterState (int target);
     void recordCcMonitor (const juce::MidiMessage& m) noexcept;   // audio thread
     void handleCcMessages (juce::MidiBuffer& midiMessages) noexcept; // audio thread
     void applyCcMappings() noexcept;                              // audio thread
+
+    // ── OSC receiver state (synthis-cda.2) ──────────────────────────────
+    //
+    // Created only under the Standalone wrapper type (see the constructor);
+    // in every other wrapper oscReceiver_ stays null and no UDP port opens.
+    std::unique_ptr<juce::OSCReceiver> oscReceiver_;
+    std::atomic<int> oscPort_ { kOscDefaultPort };
+    std::atomic<bool> oscListening_ { false };
+    juce::String oscError_;                          // message thread only
+
+    // Bitmask of targets with an OSC value waiting that have NO mapping:
+    // the message thread sets a bit after storing ccLastRaw_, the audio
+    // thread claims the mask in applyCcMappings with one exchange.
+    std::atomic<std::uint32_t> oscPending_ { 0 };
+
+    // OSC input-monitor ring. The OSC callback runs on the message thread,
+    // so this ring's producer AND consumer are both the message thread; it
+    // is merged into ccMonitor()'s view at read time, which keeps the MIDI
+    // ring single-producer (audio thread) as before.
+    static constexpr int kOscMonitorSize = 32;
+    struct OscMonitorSlot
+    {
+        std::uint64_t time = 0;
+        float arg = 0.0f;
+        bool hasArg = false;
+        char address[64] = {};
+    };
+    OscMonitorSlot oscMonitor_ [kOscMonitorSize] {};
+    std::atomic<std::uint64_t> oscMonitorCount_ { 0 };
+
+    void oscMessageReceived (const juce::OSCMessage& message) override;  // message thread
+    int oscFixedTarget (const juce::String& address) const;              // message thread
+    void applyOscValue (int target, float x01) noexcept;                 // message thread
+    void setOscMapping (int target, const juce::String& address,
+                        float rangeMin, float rangeMax, bool invert, float smoothing);
+    void recordOscMonitor (const juce::String& address, float arg, bool hasArg) noexcept;
 
     void timerCallback() override;
 

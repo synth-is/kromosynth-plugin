@@ -443,6 +443,52 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             o->setProperty ("smoothing", (double) m.smoothing);
             done (juce::var (o));
         })
+        // ── OSC receiver (synthis-cda.2) ─────────────────────────────────────
+        // Port get/set, receiver state (a bind failure is reported here, not
+        // swallowed) and this device's IP addresses, so the shell can show
+        // where to send. All message-thread calls into the processor; the
+        // receiver itself exists only in the Standalone wrapper.
+        .withNativeFunction ("getOscPort",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            done (juce::var (proc_.oscPort()));
+        })
+        .withNativeFunction ("setOscPort",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            const int port = args.size() > 0 ? (int) args[0] : KromosynthAudioProcessor::kOscDefaultPort;
+            const bool ok = proc_.setOscPort (port);
+            const auto st = proc_.oscState();
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("ok", ok);
+            o->setProperty ("port", st.port);
+            o->setProperty ("listening", st.listening);
+            o->setProperty ("error", st.error);
+            done (juce::var (o));
+        })
+        .withNativeFunction ("getOscState",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            const auto st = proc_.oscState();
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("receiverExists", st.receiverExists);
+            o->setProperty ("listening", st.listening);
+            o->setProperty ("port", st.port);
+            o->setProperty ("error", st.error);
+            done (juce::var (o));
+        })
+        .withNativeFunction ("getLocalIpAddresses",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            juce::Array<juce::var> out;
+            for (const auto& a : KromosynthAudioProcessor::localIpAddresses())
+                out.add (a);
+            done (juce::var (out));
+        })
         .withNativeFunction ("removeInstrument",
                              [this] (const juce::Array<juce::var>& args,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)

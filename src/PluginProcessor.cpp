@@ -8,6 +8,8 @@
 // left in the App Group into a Documents folder the appex cannot reach.
 #include "RenderOutbox.h"
 
+#include <algorithm>
+
 #ifndef KROMOSYNTH_MEASURE_EPOCH
  #define KROMOSYNTH_MEASURE_EPOCH 1
 #endif
@@ -379,6 +381,23 @@ KromosynthAudioProcessor::KromosynthAudioProcessor()
     // into one line.
     startTimer (500);
 
+    // ── OSC receiver (synthis-cda.2) ─────────────────────────────────────
+    //
+    // STANDALONE ONLY, and the wrapper type is the whole gate: in AU, VST3
+    // and AUv3 no receiver is created here and no UDP port is ever opened.
+    // The wrapper sets wrapperType (AudioProcessor::setTypeOfNextNewPlugin)
+    // before this constructor runs, so the check below is the real one, not
+    // a compile-time guess.
+    //
+    // The port comes from plugin state when a session restores it (see
+    // setStateInformation); until then it is the default.
+    if (wrapperType == wrapperType_Standalone)
+    {
+        oscReceiver_ = std::make_unique<juce::OSCReceiver> ("Synth.is OSC");
+        oscReceiver_->addListener (this);
+        setOscPort (oscPort_.load (std::memory_order_relaxed));
+    }
+
     // A freshly acquired instrument becomes the ACTIVE one.
     //
     // The point of pressing "Add to plugin" from the site is to play the thing.
@@ -519,6 +538,14 @@ KromosynthAudioProcessor::~KromosynthAudioProcessor()
     // MIDI atomics. Stopping here closes the window rather than relying on
     // base-class destruction order.
     stopTimer();
+
+    // The OSC receiver (synthis-cda.2) stops before its listener goes away.
+    if (oscReceiver_ != nullptr)
+    {
+        oscReceiver_->removeListener (this);
+        oscReceiver_->disconnect();
+        oscReceiver_.reset();
+    }
 
     // Unconditional, and before the engine-specific stats: this is the line
     // that says whether the OS ever pulled audio, which is a different question
@@ -668,11 +695,16 @@ static const juce::Identifier kStateCcRangeMin ("rangeMin");
 static const juce::Identifier kStateCcRangeMax ("rangeMax");
 static const juce::Identifier kStateCcInvert ("invert");
 static const juce::Identifier kStateCcSmoothing ("smoothing");
+static const juce::Identifier kStateOscPort ("oscPort");
 
 void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
     juce::ValueTree tree (kStateTag);
     tree.setProperty (kStateVersion, 1, nullptr);
+
+    // The OSC port (synthis-cda.2). Saved always; absent in a session saved
+    // before the receiver existed means the default.
+    tree.setProperty (kStateOscPort, oscPort_.load (std::memory_order_relaxed), nullptr);
 
     // current_.id is set on a successful load only, so a failed load does not
     // get saved and then fail again on every reopen.
@@ -801,14 +833,31 @@ void KromosynthAudioProcessor::setStateInformation (const void* data, int size)
             const int t = (int) e.getProperty (kStateCcTarget);
             if (t < 0 || t >= kNumCcTargets) continue;
 
-            setCcMapping (t,
-                          (int) e.getProperty (kStateCcNumber),
-                          (int) e.getProperty (kStateCcChannel),
-                          (float) (double) e.getProperty (kStateCcRangeMin),
-                          (float) (double) e.getProperty (kStateCcRangeMax),
-                          (bool) e.getProperty (kStateCcInvert),
-                          (float) (double) e.getProperty (kStateCcSmoothing));
+            // The source string says which kind of mapping it is: "osc:..."
+            // restores as an OSC-address mapping, anything else as a CC.
+            const auto source = e.getProperty (kStateCcSource).toString();
+            if (source.startsWith ("osc:"))
+                setOscMapping (t,
+                               source.fromFirstOccurrenceOf ("osc:", false, false),
+                               (float) (double) e.getProperty (kStateCcRangeMin),
+                               (float) (double) e.getProperty (kStateCcRangeMax),
+                               (bool) e.getProperty (kStateCcInvert),
+                               (float) (double) e.getProperty (kStateCcSmoothing));
+            else
+                setCcMapping (t,
+                              (int) e.getProperty (kStateCcNumber),
+                              (int) e.getProperty (kStateCcChannel),
+                              (float) (double) e.getProperty (kStateCcRangeMin),
+                              (float) (double) e.getProperty (kStateCcRangeMax),
+                              (bool) e.getProperty (kStateCcInvert),
+                              (float) (double) e.getProperty (kStateCcSmoothing));
         }
+
+    // The OSC port (synthis-cda.2). Absent in a session saved before the
+    // receiver existed, which means the default. Reconnects when the receiver
+    // exists (Standalone); otherwise just stores the value.
+    if (tree.hasProperty (kStateOscPort))
+        setOscPort ((int) tree.getProperty (kStateOscPort));
 
     logEvent ("state_restored instrument=\"" + id + "\" version="
               + tree.getProperty (kStateVersion).toString());
@@ -1914,8 +1963,31 @@ void KromosynthAudioProcessor::setCcMapping (int target, int ccNumber, int chann
     m.rangeMax.store (juce::jlimit (0.0f, 1.0f, rangeMax), std::memory_order_relaxed);
     m.invert.store (invert, std::memory_order_relaxed);
     m.smoothing.store (juce::jlimit (0.0f, 1.0f, smoothing), std::memory_order_relaxed);
+    m.oscAddress.clear();   // a CC mapping carries no OSC address
     m.sourceKind.store (ccNumber >= 0 ? 1 : 0, std::memory_order_relaxed);
     m.mapped.store (ccNumber >= 0, std::memory_order_release);
+
+    seedCcFilterState (target);
+}
+
+void KromosynthAudioProcessor::setOscMapping (int target, const juce::String& address,
+                                              float rangeMin, float rangeMax, bool invert, float smoothing)
+{
+    // Message thread. The same table as a CC mapping, with sourceKind 2 and
+    // the address in place of cc/channel. The audio thread never reads the
+    // address: OSC matching happens in the OSC callback, on this thread.
+    if (target < 0 || target >= kNumCcTargets) return;
+
+    auto& m = ccMappings_[(size_t) target];
+    m.ccNumber.store (-1, std::memory_order_relaxed);
+    m.channel.store (-1, std::memory_order_relaxed);
+    m.rangeMin.store (juce::jlimit (0.0f, 1.0f, rangeMin), std::memory_order_relaxed);
+    m.rangeMax.store (juce::jlimit (0.0f, 1.0f, rangeMax), std::memory_order_relaxed);
+    m.invert.store (invert, std::memory_order_relaxed);
+    m.smoothing.store (juce::jlimit (0.0f, 1.0f, smoothing), std::memory_order_relaxed);
+    m.oscAddress = address;
+    m.sourceKind.store (2, std::memory_order_relaxed);
+    m.mapped.store (true, std::memory_order_release);
 
     seedCcFilterState (target);
 }
@@ -1941,6 +2013,8 @@ KromosynthAudioProcessor::CcMappingInfo KromosynthAudioProcessor::ccMapping (int
 
     if (info.mapped && m.sourceKind.load (std::memory_order_relaxed) == 1)
         info.source = "cc:" + juce::String (info.ccNumber) + ":" + juce::String (info.channel);
+    else if (info.mapped && m.sourceKind.load (std::memory_order_relaxed) == 2)
+        info.source = "osc:" + m.oscAddress;
 
     return info;
 }
@@ -1964,13 +2038,36 @@ std::vector<KromosynthAudioProcessor::CcMonitorEntry> KromosynthAudioProcessor::
             : "note:" + juce::String (s.number) + ":" + juce::String (s.channel);
         out.push_back (std::move (e));
     }
+
+    // OSC messages (synthis-cda.2) ride the same monitor: address, first
+    // argument, time. Merged by arrival time when any are present; with none,
+    // the MIDI-only order is exactly what it was before.
+    const auto oscN = oscMonitorCount_.load (std::memory_order_acquire);
+    if (oscN > 0)
+    {
+        const auto count = (int) juce::jmin<std::uint64_t> (oscN, (std::uint64_t) kOscMonitorSize);
+        for (int i = 0; i < count; ++i)
+        {
+            const auto& s = oscMonitor_[(size_t) ((oscN - 1 - (std::uint64_t) i) % kOscMonitorSize)];
+            CcMonitorEntry e;
+            e.time = s.time;
+            e.source = "osc:" + juce::String (s.address);
+            e.arg = s.arg;
+            e.hasFloat = s.hasArg;
+            out.push_back (std::move (e));
+        }
+        std::sort (out.begin(), out.end(),
+                   [] (const CcMonitorEntry& a, const CcMonitorEntry& b) { return a.time > b.time; });
+        if (out.size() > (size_t) kCcMonitorSize)
+            out.resize ((size_t) kCcMonitorSize);
+    }
     return out;
 }
 
-float KromosynthAudioProcessor::ccMappedValue (int target, int sevenBitValue) const noexcept
+float KromosynthAudioProcessor::ccMappedValue01 (int target, float x01) const noexcept
 {
     const auto& m = ccMappings_[(size_t) target];
-    const float x = juce::jlimit (0.0f, 1.0f, (float) sevenBitValue / 127.0f);
+    const float x = juce::jlimit (0.0f, 1.0f, x01);
 
     float lo = m.rangeMin.load (std::memory_order_relaxed);
     float hi = m.rangeMax.load (std::memory_order_relaxed);
@@ -1981,6 +2078,11 @@ float KromosynthAudioProcessor::ccMappedValue (int target, int sevenBitValue) co
         y = 1.0f - y;
 
     return juce::jlimit (0.0f, 1.0f, y);
+}
+
+float KromosynthAudioProcessor::ccMappedValue (int target, int sevenBitValue) const noexcept
+{
+    return ccMappedValue01 (target, (float) sevenBitValue / 127.0f);
 }
 
 void KromosynthAudioProcessor::recordCcMonitor (const juce::MidiMessage& m) noexcept
@@ -2127,6 +2229,236 @@ void KromosynthAudioProcessor::applyCcMappings() noexcept
                 p->setValueNotifyingHost (y);
         }
     }
+
+    // OSC values for targets with NO mapping (synthis-cda.2): straight, no
+    // range/invert and no smoothing. The message thread sets a pending bit
+    // AFTER storing the raw value, so the acquire on the exchange below sees
+    // both; one exchange per block when idle.
+    const std::uint32_t pending = oscPending_.exchange (0, std::memory_order_acquire);
+    for (int t = 0; t < kNumCcTargets; ++t)
+    {
+        if ((pending & (1u << t)) == 0) continue;
+
+        const float raw = ccLastRaw_[(size_t) t].load (std::memory_order_relaxed);
+        if (raw != ccApplied_[(size_t) t].load (std::memory_order_relaxed))
+        {
+            ccApplied_[(size_t) t].store (raw, std::memory_order_relaxed);
+            if (auto* p = ccTargetParam (t))
+                p->setValueNotifyingHost (raw);
+        }
+    }
+}
+
+// ── OSC receiver (synthis-cda.2) ────────────────────────────────────────────
+//
+// The receiver exists only in the Standalone wrapper (created in the
+// constructor under `wrapperType == wrapperType_Standalone`). Its callbacks
+// run on the MESSAGE thread; nothing here takes a lock the audio thread could
+// wait on. Values are handed over through ccLastRaw_ / oscPending_ and the
+// block-rate smoothing in applyCcMappings applies them.
+
+bool KromosynthAudioProcessor::setOscPort (int port)
+{
+    // Message thread. The port is stored even when there is no receiver (not
+    // Standalone), so a session saved in the app restores into the app.
+    port = juce::jlimit (1, 65535, port);
+    oscPort_.store (port, std::memory_order_release);
+
+    if (oscReceiver_ == nullptr)
+    {
+        // Not Standalone: no receiver, nothing to bind, nothing to report.
+        oscListening_.store (false, std::memory_order_release);
+        oscError_.clear();
+        return false;
+    }
+
+    oscReceiver_->disconnect();
+    oscError_.clear();
+
+    if (oscReceiver_->connect (port))
+    {
+        oscListening_.store (true, std::memory_order_release);
+        logEvent ("osc_listening port=" + juce::String (port));
+        return true;
+    }
+
+    // A bind failure (the port is in use) is REPORTED, not swallowed: it
+    // lands in oscState().error for the shell's native function and in the log.
+    oscListening_.store (false, std::memory_order_release);
+    oscError_ = "could not bind UDP port " + juce::String (port) + " (already in use?)";
+    logEvent ("osc_bind_failed port=" + juce::String (port) + " error=\"" + oscError_ + "\"");
+    return false;
+}
+
+KromosynthAudioProcessor::OscState KromosynthAudioProcessor::oscState() const
+{
+    OscState s;
+    s.receiverExists = oscReceiver_ != nullptr;
+    s.listening = oscListening_.load (std::memory_order_acquire);
+    s.port = oscPort_.load (std::memory_order_acquire);
+    s.error = oscError_;
+    return s;
+}
+
+juce::StringArray KromosynthAudioProcessor::localIpAddresses()
+{
+    juce::StringArray out;
+    for (const auto& a : juce::IPAddress::getAllAddresses())
+        out.add (a.toString());
+    return out;
+}
+
+int KromosynthAudioProcessor::oscFixedTarget (const juce::String& address) const
+{
+    // /synthis/slot/<n>, n = 1..16 — by slot, so a genome that renames its
+    // sliders keeps working.
+    static const juce::String kSlotPrefix ("/synthis/slot/");
+    if (address.startsWith (kSlotPrefix))
+    {
+        const auto rest = address.substring (kSlotPrefix.length());
+        const int n = rest.getIntValue();
+        if (rest == juce::String (n) && n >= 1 && n <= kNumMacros)
+            return n - 1;
+        return -1;
+    }
+
+    if (address == "/synthis/attack")  return kNumMacros;
+    if (address == "/synthis/decay")   return kNumMacros + 1;
+    if (address == "/synthis/sustain") return kNumMacros + 2;
+    if (address == "/synthis/release") return kNumMacros + 3;
+    if (address == "/synthis/output")  return kNumMacros + 4;
+
+    // /synthis/<slider name>, as the genome declares it, case-sensitive.
+    static const juce::String kPrefix ("/synthis/");
+    if (address.startsWith (kPrefix))
+    {
+        const auto name = address.substring (kPrefix.length());
+        if (name.isNotEmpty() && ! name.containsChar ('/'))
+            for (int i = 0; i < kNumMacros; ++i)
+                if (macroSlots_[(size_t) i].label == name)
+                    return i;
+    }
+
+    return -1;
+}
+
+void KromosynthAudioProcessor::applyOscValue (int target, float x01) noexcept
+{
+    // Message thread. The value goes through the SAME range/invert path as a
+    // mapped CC when the target has a mapping, else straight; either way it
+    // lands in ccLastRaw_ and applyCcMappings() on the audio thread does the
+    // block-rate smoothing and the parameter write.
+    if (target < 0 || target >= kNumCcTargets) return;
+
+    const auto& m = ccMappings_[(size_t) target];
+    const bool mapped = m.mapped.load (std::memory_order_relaxed);
+    const float v = mapped ? ccMappedValue01 (target, x01)
+                           : juce::jlimit (0.0f, 1.0f, x01);
+    ccLastRaw_[(size_t) target].store (v, std::memory_order_relaxed);
+
+    // A mapped target is already visited by applyCcMappings every block; an
+    // unmapped one needs the pending bit so the audio thread picks the value
+    // up. The release on the fetch_or orders the raw store above before the
+    // bit; the audio thread's acquire exchange reads them back in order.
+    if (! mapped)
+        oscPending_.fetch_or (1u << target, std::memory_order_release);
+}
+
+void KromosynthAudioProcessor::recordOscMonitor (const juce::String& address, float arg,
+                                                 bool hasArg) noexcept
+{
+    // Message thread (the OSC callback), so a fixed-size slot: no allocation,
+    // no lock. Merged into ccMonitor()'s view at read time.
+    const auto idx = oscMonitorCount_.load (std::memory_order_relaxed) % kOscMonitorSize;
+    auto& s = oscMonitor_[(size_t) idx];
+    s.time = juce::Time::getMillisecondCounter();
+    s.arg = arg;
+    s.hasArg = hasArg;
+    const auto n = juce::jmin ((size_t) sizeof (s.address) - 1, (size_t) address.length());
+    std::memcpy (s.address, address.toRawUTF8(), n);
+    s.address[n] = '\0';
+
+    // Published AFTER the slot is filled, so a reader that acquires the count
+    // sees the whole entry.
+    oscMonitorCount_.fetch_add (1, std::memory_order_release);
+}
+
+void KromosynthAudioProcessor::oscMessageReceived (const juce::OSCMessage& message)
+{
+    // MESSAGE thread (OSCReceiver::MessageLoopCallback). Nothing here may
+    // touch anything the audio thread locks: values go through the ccLastRaw_
+    // / oscPending_ atomics and applyCcMappings() applies them at block rate.
+    const auto address = message.getAddressPattern().toString();
+
+    // First argument: a float 0..1 (an int is accepted too), clamped. With
+    // several arguments the first is used.
+    float x = 0.0f;
+    bool hasArg = false;
+    if (message.size() > 0)
+    {
+        const auto& a = message[0];
+        if (a.isFloat32())    { x = a.getFloat32();    hasArg = true; }
+        else if (a.isInt32()) { x = (float) a.getInt32(); hasArg = true; }
+    }
+
+    // Every incoming OSC message feeds the input monitor: address, first
+    // argument, time.
+    recordOscMonitor (address, x, hasArg);
+
+    if (! hasArg)
+        return;
+
+    x = juce::jlimit (0.0f, 1.0f, x);
+
+    // LEARN, shared with the MIDI task: the FIRST message that arrives while
+    // a learn target is armed is assigned to that target as an OSC-address
+    // mapping in the same table, then learn clears.
+    const int learn = ccLearnTarget_.load (std::memory_order_acquire);
+    if (learn >= 0)
+    {
+        setOscMapping (learn, address, 0.0f, 1.0f, false, 0.0f);
+
+        // Seed the filter from the parameter's current value, then move only
+        // the raw target -- exactly the CC learn path, so applyCcMappings()
+        // in the next block sees the new value as a CHANGE and writes it.
+        if (auto* p = ccTargetParam (learn))
+        {
+            const float v = p->convertTo0to1 (p->get());
+            ccSmoothed_[(size_t) learn].store (v, std::memory_order_relaxed);
+            ccApplied_[(size_t) learn].store (v, std::memory_order_relaxed);
+        }
+        ccLastRaw_[(size_t) learn].store (ccMappedValue01 (learn, x),
+                                          std::memory_order_relaxed);
+
+        int expected = learn;
+        ccLearnTarget_.compare_exchange_strong (expected, -1,
+                                                 std::memory_order_acq_rel,
+                                                 std::memory_order_acquire);
+        return;
+    }
+
+    // Fixed addresses first (they work without any learning), then any
+    // learned OSC-address mapping.
+    int target = oscFixedTarget (address);
+    if (target < 0)
+    {
+        for (int t = 0; t < kNumCcTargets; ++t)
+        {
+            const auto& m = ccMappings_[(size_t) t];
+            if (m.mapped.load (std::memory_order_relaxed)
+                && m.sourceKind.load (std::memory_order_relaxed) == 2
+                && m.oscAddress == address)
+            {
+                target = t;
+                break;
+            }
+        }
+    }
+
+    if (target < 0)
+        return;
+
+    applyOscValue (target, x);
 }
 
 void KromosynthAudioProcessor::clearMacros()
