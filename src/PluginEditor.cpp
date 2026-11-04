@@ -892,10 +892,22 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             // args: [down, key, repeat] for a key event, or ["blur"] when the
             // window lost focus and every held key must be released.
             if (args.size() > 0 && args[0].isString() && args[0].toString() == "blur")
+            {
                 releaseHeldKeys();
+            }
             else if (args.size() >= 2)
+            {
+                if (keyLogBudget_ > 0)
+                {
+                    --keyLogBudget_;
+                    proc_.logEvent ("key_event route=page down=" + juce::String ((bool) args[0] ? 1 : 0)
+                                    + " key=" + args[1].toString()
+                                    + " repeat=" + juce::String (args.size() > 2 && (bool) args[2] ? 1 : 0));
+                }
+
                 handleKeyEvent ((bool) args[0], args[1].toString(),
                                 args.size() > 2 && (bool) args[2]);
+            }
 
             done (juce::var (true));
         });
@@ -1216,8 +1228,40 @@ void KromosynthAudioProcessorEditor::setKeyOctave (int octave)
 void KromosynthAudioProcessorEditor::updateOctaveLabel()
 {
     if (octaveLabel_ != nullptr)
-        octaveLabel_->setText ("Octave " + juce::String (keyOctave_),
+        octaveLabel_->setText ("Octave " + juce::String (keyOctave_) + " (Z/X)",
                                juce::NotificationType::dontSendNotification);
+}
+
+bool KromosynthAudioProcessorEditor::keyPressed (const juce::KeyPress& key)
+{
+    if (proc_.wrapperType != juce::AudioProcessor::wrapperType_Standalone || keyboard_ == nullptr)
+        return false;
+
+    // Command and Control combinations belong to the OS and the window.
+    if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown())
+        return false;
+
+    const auto c = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
+    if (c != 'z' && c != 'x' && c != 'c' && c != 'v')
+        return false;
+
+    if (keyLogBudget_ > 0)
+    {
+        --keyLogBudget_;
+        proc_.logEvent ("key_event route=native key=" + juce::String::charToString (c));
+    }
+
+    // JUCE reports auto-repeat as fresh presses. Without the guard, holding Z
+    // would race the octave to its limit.
+    const auto now = juce::Time::getMillisecondCounter();
+    if (now - lastOctaveKeyMs_ >= 180)
+    {
+        lastOctaveKeyMs_ = now;
+        handleKeyEvent (true, juce::String::charToString (c), false);
+    }
+
+    // Consumed either way, so the OS does not beep.
+    return true;
 }
 
 void KromosynthAudioProcessorEditor::releaseHeldKeys()
@@ -1325,6 +1369,22 @@ void KromosynthAudioProcessorEditor::resized()
             octaveLabel_->setBounds (strip.removeFromRight (kOctaveLabelWidth));
 
         keyboard_->setBounds (strip);
+
+        // Give the on-screen keyboard keyboard focus once, after the window has
+        // had time to appear: with nothing focused a key reaches only the window
+        // and nobody consumes it (macOS beeps). Focused, the component plays the
+        // note keys itself and Z/X bubble up to keyPressed below. Clicking the
+        // page later hands focus to the web view, whose forwarding takes over.
+        if (! keyboardFocusRequested_ && proc_.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+        {
+            keyboardFocusRequested_ = true;
+            keyboard_->setWantsKeyboardFocus (true);
+            juce::Timer::callAfterDelay (400, [safe = juce::Component::SafePointer<juce::Component> (keyboard_.get())]
+            {
+                if (safe != nullptr)
+                    safe->grabKeyboardFocus();
+            });
+        }
 
         // About two octaves visible at whatever width the keyboard has — 28
         // white keys is two octaves — floored so a key never gets narrower
