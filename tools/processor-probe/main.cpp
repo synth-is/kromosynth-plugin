@@ -33,6 +33,53 @@ constexpr double kSeconds = 14.0;
 
 struct Event { double at; bool on; int note; int velocity; };
 
+// One timed command of KROMOSYNTH_PROBE_CC: "<seconds>=<verb> <args...>".
+struct CcCmd { double at; juce::String verb; juce::StringArray args; };
+
+// KROMOSYNTH_PROBE_CC="0.5=learn 1, 1.0=cc 21 127, 2.0=show" — comma-separated
+// timed commands run during the render, in the style of KROMOSYNTH_PROBE_MACRO:
+//   learn <target>    arm MIDI learn (1..16 = macro slot, or attack|decay|
+//                     sustain|release|output)
+//   unlearn           disarm learn
+//   cc <num> <val>    send a MIDI CC on channel 1 at <seconds>
+//   map <target> <cc> <ch> <min> <max> <inv> <smooth>   set a mapping directly
+//   clear <target>    remove a mapping
+//   show              print every target's value at <seconds>
+// Target values are printed after every block that ran a command, and the
+// mapping table, the input-monitor ring and a state round trip at the end.
+// Nothing here prints when the variable is unset, so the default output is
+// unchanged.
+std::vector<CcCmd> parseCcScript (const juce::String& spec)
+{
+    std::vector<CcCmd> out;
+    for (const auto& item : juce::StringArray::fromTokens (spec, ",", ""))
+    {
+        const auto trimmed = item.trim();
+        if (trimmed.isEmpty()) continue;
+        const auto at = trimmed.upToFirstOccurrenceOf ("=", false, false).getDoubleValue();
+        const auto rest = trimmed.fromFirstOccurrenceOf ("=", false, false).trim();
+        auto parts = juce::StringArray::fromTokens (rest, " ", "");
+        if (parts.isEmpty()) continue;
+        CcCmd c;
+        c.at = at;
+        c.verb = parts[0].toLowerCase();
+        parts.remove (0);
+        c.args = parts;
+        out.push_back (std::move (c));
+    }
+    std::sort (out.begin(), out.end(), [] (const CcCmd& a, const CcCmd& b) { return a.at < b.at; });
+    return out;
+}
+
+juce::String ccTargetsLine (KromosynthAudioProcessor& p, double t)
+{
+    juce::String line = "cc_targets t=" + juce::String (t, 3);
+    for (int i = 0; i < KromosynthAudioProcessor::kNumCcTargets; ++i)
+        line += " " + KromosynthAudioProcessor::ccTargetName (i) + "="
+                + juce::String (p.ccTargetValue (i), 6);
+    return line;
+}
+
 // A fixed script. Every number here is part of what two builds are compared on,
 // so changing any of them invalidates a recorded reference.
 std::vector<Event> script()
@@ -208,6 +255,12 @@ int main (int argc, char** argv)
                       : script();
     std::sort (events.begin(), events.end(), [] (const Event& a, const Event& b) { return a.at < b.at; });
 
+    // KROMOSYNTH_PROBE_CC: timed CC-mapping commands for the render below.
+    const auto ccScript = parseCcScript (
+        juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_PROBE_CC", {}));
+    const bool ccProbe = ! ccScript.empty();
+    size_t ccNext = 0;
+
     const int totalBlocks = (int) std::ceil (kSeconds * kRate / kBlock);
     juce::AudioBuffer<float> out (2, totalBlocks * kBlock);
     out.clear();
@@ -229,6 +282,56 @@ int main (int argc, char** argv)
             const int offset = juce::jmax (0, (int) ((juce::int64) std::llround (ev.at * kRate) - start));
             midi.addEvent (ev.on ? juce::MidiMessage::noteOn (1, ev.note, (juce::uint8) ev.velocity)
                                  : juce::MidiMessage::noteOff (1, ev.note), offset);
+        }
+
+        // KROMOSYNTH_PROBE_CC commands whose time falls in this block, run
+        // before processBlock so the block hears them.
+        bool ccPrintThisBlock = false;
+        while (ccNext < ccScript.size()
+               && (juce::int64) std::llround (ccScript[ccNext].at * kRate) < start + kBlock)
+        {
+            const auto& c = ccScript[ccNext++];
+            const int offset = juce::jmax (0, (int) ((juce::int64) std::llround (c.at * kRate) - start));
+
+            if (c.verb == "learn" || c.verb == "unlearn")
+            {
+                const int t = c.verb == "unlearn" || c.args.isEmpty()
+                                ? -1 : KromosynthAudioProcessor::ccTargetFromName (c.args[0]);
+                processor->setCcLearnTarget (t);
+                std::printf ("cc_cmd t=%.3f %s target=%d name=%s\n", c.at, c.verb.toRawUTF8(), t,
+                             t >= 0 ? KromosynthAudioProcessor::ccTargetName (t).toRawUTF8() : "-");
+            }
+            else if (c.verb == "cc" && c.args.size() >= 2)
+            {
+                const int num = c.args[0].getIntValue();
+                const int val = c.args[1].getIntValue();
+                midi.addEvent (juce::MidiMessage::controllerEvent (1, num, val), offset);
+                std::printf ("cc_cmd t=%.3f cc %d=%d\n", c.at, num, val);
+                ccPrintThisBlock = true;
+            }
+            else if (c.verb == "map" && c.args.size() >= 7)
+            {
+                const int t = KromosynthAudioProcessor::ccTargetFromName (c.args[0]);
+                processor->setCcMapping (t, c.args[1].getIntValue(), c.args[2].getIntValue(),
+                                         (float) c.args[3].getDoubleValue(),
+                                         (float) c.args[4].getDoubleValue(),
+                                         c.args[5].getIntValue() != 0,
+                                         (float) c.args[6].getDoubleValue());
+                const auto m = processor->ccMapping (t);
+                std::printf ("cc_cmd t=%.3f map target=%d -> mapped=%d source=%s min=%g max=%g inv=%d smooth=%g\n",
+                             c.at, t, m.mapped ? 1 : 0, m.source.toRawUTF8(),
+                             (double) m.rangeMin, (double) m.rangeMax, m.invert ? 1 : 0, (double) m.smoothing);
+            }
+            else if (c.verb == "clear" && ! c.args.isEmpty())
+            {
+                const int t = KromosynthAudioProcessor::ccTargetFromName (c.args[0]);
+                processor->clearCcMapping (t);
+                std::printf ("cc_cmd t=%.3f clear target=%d\n", c.at, t);
+            }
+            else if (c.verb == "show")
+            {
+                ccPrintThisBlock = true;
+            }
         }
 
         // The parameter path: a host automation write, once, at 5 s.
@@ -253,7 +356,69 @@ int main (int argc, char** argv)
         for (int c = 0; c < 2; ++c)
             out.copyFrom (c, b * kBlock, block, c, 0, kBlock);
 
+        if (ccPrintThisBlock)
+        {
+            std::printf ("%s\n", ccTargetsLine (*processor, (double) start / kRate).toRawUTF8());
+
+            // The macro targets in the slider's own units, beside the 0..1 the
+            // host sees, so "reaches the slider's maximum" is checkable.
+            juce::String sliders = "cc_sliders t=" + juce::String ((double) start / kRate, 3);
+            for (int i = 0; i < KromosynthAudioProcessor::kNumMacros; ++i)
+            {
+                const auto b = processor->macroBinding (i);
+                if (b.label.isEmpty()) continue;
+                sliders += " macro" + juce::String (i + 1) + "=" + juce::String (b.value, 6)
+                           + "/" + juce::String (b.maximum, 6);
+            }
+            std::printf ("%s\n", sliders.toRawUTF8());
+        }
+
         maxActive = juce::jmax (maxActive, processor->engineState().activeVoices);
+    }
+
+    // KROMOSYNTH_PROBE_CC: what the mapping core ended up with — final target
+    // values, the mapping table, the input-monitor ring, macro 1 in the
+    // slider's own units, and a state round trip into a second processor.
+    if (ccProbe)
+    {
+        std::printf ("%s\n", ccTargetsLine (*processor, kSeconds).toRawUTF8());
+
+        for (int t = 0; t < KromosynthAudioProcessor::kNumCcTargets; ++t)
+        {
+            const auto m = processor->ccMapping (t);
+            if (! m.mapped) continue;
+            std::printf ("cc_mapping target=%d name=%s source=%s cc=%d channel=%d min=%g max=%g inv=%d smooth=%g\n",
+                         t, KromosynthAudioProcessor::ccTargetName (t).toRawUTF8(), m.source.toRawUTF8(),
+                         m.ccNumber, m.channel, (double) m.rangeMin, (double) m.rangeMax,
+                         m.invert ? 1 : 0, (double) m.smoothing);
+        }
+
+        const auto monitor = processor->ccMonitor();
+        for (size_t i = 0; i < monitor.size(); ++i)
+            std::printf ("cc_monitor %d source=%s number=%d value=%d time=%llu\n", (int) i,
+                         monitor[i].source.toRawUTF8(), monitor[i].number, monitor[i].value,
+                         (unsigned long long) monitor[i].time);
+
+        const auto b = processor->macroBinding (0);
+        if (b.label.isNotEmpty())
+            std::printf ("cc_macro1_slider label=%s value=%g min=%g max=%g\n",
+                         b.label.toRawUTF8(), (double) b.value, (double) b.minimum, (double) b.maximum);
+
+        juce::MemoryBlock state;
+        processor->getStateInformation (state);
+        auto second = std::make_unique<KromosynthAudioProcessor>();
+        second->setStateInformation (state.getData(), (int) state.getSize());
+        std::printf ("roundtrip_cc_state_bytes=%d\n", (int) state.getSize());
+        for (int t = 0; t < KromosynthAudioProcessor::kNumCcTargets; ++t)
+        {
+            const auto m = second->ccMapping (t);
+            if (! m.mapped) continue;
+            std::printf ("roundtrip_cc_mapping target=%d name=%s source=%s cc=%d channel=%d min=%g max=%g inv=%d smooth=%g\n",
+                         t, KromosynthAudioProcessor::ccTargetName (t).toRawUTF8(), m.source.toRawUTF8(),
+                         m.ccNumber, m.channel, (double) m.rangeMin, (double) m.rangeMax,
+                         m.invert ? 1 : 0, (double) m.smoothing);
+        }
+        second.reset();
     }
 
     const auto st = processor->engineState();

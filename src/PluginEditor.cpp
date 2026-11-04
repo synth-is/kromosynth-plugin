@@ -343,6 +343,106 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
             o->setProperty ("blocks", (juce::int64) proc_.blocksSeen());
             done (juce::var (o));
         })
+        // ── MIDI CC mapping (synthis-cda.1) ─────────────────────────────────
+        // The mapping table, by SLOT (macro1..macro16, attack, decay, sustain,
+        // release, output), plus the input-monitor ring and learn, for the
+        // shell's mapping UI. All message-thread calls into the processor.
+        .withNativeFunction ("getCcMappings",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            juce::Array<juce::var> out;
+            for (int t = 0; t < KromosynthAudioProcessor::kNumCcTargets; ++t)
+            {
+                const auto m = proc_.ccMapping (t);
+                auto* o = new juce::DynamicObject();
+                o->setProperty ("target", t);
+                o->setProperty ("name", KromosynthAudioProcessor::ccTargetName (t));
+                o->setProperty ("mapped", m.mapped);
+                o->setProperty ("source", m.source);
+                o->setProperty ("cc", m.ccNumber);
+                o->setProperty ("channel", m.channel);
+                o->setProperty ("rangeMin", (double) m.rangeMin);
+                o->setProperty ("rangeMax", (double) m.rangeMax);
+                o->setProperty ("invert", m.invert);
+                o->setProperty ("smoothing", (double) m.smoothing);
+                o->setProperty ("value", (double) proc_.ccTargetValue (t));
+                out.add (juce::var (o));
+            }
+            done (juce::var (out));
+        })
+        .withNativeFunction ("getCcMonitor",
+                             [this] (const juce::Array<juce::var>&,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            juce::Array<juce::var> out;
+            for (const auto& e : proc_.ccMonitor())
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty ("source", e.source);
+                o->setProperty ("number", e.number);
+                o->setProperty ("value", e.value);
+                o->setProperty ("time", (juce::int64) e.time);
+                out.add (juce::var (o));
+            }
+            done (juce::var (out));
+        })
+        .withNativeFunction ("setCcLearnTarget",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // args[0]: slot 1..16 or a name (attack|decay|sustain|release|output);
+            // absent or negative clears learn.
+            const int t = args.size() > 0
+                        ? KromosynthAudioProcessor::ccTargetFromName (args[0].toString())
+                        : -1;
+            proc_.setCcLearnTarget (t);
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("learnTarget", proc_.ccLearnTarget());
+            o->setProperty ("name", KromosynthAudioProcessor::ccTargetName (proc_.ccLearnTarget()));
+            done (juce::var (o));
+        })
+        .withNativeFunction ("clearCcMapping",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            const int t = args.size() > 0
+                        ? KromosynthAudioProcessor::ccTargetFromName (args[0].toString()) : -1;
+            if (t >= 0) proc_.clearCcMapping (t);
+            done (juce::var (t >= 0));
+        })
+        .withNativeFunction ("setCcMapping",
+                             [this] (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion done)
+        {
+            // args: target, cc, channel, rangeMin, rangeMax, invert, smoothing.
+            // cc < 0 clears the mapping.
+            const int t = args.size() > 0
+                        ? KromosynthAudioProcessor::ccTargetFromName (args[0].toString()) : -1;
+            if (t < 0) { done (juce::var()); return; }
+
+            const int   cc   = args.size() > 1 ? (int) args[1] : -1;
+            const int   ch   = args.size() > 2 ? (int) args[2] : 1;
+            const float mn   = args.size() > 3 ? (float) (double) args[3] : 0.0f;
+            const float mx   = args.size() > 4 ? (float) (double) args[4] : 1.0f;
+            const bool  inv  = args.size() > 5 && (bool) args[5];
+            const float sm   = args.size() > 6 ? (float) (double) args[6] : 0.0f;
+            proc_.setCcMapping (t, cc, ch, mn, mx, inv, sm);
+
+            const auto m = proc_.ccMapping (t);
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("target", t);
+            o->setProperty ("name", KromosynthAudioProcessor::ccTargetName (t));
+            o->setProperty ("mapped", m.mapped);
+            o->setProperty ("source", m.source);
+            o->setProperty ("cc", m.ccNumber);
+            o->setProperty ("channel", m.channel);
+            o->setProperty ("rangeMin", (double) m.rangeMin);
+            o->setProperty ("rangeMax", (double) m.rangeMax);
+            o->setProperty ("invert", m.invert);
+            o->setProperty ("smoothing", (double) m.smoothing);
+            done (juce::var (o));
+        })
         .withNativeFunction ("removeInstrument",
                              [this] (const juce::Array<juce::var>& args,
                                      juce::WebBrowserComponent::NativeFunctionCompletion done)
