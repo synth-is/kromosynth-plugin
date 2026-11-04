@@ -160,6 +160,54 @@ public:
     };
     MacroBinding macroBinding (int slot) const;
 
+    // ── MIDI CC mapping (synthis-cda.1) ─────────────────────────────────────
+    //
+    // One optional mapping per TARGET: the 16 macro slots BY SLOT INDEX
+    // (0..kNumMacros-1 — by slot, not by slider name, so a genome that renames
+    // its sliders keeps its mappings), then attack, decay, sustain, release and
+    // output. A mapping's source is a MIDI CC with channel, rendered as
+    // "cc:<number>:<channel>"; an OSC address as a string is a later addition,
+    // which is why the snapshot carries the source as a string.
+    static constexpr int kNumCcTargets = kNumMacros + 5;
+
+    /** Snapshot of one mapping, for the editor's native functions and the probe. */
+    struct CcMappingInfo
+    {
+        bool mapped = false;
+        juce::String source;                        // "cc:21:1"
+        int ccNumber = -1, channel = -1;
+        float rangeMin = 0.0f, rangeMax = 1.0f;     // 0..1 of the target
+        bool invert = false;
+        float smoothing = 0.0f;                     // 0..1, one-pole at block rate
+    };
+
+    /** One incoming message in the input-monitor ring buffer. */
+    struct CcMonitorEntry
+    {
+        juce::String source;                        // "cc:21:1" / "note:60:1"
+        int number = 0, value = 0;
+        std::uint64_t time = 0;                     // ms counter when it arrived
+    };
+
+    static juce::String ccTargetName (int target);      // "macro1".."macro16","attack",...
+    static int ccTargetFromName (const juce::String&);  // -1 when unknown
+
+    /** Arms (target >= 0) or clears (target < 0) MIDI learn. Message thread. */
+    void setCcLearnTarget (int target) noexcept;
+    int ccLearnTarget() const noexcept
+    { return ccLearnTarget_.load (std::memory_order_acquire); }
+
+    /** Message thread. ccNumber < 0 clears the mapping. */
+    void setCcMapping (int target, int ccNumber, int channel,
+                       float rangeMin, float rangeMax, bool invert, float smoothing);
+    void clearCcMapping (int target);
+
+    CcMappingInfo ccMapping (int target) const;
+    /** Newest first, at most 32. Message thread. */
+    std::vector<CcMonitorEntry> ccMonitor() const;
+    /** The target parameter's current normalised value (0..1). */
+    float ccTargetValue (int target) const;
+
     // Exposed so async callbacks can capture the File BY VALUE and still log
     // after this processor is gone. juce::File is a value type holding a path
     // string — appending to it touches no live object, which is exactly what
@@ -721,6 +769,58 @@ private:
     std::atomic<int> midiLastOffset_ { -1 };
     std::atomic<int> midiMaxPerBlock_ { 0 };
     std::uint64_t midiLoggedAt_ { 0 };
+
+    // ── MIDI CC mapping state (synthis-cda.1) ───────────────────────────────
+    //
+    // The table is a fixed array of atomics, so the audio thread reads it — and,
+    // on learn, writes it — with no lock and no allocation, and the message
+    // thread writes it from the editor's native functions and
+    // setStateInformation. A torn read across fields can only happen while the
+    // user is editing a mapping in the UI and lasts at most one block.
+    struct CcMapping
+    {
+        std::atomic<bool> mapped { false };
+        std::atomic<int> sourceKind { 0 };   // 1 = MIDI CC (an OSC string would be 2)
+        std::atomic<int> ccNumber { -1 };
+        std::atomic<int> channel { -1 };
+        std::atomic<float> rangeMin { 0.0f };
+        std::atomic<float> rangeMax { 1.0f };
+        std::atomic<bool> invert { false };
+        std::atomic<float> smoothing { 0.0f };
+    };
+    std::array<CcMapping, kNumCcTargets> ccMappings_ {};
+
+    // Lock-free single-slot learn hand-off: the message thread stores the
+    // target, the audio thread claims it with compare_exchange when the next CC
+    // arrives and stores -1, so a learn armed in between is not clobbered.
+    std::atomic<int> ccLearnTarget_ { -1 };
+
+    // Audio-thread filter state, one-pole at block rate. Seeded from the
+    // parameter's current value whenever a mapping is set, so a mapping that
+    // has not seen a CC yet does not yank its knob.
+    std::atomic<float> ccLastRaw_  [kNumCcTargets] {};
+    std::atomic<float> ccSmoothed_ [kNumCcTargets] {};
+    std::atomic<float> ccApplied_  [kNumCcTargets] {};
+
+    // Input-monitor ring buffer: the last 32 incoming messages. Single producer
+    // (audio thread), single consumer (message thread via ccMonitor()).
+    static constexpr int kCcMonitorSize = 32;
+    struct CcMonitorSlot { std::uint64_t time = 0; int kind = 0, number = 0, channel = 0, value = 0; };
+    CcMonitorSlot ccMonitor_ [kCcMonitorSize] {};
+    std::atomic<std::uint64_t> ccMonitorCount_ { 0 };
+
+    // Scratch for filtering consumed CCs out of the host's buffer. Reserved in
+    // prepareToPlay for a dense block (16 bytes per sample position); a block
+    // denser than that can still allocate, so the audio-thread path does not
+    // rely on the reservation.
+    juce::MidiBuffer ccFilteredMidi_;
+
+    juce::AudioParameterFloat* ccTargetParam (int target) const noexcept;
+    float ccMappedValue (int target, int sevenBitValue) const noexcept;
+    void seedCcFilterState (int target);
+    void recordCcMonitor (const juce::MidiMessage& m) noexcept;   // audio thread
+    void handleCcMessages (juce::MidiBuffer& midiMessages) noexcept; // audio thread
+    void applyCcMappings() noexcept;                              // audio thread
 
     void timerCallback() override;
 

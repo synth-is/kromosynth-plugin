@@ -658,6 +658,16 @@ static const juce::Identifier kStateMacro ("macro");
 static const juce::Identifier kStateMacroLabel ("label");
 static const juce::Identifier kStateMacroValue ("value");
 static const juce::Identifier kStateWclap ("wclapState");
+static const juce::Identifier kStateCcMappings ("ccMappings");
+static const juce::Identifier kStateCcMapping ("ccMapping");
+static const juce::Identifier kStateCcTarget ("target");
+static const juce::Identifier kStateCcSource ("source");
+static const juce::Identifier kStateCcNumber ("cc");
+static const juce::Identifier kStateCcChannel ("channel");
+static const juce::Identifier kStateCcRangeMin ("rangeMin");
+static const juce::Identifier kStateCcRangeMax ("rangeMax");
+static const juce::Identifier kStateCcInvert ("invert");
+static const juce::Identifier kStateCcSmoothing ("smoothing");
 
 void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
@@ -694,6 +704,33 @@ void KromosynthAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
 
         tree.appendChild (macros, nullptr);
         logMacroValues ("state_saved");
+    }
+
+    // The CC mapping table, by SLOT. Written only when at least one mapping
+    // exists; a session saved before mappings existed has no such child and
+    // restores as "no mappings".
+    {
+        juce::ValueTree cc (kStateCcMappings);
+
+        for (int t = 0; t < kNumCcTargets; ++t)
+        {
+            const auto m = ccMapping (t);
+            if (! m.mapped) continue;
+
+            juce::ValueTree e (kStateCcMapping);
+            e.setProperty (kStateCcTarget, t, nullptr);
+            e.setProperty (kStateCcSource, m.source, nullptr);
+            e.setProperty (kStateCcNumber, m.ccNumber, nullptr);
+            e.setProperty (kStateCcChannel, m.channel, nullptr);
+            e.setProperty (kStateCcRangeMin, (double) m.rangeMin, nullptr);
+            e.setProperty (kStateCcRangeMax, (double) m.rangeMax, nullptr);
+            e.setProperty (kStateCcInvert, m.invert, nullptr);
+            e.setProperty (kStateCcSmoothing, (double) m.smoothing, nullptr);
+            cc.appendChild (e, nullptr);
+        }
+
+        if (cc.getNumChildren() > 0)
+            tree.appendChild (cc, nullptr);
     }
    #if KROMOSYNTH_HAS_WCLAP
     // A hosted guest's own clap.state rides in the session beside the instrument id: the id names the
@@ -751,6 +788,27 @@ void KromosynthAudioProcessor::setStateInformation (const void* data, int size)
             pendingWclapState_ = *mb;
        #endif
     }
+
+    // The CC mapping table. Absent in a session saved before mappings existed,
+    // which means no mappings; present, it replaces whatever is here. Applied
+    // synchronously because the table is slot-keyed and needs no engine.
+    for (int t = 0; t < kNumCcTargets; ++t)
+        clearCcMapping (t);
+
+    if (const auto cc = tree.getChildWithName (kStateCcMappings); cc.isValid())
+        for (const auto& e : cc)
+        {
+            const int t = (int) e.getProperty (kStateCcTarget);
+            if (t < 0 || t >= kNumCcTargets) continue;
+
+            setCcMapping (t,
+                          (int) e.getProperty (kStateCcNumber),
+                          (int) e.getProperty (kStateCcChannel),
+                          (float) (double) e.getProperty (kStateCcRangeMin),
+                          (float) (double) e.getProperty (kStateCcRangeMax),
+                          (bool) e.getProperty (kStateCcInvert),
+                          (float) (double) e.getProperty (kStateCcSmoothing));
+        }
 
     logEvent ("state_restored instrument=\"" + id + "\" version="
               + tree.getProperty (kStateVersion).toString());
@@ -1613,6 +1671,16 @@ void KromosynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
         pendingTestNotes_.clear();
     }
 
+    // The CC-mapping scratch buffer (synthis-cda.1) is filled on the audio
+    // thread when a mapped CC is consumed, so its storage is reserved here,
+    // off the audio thread. ensureSize takes BYTES, not events: each event
+    // costs its data plus a 6-byte header, so this reserves 16 bytes per
+    // sample position of the host block — any channel-voice event (3 data
+    // bytes) with room for several events sharing a position. A block denser
+    // than that can still allocate; nothing on the audio thread depends on
+    // the reservation, it only keeps the common case allocation-free.
+    ccFilteredMidi_.ensureSize ((size_t) samplesPerBlock * 16 + 64);
+
    #if KROMOSYNTH_HAS_SAMPLER
     // ── The OFF-thread barrier ───────────────────────────────────────────
     //
@@ -1750,6 +1818,315 @@ KromosynthAudioProcessor::MacroBinding KromosynthAudioProcessor::macroBinding (i
     b.init = s.init;
     b.value = s.minimum + macros_[(size_t) slot]->get() * (s.maximum - s.minimum);
     return b;
+}
+
+// ── MIDI CC mapping (synthis-cda.1) ─────────────────────────────────────────
+//
+// Targets 0..15 are the macro slots BY SLOT, then attack/decay/sustain/release/
+// output. Each block, a mapped CC's 7-bit value is converted to 0..1, ranged
+// and inverted, one-pole smoothed at block rate, and written to the target
+// parameter with setValueNotifyingHost so the engine hears it (processBlock
+// reads every one of these parameters per block) and the host sees it. A
+// mapped CC is removed from the buffer the engines receive; unmapped CCs are
+// left alone (the Faust engine already reacts to CC64, the sampler's SFZ
+// declares its own CC modulations).
+
+juce::String KromosynthAudioProcessor::ccTargetName (int target)
+{
+    if (target < 0 || target >= kNumCcTargets) return {};
+    if (target < kNumMacros) return "macro" + juce::String (target + 1);
+    switch (target - kNumMacros)
+    {
+        case 0:  return "attack";
+        case 1:  return "decay";
+        case 2:  return "sustain";
+        case 3:  return "release";
+        default: return "output";
+    }
+}
+
+int KromosynthAudioProcessor::ccTargetFromName (const juce::String& name)
+{
+    const auto n = name.trim().toLowerCase();
+    if (n == "attack")  return kNumMacros;
+    if (n == "decay")   return kNumMacros + 1;
+    if (n == "sustain") return kNumMacros + 2;
+    if (n == "release") return kNumMacros + 3;
+    if (n == "output")  return kNumMacros + 4;
+    const int slot = n.getIntValue();
+    if (slot >= 1 && slot <= kNumMacros) return slot - 1;
+    return -1;
+}
+
+juce::AudioParameterFloat* KromosynthAudioProcessor::ccTargetParam (int target) const noexcept
+{
+    if (target < 0 || target >= kNumCcTargets) return nullptr;
+    if (target < kNumMacros) return macros_[(size_t) target];
+    switch (target - kNumMacros)
+    {
+        case 0:  return attackS_;
+        case 1:  return decayS_;
+        case 2:  return sustain_;
+        case 3:  return releaseS_;
+        default: return outputLevelDb_;
+    }
+}
+
+float KromosynthAudioProcessor::ccTargetValue (int target) const
+{
+    // Normalised 0..1 read. get() is the RAW value (seconds/dB for the ADSR
+    // and output targets), and getValue() is private on AudioParameterFloat,
+    // so normalise through the public convertTo0to1 of RangedAudioParameter —
+    // the same mapping the host's getValue() applies.
+    if (auto* p = ccTargetParam (target)) return p->convertTo0to1 (p->get());
+    return 0.0f;
+}
+
+void KromosynthAudioProcessor::setCcLearnTarget (int target) noexcept
+{
+    ccLearnTarget_.store (target >= 0 && target < kNumCcTargets ? target : -1,
+                          std::memory_order_release);
+}
+
+void KromosynthAudioProcessor::seedCcFilterState (int target)
+{
+    if (auto* p = ccTargetParam (target))
+    {
+        // The filter state is in the target's normalised 0..1, so seed it
+        // with convertTo0to1(get()), not the raw get() (release's 1.5 s
+        // default would otherwise seed the 0..1 filter with 1.5).
+        const float v = p->convertTo0to1 (p->get());
+        ccLastRaw_[(size_t) target].store (v, std::memory_order_relaxed);
+        ccSmoothed_[(size_t) target].store (v, std::memory_order_relaxed);
+        ccApplied_[(size_t) target].store (v, std::memory_order_relaxed);
+    }
+}
+
+void KromosynthAudioProcessor::setCcMapping (int target, int ccNumber, int channel,
+                                             float rangeMin, float rangeMax, bool invert, float smoothing)
+{
+    if (target < 0 || target >= kNumCcTargets) return;
+
+    auto& m = ccMappings_[(size_t) target];
+    m.ccNumber.store (ccNumber, std::memory_order_relaxed);
+    m.channel.store (channel, std::memory_order_relaxed);
+    m.rangeMin.store (juce::jlimit (0.0f, 1.0f, rangeMin), std::memory_order_relaxed);
+    m.rangeMax.store (juce::jlimit (0.0f, 1.0f, rangeMax), std::memory_order_relaxed);
+    m.invert.store (invert, std::memory_order_relaxed);
+    m.smoothing.store (juce::jlimit (0.0f, 1.0f, smoothing), std::memory_order_relaxed);
+    m.sourceKind.store (ccNumber >= 0 ? 1 : 0, std::memory_order_relaxed);
+    m.mapped.store (ccNumber >= 0, std::memory_order_release);
+
+    seedCcFilterState (target);
+}
+
+void KromosynthAudioProcessor::clearCcMapping (int target)
+{
+    setCcMapping (target, -1, -1, 0.0f, 1.0f, false, 0.0f);
+}
+
+KromosynthAudioProcessor::CcMappingInfo KromosynthAudioProcessor::ccMapping (int target) const
+{
+    CcMappingInfo info;
+    if (target < 0 || target >= kNumCcTargets) return info;
+
+    const auto& m = ccMappings_[(size_t) target];
+    info.mapped    = m.mapped.load (std::memory_order_acquire);
+    info.ccNumber  = m.ccNumber.load (std::memory_order_relaxed);
+    info.channel   = m.channel.load (std::memory_order_relaxed);
+    info.rangeMin  = m.rangeMin.load (std::memory_order_relaxed);
+    info.rangeMax  = m.rangeMax.load (std::memory_order_relaxed);
+    info.invert    = m.invert.load (std::memory_order_relaxed);
+    info.smoothing = m.smoothing.load (std::memory_order_relaxed);
+
+    if (info.mapped && m.sourceKind.load (std::memory_order_relaxed) == 1)
+        info.source = "cc:" + juce::String (info.ccNumber) + ":" + juce::String (info.channel);
+
+    return info;
+}
+
+std::vector<KromosynthAudioProcessor::CcMonitorEntry> KromosynthAudioProcessor::ccMonitor() const
+{
+    std::vector<CcMonitorEntry> out;
+    const auto n = ccMonitorCount_.load (std::memory_order_acquire);
+    const auto count = (int) juce::jmin<std::uint64_t> (n, (std::uint64_t) kCcMonitorSize);
+    out.reserve ((size_t) count);
+
+    for (int i = 0; i < count; ++i)
+    {
+        const auto& s = ccMonitor_[(size_t) ((n - 1 - (std::uint64_t) i) % kCcMonitorSize)];
+        CcMonitorEntry e;
+        e.time = s.time;
+        e.number = s.number;
+        e.value = s.value;
+        e.source = s.kind == 0
+            ? "cc:" + juce::String (s.number) + ":" + juce::String (s.channel)
+            : "note:" + juce::String (s.number) + ":" + juce::String (s.channel);
+        out.push_back (std::move (e));
+    }
+    return out;
+}
+
+float KromosynthAudioProcessor::ccMappedValue (int target, int sevenBitValue) const noexcept
+{
+    const auto& m = ccMappings_[(size_t) target];
+    const float x = juce::jlimit (0.0f, 1.0f, (float) sevenBitValue / 127.0f);
+
+    float lo = m.rangeMin.load (std::memory_order_relaxed);
+    float hi = m.rangeMax.load (std::memory_order_relaxed);
+    if (hi < lo) std::swap (lo, hi);
+
+    float y = lo + x * (hi - lo);
+    if (m.invert.load (std::memory_order_relaxed))
+        y = 1.0f - y;
+
+    return juce::jlimit (0.0f, 1.0f, y);
+}
+
+void KromosynthAudioProcessor::recordCcMonitor (const juce::MidiMessage& m) noexcept
+{
+    // Audio thread, one fixed-size slot per message: no allocation, no lock.
+    int kind = -1;
+    if (m.isController())      kind = 0;
+    else if (m.isNoteOn())      kind = 1;
+    else if (m.isNoteOff())     kind = 2;
+    if (kind < 0) return;
+
+    auto& s = ccMonitor_[(size_t) (ccMonitorCount_.load (std::memory_order_relaxed) % kCcMonitorSize)];
+    s.time    = juce::Time::getMillisecondCounter();
+    s.kind    = kind;
+    s.number  = m.isController() ? m.getControllerNumber() : m.getNoteNumber();
+    s.channel = m.getChannel();
+    s.value   = m.isController() ? m.getControllerValue() : (int) m.getVelocity();
+
+    // Published AFTER the slot is filled, so a reader that acquires the count
+    // sees the whole entry.
+    ccMonitorCount_.fetch_add (1, std::memory_order_release);
+}
+
+void KromosynthAudioProcessor::handleCcMessages (juce::MidiBuffer& midiMessages) noexcept
+{
+    // Audio thread. Runs only when a mapping exists or learn is armed, so a
+    // plugin with no mappings takes exactly the path it took before this
+    // existed — scripts/processor-diff.sh checks that bit-for-bit.
+    bool anyMapped = false;
+    for (int t = 0; t < kNumCcTargets; ++t)
+        if (ccMappings_[(size_t) t].mapped.load (std::memory_order_relaxed)) { anyMapped = true; break; }
+
+    int learn = ccLearnTarget_.load (std::memory_order_acquire);
+    if (! (anyMapped || learn >= 0) || midiMessages.isEmpty())
+        return;
+
+    ccFilteredMidi_.clear();
+    bool consumedAny = false;
+
+    for (const auto meta : midiMessages)
+    {
+        const auto m = meta.getMessage();
+        bool keep = true;
+
+        if (m.isController())
+        {
+            const int num = m.getControllerNumber();
+            const int ch  = m.getChannel();
+            const int val = m.getControllerValue();
+
+            if (learn >= 0)
+            {
+                // The NEXT CC (any channel) is assigned to the learn target and
+                // learn clears. compare_exchange so a learn armed by the message
+                // thread between the load above and here is not clobbered.
+                auto& lm = ccMappings_[(size_t) learn];
+                lm.ccNumber.store (num, std::memory_order_relaxed);
+                lm.channel.store (ch, std::memory_order_relaxed);
+                lm.rangeMin.store (0.0f, std::memory_order_relaxed);
+                lm.rangeMax.store (1.0f, std::memory_order_relaxed);
+                lm.invert.store (false, std::memory_order_relaxed);
+                lm.smoothing.store (0.0f, std::memory_order_relaxed);
+                lm.sourceKind.store (1, std::memory_order_relaxed);
+                lm.mapped.store (true, std::memory_order_release);
+
+                // Seed the filter from the parameter's current value, then move
+                // only the raw target: applyCcMappings() in this same block then
+                // sees the new value as a CHANGE and writes the parameter, even
+                // when the CC maps to 0 and the knob's default is not 0.
+                if (auto* p = ccTargetParam (learn))
+                {
+                    // Normalised 0..1, like seedCcFilterState: the filter
+                    // state is in the target's 0..1, not its raw units.
+                    const float v = p->convertTo0to1 (p->get());
+                    ccSmoothed_[(size_t) learn].store (v, std::memory_order_relaxed);
+                    ccApplied_[(size_t) learn].store (v, std::memory_order_relaxed);
+                }
+                ccLastRaw_[(size_t) learn].store (ccMappedValue (learn, val),
+                                                  std::memory_order_relaxed);
+
+                int expected = learn;
+                ccLearnTarget_.compare_exchange_strong (expected, -1,
+                                                         std::memory_order_acq_rel,
+                                                         std::memory_order_acquire);
+                learn = ccLearnTarget_.load (std::memory_order_acquire);
+                keep = false;
+                consumedAny = true;
+            }
+            else
+            {
+                for (int t = 0; t < kNumCcTargets; ++t)
+                {
+                    const auto& mp = ccMappings_[(size_t) t];
+                    if (! mp.mapped.load (std::memory_order_relaxed)) continue;
+                    if (mp.sourceKind.load (std::memory_order_relaxed) != 1) continue;
+                    if (mp.ccNumber.load (std::memory_order_relaxed) != num) continue;
+                    if (mp.channel.load (std::memory_order_relaxed) != ch) continue;
+
+                    // No break: every target mapped to this CC gets the value,
+                    // and the message is consumed once.
+                    ccLastRaw_[(size_t) t].store (ccMappedValue (t, val), std::memory_order_relaxed);
+                    keep = false;
+                    consumedAny = true;
+                }
+            }
+        }
+
+        if (keep)
+            ccFilteredMidi_.addEvent (m, meta.samplePosition);
+    }
+
+    // A mapped CC must not ALSO reach the engine, so the consumed ones are
+    // filtered out of the buffer the engines see.
+    if (consumedAny)
+        midiMessages.swapWith (ccFilteredMidi_);
+}
+
+void KromosynthAudioProcessor::applyCcMappings() noexcept
+{
+    // Audio thread, once per block: the one-pole runs at BLOCK rate toward the
+    // last mapped value, and the parameter is written only when the filtered
+    // value actually moved, so an idle mapping costs 21 atomic loads and no
+    // host notifications.
+    for (int t = 0; t < kNumCcTargets; ++t)
+    {
+        const auto& m = ccMappings_[(size_t) t];
+        if (! m.mapped.load (std::memory_order_relaxed)) continue;
+
+        const float s   = m.smoothing.load (std::memory_order_relaxed);
+        const float raw = ccLastRaw_[(size_t) t].load (std::memory_order_relaxed);
+        float y = ccSmoothed_[(size_t) t].load (std::memory_order_relaxed);
+        y = y * s + raw * (1.0f - s);
+        ccSmoothed_[(size_t) t].store (y, std::memory_order_relaxed);
+
+        if (y != ccApplied_[(size_t) t].load (std::memory_order_relaxed))
+        {
+            ccApplied_[(size_t) t].store (y, std::memory_order_relaxed);
+            // y is already the target's NORMALISED 0..1: setValueNotifyingHost
+            // takes a 0..1 value (its setValue denormalises), so passing
+            // convertTo0to1(y) here would write y as the RAW value and a
+            // mapped CC could only ever drive the bottom 0..1 of attack,
+            // decay, release or output.
+            if (auto* p = ccTargetParam (t))
+                p->setValueNotifyingHost (y);
+        }
+    }
 }
 
 void KromosynthAudioProcessor::clearMacros()
@@ -2582,6 +2959,10 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             const auto m = meta.getMessage();
             ++inThisBlock;
 
+            // Input-monitor ring (synthis-cda.1): fixed-size slot, no
+            // allocation, no lock.
+            recordCcMonitor (m);
+
             if (m.isNoteOn())
             {
                 midiNoteOns_.fetch_add (1, std::memory_order_relaxed);
@@ -2606,6 +2987,15 @@ void KromosynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         if (inThisBlock > midiMaxPerBlock_.load (std::memory_order_relaxed))
             midiMaxPerBlock_.store (inThisBlock, std::memory_order_relaxed);
     }
+
+    // ── MIDI CC mapping: learn, apply, consume (synthis-cda.1) ────────────
+    //
+    // handleCcMessages runs only when a mapping exists or learn is armed, so a
+    // plugin with no mappings takes exactly the path it took before this
+    // existed — scripts/processor-diff.sh checks that bit-for-bit. The
+    // smoothing pass is 21 atomic loads when nothing is mapped.
+    handleCcMessages (midiMessages);
+    applyCcMappings();
 
     // The STANDALONE on-screen keyboard's own notes, merged into the host
     // buffer (synthis-o2a.1). Placed AFTER the test-note drain above, so a test
