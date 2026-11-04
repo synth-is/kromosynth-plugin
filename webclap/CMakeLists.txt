@@ -32,3 +32,17 @@ add_custom_target(synthis_webclap
             bash "${PROJECT_SOURCE_DIR}/scripts/webclap-skeleton.sh" build
     COMMENT "Building the skeleton WCLAP (Emscripten, out of tree) into ${SYNTHIS_WEBCLAP_BUILD_DIR}"
     VERBATIM USES_TERMINAL)
+
+# synthis-et4.17: the Faust spike (FaustEngine on wasm3 inside module.wasm, one embedded artefact). Its own build
+# directory, so the skeleton bundle above is not replaced. SYNTHIS_WEBCLAP_FAUST_ARTEFACT empty = the script's default
+# (Gate 0 elite elite_08_deep_pluck_c23-12 in the kromosynth-projects sibling).
+set(SYNTHIS_WEBCLAP_FAUST_BUILD_DIR "${CMAKE_BINARY_DIR}/webclap-faust" CACHE PATH "Where the Faust spike bundle is built")
+set(SYNTHIS_WEBCLAP_FAUST_ARTEFACT "" CACHE FILEPATH "Faust artefact to embed: <dir>/<stem> of <stem>.wasm/.json/.plan")
+add_custom_target(synthis_webclap_faust
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "SYNTHIS_WEBCLAP_KIT=${SYNTHIS_WEBCLAP_KIT}" "SYNTHIS_WEBCLAP_EMSDK=${SYNTHIS_WEBCLAP_EMSDK}"
+            "SYNTHIS_WEBCLAP_BUILD_DIR=${SYNTHIS_WEBCLAP_FAUST_BUILD_DIR}" "SYNTHIS_WEBCLAP_EXNREF=${SYNTHIS_WEBCLAP_EXNREF}"
+            "SYNTHIS_FAUST_ARTEFACT=${SYNTHIS_WEBCLAP_FAUST_ARTEFACT}"
+            bash "${PROJECT_SOURCE_DIR}/scripts/webclap-faust.sh" build
+    COMMENT "Building the Faust spike WCLAP (Emscripten, out of tree) into ${SYNTHIS_WEBCLAP_FAUST_BUILD_DIR}"
+    VERBATIM USES_TERMINAL)
