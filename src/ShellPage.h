@@ -2183,6 +2183,62 @@ refresh();
 // page already knows is unchanged -- and the native strip is watching the
 // folder anyway for the cases the page cannot see, like a deletion in Finder.
 refreshRenders();
+
+// ── Computer-keyboard play (standalone only, synthis-o2a.5) ────────────────
+//
+// On macOS a focused WKWebView takes the key presses, so JUCE key handling on
+// the native on-screen keyboard never sees them while this page has focus. The
+// page forwards keydown / keyup to native instead, and native plays the notes
+// on the same MidiKeyboardState the on-screen keyboard uses.
+//
+// The keyEvent native function is registered only in the Standalone wrapper,
+// and __juce__functions lists exactly the registered names, so in AU / VST3 /
+// AUv3 this block never fires and the DAW host keeps the keys.
+const KEY_PLAY_KEYS = 'awsedftgyhujkolp;zxcv';
+
+function keyPlayAvailable () {
+  return !!(backend
+    && window.__JUCE__.initialisationData
+    && window.__JUCE__.initialisationData.__juce__functions
+    && window.__JUCE__.initialisationData.__juce__functions.indexOf('keyEvent') >= 0);
+}
+
+// A text field owns the keyboard while it has focus -- the Library filter box
+// here, and on the site the search and sign-in fields (which carry no bridge
+// at all). Typing there must not play notes, so key-DOWN is never forwarded
+// from one.
+function textInputFocused () {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+      || el.isContentEditable === true;
+}
+
+function forwardKey (ev) {
+  if (!keyPlayAvailable()) return;
+  const k = (ev.key || '').toLowerCase();
+  if (k.length !== 1 || KEY_PLAY_KEYS.indexOf(k) < 0) return;
+
+  const down = ev.type === 'keydown';
+  if (down && textInputFocused()) return;
+  if (down) ev.preventDefault();
+
+  // Key-UP is always forwarded: a key released while a text field has focus
+  // must still end the note it started, and native ignores note-offs for keys
+  // it does not hold, so this can never start a note from a text field.
+  // `repeat` is forwarded too; native drops repeated key-downs.
+  call('keyEvent', down, k, ev.repeat === true).catch(function () {});
+}
+
+window.addEventListener('keydown', forwardKey);
+window.addEventListener('keyup', forwardKey);
+
+// Losing window focus must release every held key: no keyup will ever arrive
+// for them.
+window.addEventListener('blur', function () {
+  if (keyPlayAvailable()) call('keyEvent', 'blur').catch(function () {});
+});
 </script>
 </body>
 </html>
