@@ -608,6 +608,86 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   body.sounds #list,
   body.sounds #spectro { display: none; }
   body:not(.sounds) #rendersec { display: none; }
+
+  /* THE CONTROLS VIEW, the third sub-tab (synthis-cda.3). Same treatment as
+     Sounds: the library halves hide and the controls section takes the scroll
+     region. #controlsec is a direct child of <body>, so strip mode's
+     `> :not(nav#chrome)` hides it along with everything else, and the
+     sub-tab row stays inside nav#chrome where chromeHeight() measures it. */
+  body.controls header,
+  body.controls .toolbar,
+  body.controls #list,
+  body.controls #spectro,
+  body.controls #rendersec { display: none; }
+  body:not(.controls) #controlsec { display: none; }
+
+  /* MAPPING CONTROLS ARE STANDALONE-ONLY. In a DAW the host owns MIDI input,
+     so the chip, Learn, clear, the range editor and the input monitor have
+     nothing to act on; the sliders stay and read the values the host moves.
+     The class comes from getOscState().receiverExists, which the native
+     bridge reports true only in the Standalone wrapper. */
+  body:not(.standalone) .sa-only { display: none; }
+
+  #controlsec { flex: 1 1 auto; overflow-y: auto; padding: 8px 18px 12px; }
+  #controlsec h2 {
+    margin: 14px 4px 6px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted);
+  }
+  .crow {
+    padding: 7px 10px; border-radius: 7px; margin-bottom: 4px;
+    background: var(--surface-panel); border: 1px solid var(--border-subtle);
+  }
+  .crow .ctop { display: flex; align-items: center; gap: 8px; }
+  .crow .cname {
+    flex: 0 0 88px; min-width: 0; font-size: 12.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .crow .cslider { flex: 1 1 auto; min-width: 48px; accent-color: var(--accent); }
+  .crow .cval {
+    flex: 0 0 42px; text-align: right; font-size: 11.5px;
+    font-variant-numeric: tabular-nums; color: var(--text-muted);
+  }
+  .crow .cchip {
+    flex: 0 1 auto; min-width: 0; max-width: 132px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 10.5px; padding: 1px 7px; border-radius: 8px;
+    background: var(--accent-surface); border: 1px solid var(--accent);
+    color: var(--text-body);
+  }
+  .crow .cchip.unmapped {
+    background: transparent; border-color: var(--border-subtle); color: var(--text-muted);
+  }
+  .crow button {
+    flex: 0 0 auto; font: inherit; font-size: 11px; cursor: pointer;
+    background: transparent; color: var(--text-muted);
+    border: 1px solid var(--border); border-radius: 5px; padding: 2px 8px;
+  }
+  .crow button:hover { background: var(--border-subtle); color: var(--text-primary); }
+  .crow button.learn.on { color: var(--accent); border-color: var(--accent); }
+  .crow .cedit {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 7px 2px 2px;
+  }
+  /* the author display:flex above beats the UA [hidden] rule, so the
+     collapsed editor needs its own rule */
+  .crow .cedit[hidden] { display: none; }
+  .crow .cedit label {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--text-muted);
+  }
+  .crow .cedit input[type="number"] {
+    width: 58px; background: var(--surface-deep); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px;
+    font: inherit; font-size: 11px;
+  }
+  .crow .cedit input[type="range"] { width: 90px; accent-color: var(--accent); }
+  .crow .cedit .apply { background: var(--border-subtle); color: var(--text-primary); }
+  .monline {
+    margin-top: 10px; padding: 7px 10px; border-radius: 7px;
+    border: 1px solid var(--border-subtle); background: var(--surface-panel);
+    font-size: 11.5px; color: var(--text-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -707,6 +787,10 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   <div class="subtabs">
     <button class="sub current" data-view="instruments">Instruments</button>
     <button class="sub" data-view="sounds">Sounds<span class="badge" id="subcount"></span></button>
+    <!-- Controls (synthis-cda.3): the loaded instrument's sliders and the
+         MIDI/OSC mapping. Same row as the other two, so it sits inside
+         nav#chrome and chromeHeight() accounts for it unchanged. -->
+    <button class="sub" data-view="controls">Controls</button>
   </div>
 </nav>
 
@@ -759,6 +843,21 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
 
   <div id="list"></div>
 </main>
+
+<!-- THE CONTROLS PANEL (synthis-cda.3). A direct child of <body> so strip
+     mode hides it with everything below the chrome. One row per mapping
+     target the native bridge reports: the sixteen macro slots in #cclist,
+     then attack / decay / sustain / release / output under their own heading
+     in #envlist. The input monitor and the OSC port/IP line are sa-only:
+     they show only when the bridge reports the Standalone wrapper. -->
+<section id="controlsec">
+  <div class="empty sa-only" id="controlsempty">Press <b>Learn</b> on a row, then move a MIDI controller or send an OSC message, and that input will be mapped to the slider.</div>
+  <div id="cclist"></div>
+  <h2 id="envhead">Envelope &amp; output</h2>
+  <div id="envlist"></div>
+  <div class="monline sa-only" id="ccmonitor"></div>
+  <div class="monline sa-only" id="oscline"></div>
+</section>
 
 <script>
 // The bridge. JUCE injects window.__JUCE__.backend when native integration is
@@ -1701,8 +1800,10 @@ function refreshRenders () {
 
 function setLibraryView (view) {
   const sounds = view === 'sounds';
+  const controls = view === 'controls';
 
   document.body.classList.toggle('sounds', sounds);
+  document.body.classList.toggle('controls', controls);
 
   const subs = document.querySelectorAll('nav#chrome .subtabs .sub');
   for (let i = 0; i < subs.length; i++)
@@ -1713,6 +1814,7 @@ function setLibraryView (view) {
   if (!sounds) stopPlayback();
 
   if (sounds) refreshRenders();
+  if (controls) refreshControls();
 
   // TELLS C++, which is what makes the native list appear. On desktop the
   // editor shrinks the shell to its strip and gives the body to RenderList,
@@ -1732,6 +1834,299 @@ Array.prototype.forEach.call(
     });
   }
 );
+
+// ── The Controls panel (synthis-cda.3) ─────────────────────────────────────
+//
+// One row per mapping target the native bridge reports (getCcMappings): the
+// sixteen macro slots first, then attack / decay / sustain / release / output
+// under their own heading. The values are POLLED, not pushed, so a change
+// made by the host or by OSC shows up here -- CC_POLL_MS is ~13 polls a
+// second, inside the 10..20/s the panel is specified to run at.
+//
+// Mapping (the chip, Learn, clear, the range editor) and the input monitor
+// are STANDALONE-ONLY (.sa-only): in a DAW the host owns MIDI input, so those
+// controls have nothing to act on. The sliders themselves stay and read the
+// values the host moves.
+
+const CC_POLL_MS = 75;    // ~13x/s, inside the specified 10..20 times a second
+const ENV_TARGET_NAMES = ['attack', 'decay', 'sustain', 'release', 'output'];
+
+let ccRows = [];          // the last getCcMappings payload
+let ccRowEls = new Map(); // target -> the row's elements
+let learnTarget = -1;
+let standaloneBridge = false;
+
+// The native bridge resolves a target from a NAME (ccTargetFromName,
+// PluginProcessor.cpp): "attack".."output" or a slot number 1..16. "macro1"
+// is NOT resolvable -- its int value is 0, which resolves to -1 -- so macro
+// slots are addressed by slot number (target + 1) and the envelope/output
+// targets by name.
+function ccTargetArg (m) {
+  return ENV_TARGET_NAMES.indexOf(String(m.name).toLowerCase()) >= 0
+    ? m.name
+    : String(m.target + 1);
+}
+
+// "cc:21:1" -> "CC 21 ch1"; "osc:/mocap/hand/y" -> "/mocap/hand/y".
+function chipText (m) {
+  if (!m || !m.mapped || !m.source) return '';
+  const s = String(m.source);
+  if (s.indexOf('cc:') === 0) {
+    const p = s.split(':');
+    return 'CC ' + p[1] + ' ch' + p[2];
+  }
+  if (s.indexOf('osc:') === 0) return s.slice(4);
+  return s;
+}
+
+function monitorText (e) {
+  if (!e || !e.source) return 'No MIDI or OSC input yet.';
+  const s = String(e.source);
+  if (s.indexOf('cc:') === 0) {
+    const p = s.split(':');
+    return 'Last input: CC ' + p[1] + ' ch' + p[2] + ' = ' + e.value;
+  }
+  if (s.indexOf('osc:') === 0) return 'Last input: OSC ' + s.slice(4);
+  if (s.indexOf('note:') === 0) {
+    const p = s.split(':');
+    return 'Last input: note ' + p[1] + ' ch' + p[2] + ' vel ' + e.value;
+  }
+  return 'Last input: ' + s;
+}
+
+function updateLearnButtons () {
+  ccRowEls.forEach(function (els, t) {
+    const on = learnTarget === t;
+    els.learn.classList.toggle('on', on);
+    els.learn.textContent = on ? 'Learning\u2026' : 'Learn';
+  });
+}
+
+function buildControlRow (m) {
+  const row = document.createElement('div');
+  row.className = 'crow';
+  row.dataset.target = m.target;
+
+  const top = document.createElement('div');
+  top.className = 'ctop';
+
+  const name = document.createElement('span');
+  name.className = 'cname';
+  name.textContent = m.name;
+  name.title = m.name;
+
+  // The slider carries the live value in the target's own (normalised)
+  // units; the poll below keeps it following host or OSC changes.
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.className = 'cslider';
+  slider.min = '0';
+  slider.max = '1';
+  slider.step = '0.001';
+
+  const val = document.createElement('span');
+  val.className = 'cval';
+
+  const chip = document.createElement('span');
+  chip.className = 'cchip sa-only';
+
+  const learn = document.createElement('button');
+  learn.className = 'learn sa-only';
+  learn.textContent = 'Learn';
+  learn.title = 'Arm learn for this slider: the next incoming MIDI CC or OSC message is mapped to it';
+  learn.addEventListener('click', function () {
+    const arm = learnTarget !== m.target;
+    call('setCcLearnTarget', arm ? ccTargetArg(m) : -1).then(function (r) {
+      learnTarget = (r && r.learnTarget !== undefined && r.learnTarget !== null)
+        ? r.learnTarget : (arm ? m.target : -1);
+      updateLearnButtons();
+    }).catch(function () {});
+  });
+
+  const clear = document.createElement('button');
+  clear.className = 'cclear sa-only';
+  clear.textContent = '\u00d7';
+  clear.title = 'Clear this mapping';
+  clear.addEventListener('click', function () {
+    call('clearCcMapping', ccTargetArg(m)).then(function () {
+      if (learnTarget === m.target) learnTarget = -1;
+      refreshControls();
+    }).catch(function () {});
+  });
+
+  const expand = document.createElement('button');
+  expand.className = 'cexpand sa-only';
+  expand.textContent = '\u25b8';
+  expand.title = 'Range / smoothing / invert';
+
+  top.appendChild(name);
+  top.appendChild(slider);
+  top.appendChild(val);
+  top.appendChild(chip);
+  top.appendChild(learn);
+  top.appendChild(clear);
+  top.appendChild(expand);
+  row.appendChild(top);
+
+  // The expandable range / smoothing / invert editor.
+  const edit = document.createElement('div');
+  edit.className = 'cedit sa-only';
+  edit.hidden = true;
+
+  expand.addEventListener('click', function () {
+    edit.hidden = !edit.hidden;
+    expand.textContent = edit.hidden ? '\u25b8' : '\u25be';
+  });
+
+  const mkField = function (labelText, input) {
+    const lab = document.createElement('label');
+    lab.appendChild(document.createTextNode(labelText));
+    lab.appendChild(input);
+    return lab;
+  };
+
+  const minIn = document.createElement('input');
+  minIn.type = 'number'; minIn.min = '0'; minIn.max = '1'; minIn.step = '0.01';
+  const maxIn = document.createElement('input');
+  maxIn.type = 'number'; maxIn.min = '0'; maxIn.max = '1'; maxIn.step = '0.01';
+  const smoothIn = document.createElement('input');
+  smoothIn.type = 'range'; smoothIn.min = '0'; smoothIn.max = '1'; smoothIn.step = '0.01';
+  const invIn = document.createElement('input');
+  invIn.type = 'checkbox';
+  const apply = document.createElement('button');
+  apply.className = 'apply';
+  apply.textContent = 'Apply';
+
+  apply.addEventListener('click', function () {
+    const cur = ccRows.find(function (r) { return r && r.target === m.target; }) || m;
+    call('setCcMapping', ccTargetArg(m), cur.cc, cur.channel,
+         parseFloat(minIn.value), parseFloat(maxIn.value),
+         invIn.checked, parseFloat(smoothIn.value))
+      .then(function () { refreshControls(); })
+      .catch(function () {});
+  });
+
+  edit.appendChild(mkField('min', minIn));
+  edit.appendChild(mkField('max', maxIn));
+  edit.appendChild(mkField('smoothing', smoothIn));
+  edit.appendChild(mkField('invert', invIn));
+  edit.appendChild(apply);
+  row.appendChild(edit);
+
+  return { row: row, slider: slider, val: val, chip: chip, learn: learn,
+           clear: clear, expand: expand, edit: edit,
+           minIn: minIn, maxIn: maxIn, smoothIn: smoothIn, invIn: invIn, apply: apply };
+}
+
+function updateControls (rows) {
+  ccRows = rows;
+
+  const list = document.getElementById('cclist');
+  const envList = document.getElementById('envlist');
+  if (!list || !envList) return;
+
+  const seen = new Set();
+
+  rows.forEach(function (m) {
+    if (!m || m.target === undefined || m.target === null) return;
+    seen.add(m.target);
+
+    let els = ccRowEls.get(m.target);
+    if (!els) {
+      els = buildControlRow(m);
+      ccRowEls.set(m.target, els);
+      const isEnv = ENV_TARGET_NAMES.indexOf(String(m.name).toLowerCase()) >= 0;
+      (isEnv ? envList : list).appendChild(els.row);
+    }
+
+    // The live value: slider and readout follow the polled native value.
+    const v = typeof m.value === 'number' ? m.value : 0;
+    if (document.activeElement !== els.slider) els.slider.value = String(v);
+    els.val.textContent = v.toFixed(3);
+
+    const chip = chipText(m);
+    els.chip.textContent = chip || 'unmapped';
+    els.chip.classList.toggle('unmapped', !chip);
+
+    els.minIn.value = String(m.rangeMin !== undefined ? m.rangeMin : 0);
+    els.maxIn.value = String(m.rangeMax !== undefined ? m.rangeMax : 1);
+    els.smoothIn.value = String(m.smoothing || 0);
+    els.invIn.checked = !!m.invert;
+
+    // setCcMapping writes CC mappings, so an OSC-mapped row cannot be
+    // re-applied through it; its range is changed by learning again.
+    const ccMapped = m.mapped && String(m.source || '').indexOf('cc:') === 0;
+    els.apply.disabled = !ccMapped;
+    els.apply.title = ccMapped ? 'Apply range / smoothing / invert'
+                               : 'Learn maps the source first; OSC mappings are re-learned';
+
+    // Learn clears itself natively once a mapping lands; mirror that here.
+    if (learnTarget === m.target && m.mapped) learnTarget = -1;
+  });
+
+  ccRowEls.forEach(function (els, t) {
+    if (!seen.has(t) && els.row.parentNode) els.row.parentNode.removeChild(els.row);
+  });
+
+  updateLearnButtons();
+
+  // The empty state: nothing mapped yet (or no bridge at all) is exactly when
+  // a first-time user needs the one sentence about what Learn does.
+  const empty = document.getElementById('controlsempty');
+  if (empty) {
+    const anyMapped = rows.some(function (r) { return r && r.mapped; });
+    empty.style.display = (rows.length && anyMapped) ? 'none' : '';
+  }
+}
+
+async function refreshControls () {
+  if (!backend) return;
+  try {
+    const rows = await call('getCcMappings');
+    if (Array.isArray(rows)) updateControls(rows);
+  } catch (e) { /* editor closing */ }
+}
+
+async function pollControls () {
+  if (!backend) return;
+  // Only while the Controls view is on screen: the poll exists so host or
+  // OSC changes show, and nobody is reading another view.
+  if (!document.body.classList.contains('controls')) return;
+  try {
+    const rows = await call('getCcMappings');
+    if (Array.isArray(rows)) updateControls(rows);
+
+    const mon = await call('getCcMonitor');
+    const line = document.getElementById('ccmonitor');
+    if (line) line.textContent = monitorText(Array.isArray(mon) && mon.length ? mon[0] : null);
+  } catch (e) { /* editor closing */ }
+}
+
+setInterval(pollControls, CC_POLL_MS);
+
+async function pollOscLine () {
+  if (!backend) return;
+  try {
+    const st = await call('getOscState');
+    // receiverExists is true only in the Standalone wrapper: this is the
+    // native bridge reporting where it is running.
+    standaloneBridge = !!(st && st.receiverExists);
+    document.body.classList.toggle('standalone', standaloneBridge);
+    if (!standaloneBridge) return;
+
+    const ips = await call('getLocalIpAddresses');
+    const line = document.getElementById('oscline');
+    if (!line) return;
+    const addr = Array.isArray(ips) && ips.length ? ips.join(', ') : 'no address found';
+    line.textContent = 'OSC port ' + (st.port !== undefined ? st.port : '?')
+      + (st.listening ? ' \u00b7 listening' : ' \u00b7 not listening'
+         + (st.error ? ' (' + st.error + ')' : ''))
+      + ' \u00b7 send to ' + addr;
+  } catch (e) { /* editor closing */ }
+}
+
+setInterval(pollOscLine, 1000);
+pollOscLine();
 
 // ── What C++ asks the page for ──────────────────────────────────────────────
 //
