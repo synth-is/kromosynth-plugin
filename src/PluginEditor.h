@@ -45,6 +45,12 @@ public:
     void resized() override;
     void focusLost (juce::Component::FocusChangeType) override;
 
+    /** Standalone only: Z/X (octave) and C/V (velocity) when the JUCE side has
+        keyboard focus. The page forwards the same keys when the web view has
+        it (handleKeyEvent); without this, a Z pressed while the on-screen
+        keyboard or the window had focus reached nothing and macOS beeped. */
+    bool keyPressed (const juce::KeyPress&) override;
+
 private:
     // Subclassed only to hook the lifecycle virtuals. Every one of them feeds
     // the log file — page loads, navigations, and failures are exactly the
@@ -224,7 +230,7 @@ private:
     std::unique_ptr<juce::Label> octaveLabel_;
 
     /** Width of the octave readout inside the keyboard strip. */
-    static constexpr int kOctaveLabelWidth = 76;
+    static constexpr int kOctaveLabelWidth = 116;
 
     /** The octave computer-keyboard notes are played in: note = 12 * keyOctave_
         + offset, the same arithmetic MidiKeyboardComponent uses for its own
@@ -235,6 +241,17 @@ private:
         (';', offset 16) must stay within MIDI's 0..127.
     */
     int keyOctave_ = 3;
+
+    /** How many key events are still written to the log. A test of the
+        computer keyboard needs to show WHICH view received a key (the page or
+        the native side), and a log that records every key press would be noise. */
+    int keyLogBudget_ = 40;
+
+    /** Auto-repeat guard for the native Z/X path: JUCE gives no repeat flag. */
+    juce::uint32 lastOctaveKeyMs_ = 0;
+
+    /** The keyboard takes focus once, shortly after the first layout. */
+    bool keyboardFocusRequested_ = false;
 
     /** Velocity used for computer-keyboard note-ons. C lowers it, V raises it
         (optional extra from synthis-o2a.5), clamped to [0.1, 1.0]. */
