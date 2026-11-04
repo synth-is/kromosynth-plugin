@@ -87,6 +87,106 @@ using namespace kromosynth;
 // withNativeIntegrationEnabled(true), enable it — on a REMOTE url that only
 // injects window.__JUCE__ and does not change the page's origin. It is
 // withResourceProvider that changes origin semantics, and that stays off.
+// Page-side half of the sentinel rate probe (see pageFinishedLoading). Counts
+// everything a cancelled navigation could plausibly disturb, over a fixed
+// window, and leaves the answer in window.__sentinelProbeResult for the native
+// side to read back. `__HZ__` and `__SECS__` are substituted before injection.
+//
+// "Nothing happened" has to be a measurement of something, so it also records
+// whether the page could scroll at all and whether a field held focus; a run
+// on a page that cannot scroll proves nothing about scrolling and says so.
+// Native clock for the sentinel rate probe: calls the page's own `fire()` every
+// periodMs until the window is spent. Recursion through callAfterDelay with a
+// SafePointer rather than a juce::Timer member, so there is nothing to stop and
+// nothing left running if the editor is destroyed mid-run.
+static void fireSentinelProbe (juce::Component::SafePointer<juce::WebBrowserComponent> browser,
+                               int periodMs, int remainingMs)
+{
+    if (browser == nullptr || remainingMs <= 0)
+        return;
+
+    browser->evaluateJavascript ("window.__sentinelFire && window.__sentinelFire()", nullptr);
+
+    juce::Timer::callAfterDelay (periodMs, [browser, periodMs, remainingMs]
+    {
+        fireSentinelProbe (browser, periodMs, remainingMs - periodMs);
+    });
+}
+
+static const char* kSentinelProbeScript = R"JS(
+(function () {
+  if (window.__sentinelProbe) return 'already';
+  var HZ = __HZ__, SECS = __SECS__, BURST = __BURST__, DRIVE = '__DRIVE__';
+  var se = document.scrollingElement || document.documentElement;
+  var field = document.querySelector('input:not([type=hidden]):not([disabled]), textarea');
+  if (field) { try { field.focus(); } catch (e) {} }
+  var maxScroll = Math.max(0, se.scrollHeight - se.clientHeight);
+  if (maxScroll > 0) { window.scrollTo(0, Math.min(300, maxScroll)); }
+  var desc = function (el) { return el ? (el.tagName + (el.id ? '#' + el.id : '') + (el.name ? '[' + el.name + ']' : '')) : 'none'; };
+  var s = { hz: HZ, secs: SECS, burst: BURST, drive: DRIVE, sent: 0,
+            href0: location.href, scrollable: maxScroll, scrollY0: Math.round(window.scrollY),
+            hasFocus0: document.hasFocus(), active0: desc(document.activeElement), field: !!field,
+            focusEv: 0, blurEv: 0, scrollEv: 0, visEv: 0, pagehide: 0, beforeunload: 0,
+            rafFrames: 0, rafOver50: 0, rafOver100: 0, rafMaxMs: 0, hidden0: document.hidden };
+  window.addEventListener('focus', function () { s.focusEv++; }, true);
+  window.addEventListener('blur', function () { s.blurEv++; }, true);
+  window.addEventListener('scroll', function () { s.scrollEv++; }, true);
+  document.addEventListener('visibilitychange', function () { s.visEv++; });
+  window.addEventListener('pagehide', function () { s.pagehide++; });
+  window.addEventListener('beforeunload', function () { s.beforeunload++; });
+  var t0 = performance.now(), last = t0, done = false;
+  function frame(t) {
+    var d = t - last; last = t;
+    s.rafFrames++;
+    if (d > s.rafMaxMs) s.rafMaxMs = Math.round(d * 10) / 10;
+    if (d > 50) s.rafOver50++;
+    if (d > 100) s.rafOver100++;
+    if (!done) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  // BURST sentinels per call, assigned back to back in ONE task: the case a
+  // careless caller produces (a phase change and a handover in the same tick),
+  // and the one where WebKit could plausibly keep only the last assignment.
+  function fire() {
+    for (var i = 0; i < BURST; i++) {
+      // The draft contract's shape: verb "progress", one job, a phase and a percent.
+      location.href = 'synthis://progress?job=probe&phase=rendering&pct=' + (s.sent % 100) + '&n=' + s.sent;
+      s.sent++;
+    }
+  }
+  window.__sentinelFire = fire;
+  // DRIVE=native leaves the clock to the plugin: a hidden page (a locked screen,
+  // a backgrounded window) throttles its own timers to a crawl, which would make
+  // a delivery count measure the throttle and not the sentinel.
+  var iv = (HZ > 0 && DRIVE === 'page') ? setInterval(fire, 1000 / HZ) : null;
+  window.__sentinelProbe = s;
+  // An independent 1 s timer, always on, that does nothing but count itself per
+  // 10 s bucket and note whether the document was hidden. This is the
+  // throttling measurement: a hidden WKWebView slows setInterval, and how much
+  // decides how long the plugin can wait for a heartbeat before calling a job
+  // lost.
+  s.tickBuckets = []; s.hiddenTicks = 0; s.maxTickGapMs = 0;
+  var lastTick = performance.now();
+  var tickIv = setInterval(function () {
+    var now = performance.now(), gap = now - lastTick; lastTick = now;
+    if (gap > s.maxTickGapMs) s.maxTickGapMs = Math.round(gap);
+    var b = Math.floor((now - t0) / 10000);
+    s.tickBuckets[b] = (s.tickBuckets[b] || 0) + 1;
+    if (document.hidden) s.hiddenTicks++;
+  }, 1000);
+  setTimeout(function () {
+    done = true;
+    clearInterval(tickIv);
+    if (iv) clearInterval(iv);
+    s.href1 = location.href; s.scrollY1 = Math.round(window.scrollY);
+    s.hasFocus1 = document.hasFocus(); s.active1 = desc(document.activeElement);
+    s.elapsedMs = Math.round(performance.now() - t0);
+    window.__sentinelProbeResult = JSON.stringify(s);
+  }, SECS * 1000);
+  return 'started';
+})()
+)JS";
+
 static const char* kProbeScript = R"JS(
 (function () {
   var r = {};
@@ -1056,6 +1156,34 @@ KromosynthAudioProcessorEditor::KromosynthAudioProcessorEditor (KromosynthAudioP
     site_->onAuthState = [this] (const kromosynth::auth::State& s) { authState_ = s; };
 
     addChildComponent (*site_);
+
+    // Sentinel rate probe only (synthis-7o3.1; see pageFinishedLoading): the
+    // site loads lazily, so a measurement run has to open it itself or the
+    // probe never has a page to run on. Inert unless the variable is set.
+    if (proc_.wrapperType == juce::AudioProcessor::wrapperType_Standalone
+        && juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_SENTINEL_PROBE", {}).isNotEmpty())
+    {
+        juce::Component::SafePointer<KromosynthAudioProcessorEditor> safeEditor (this);
+        juce::Timer::callAfterDelay (2500, [safeEditor]
+        {
+            if (safeEditor != nullptr)
+                safeEditor->showSite (true);
+        });
+
+        // KROMOSYNTH_SENTINEL_PROBE_HIDE=1 puts the site back behind the shell a
+        // few seconds after the probe script is injected. That is the state the
+        // user is in while watching the Library tab, and a hidden WKWebView
+        // throttles its timers, which decides how patient a "lost track of this
+        // job" timeout has to be.
+        if (juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_SENTINEL_PROBE_HIDE", {}) == "1")
+        {
+            juce::Timer::callAfterDelay (14000, [safeEditor]
+            {
+                if (safeEditor != nullptr)
+                    safeEditor->showSite (false);
+            });
+        }
+    }
 #endif
 
     // ── The on-screen keyboard, STANDALONE ONLY ─────────────────────────
@@ -1925,6 +2053,87 @@ void KromosynthAudioProcessorEditor::InstrumentedBrowser::pageFinishedLoading (c
                     safeThis->proc_.logEvent ("PROBE failed: no result, no error");
             });
     });
+
+    // ── Sentinel rate probe (synthis-7o3.1) ──────────────────────────────────
+    //
+    // Answers one question for docs/RENDER_PROGRESS_DESIGN.md: does the site
+    // setting `window.location.href = "synthis://progress?..."` over and over
+    // disturb the page it is set from -- focus, scroll position, frame cadence,
+    // a reload? Every sentinel is a cancelled navigation, so the expectation is
+    // no, but "expected" is not "measured", and the progress verb will fire
+    // during exactly the moments a user is typing or scrolling.
+    //
+    // INERT unless the environment variable is set, and only on the site view of
+    // a Standalone: `KROMOSYNTH_SENTINEL_PROBE=<hz>:<seconds>`, e.g. `0.33:30`
+    // for the contract rate (one event every 3 s) or `10:30` as a stress case.
+    // `0:30` runs the same measurement with no sentinels, which is the baseline
+    // the other runs are read against. The script and its counters are in
+    // kSentinelProbeScript below; the result is logged as `SENTINEL_PROBE {...}`
+    // and the sentinels themselves land in the log as
+    // `acquisition_sentinel_malformed` until the progress verb has a parser,
+    // which is the count of events that actually reached pageAboutToLoad.
+    //
+    // Same SafePointer discipline as the probe above, for the same reason.
+    const auto sentinelSpec = juce::SystemStats::getEnvironmentVariable ("KROMOSYNTH_SENTINEL_PROBE", {});
+
+    if (interceptsSentinels && sentinelSpec.isNotEmpty()
+        && proc_.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+    {
+        // hz:seconds[:burst[:drive]]   drive = page (default) | native
+        const auto fields = juce::StringArray::fromTokens (sentinelSpec, ":", "");
+        const double hz = juce::jmax (0.0, fields[0].getDoubleValue());
+        const int secs = fields.size() > 1 ? juce::jlimit (5, 600, fields[1].getIntValue()) : 30;
+        const int burst = fields.size() > 2 ? juce::jlimit (1, 50, fields[2].getIntValue()) : 1;
+        const bool nativeDrive = fields.size() > 3 && fields[3] == "native";
+
+        const juce::String script = juce::String (kSentinelProbeScript)
+            .replace ("__HZ__", juce::String (hz, 3))
+            .replace ("__SECS__", juce::String (secs))
+            .replace ("__BURST__", juce::String (burst))
+            .replace ("__DRIVE__", nativeDrive ? "native" : "page");
+
+        juce::Timer::callAfterDelay (KROMOSYNTH_PROBE_DELAY_MS + 2000, [safeThis, logRaw, script, hz, secs, nativeDrive]() mutable
+        {
+            if (safeThis == nullptr)
+                return;
+
+            safeThis->proc_.logEvent ("sentinel_probe_start");
+            safeThis->evaluateJavascript (script, [] (juce::WebBrowserComponent::EvaluationResult) {});
+
+            if (nativeDrive && hz > 0.0)
+            {
+                const int periodMs = juce::jmax (1, juce::roundToInt (1000.0 / hz));
+                fireSentinelProbe (safeThis.getComponent(), periodMs, secs * 1000);
+            }
+        });
+
+        juce::Timer::callAfterDelay (KROMOSYNTH_PROBE_DELAY_MS + 2000 + (secs + 3) * 1000, [safeThis, logRaw]() mutable
+        {
+            if (safeThis == nullptr)
+            {
+                logRaw ("sentinel_probe_dropped_editor_gone");
+                return;
+            }
+
+            // sentFinal is the live counter: the snapshot in the result is taken
+            // when the window closes, and a native clock keeps firing for a few
+            // calls after that, so comparing the snapshot with the log would
+            // report phantom losses.
+            safeThis->evaluateJavascript ("window.__sentinelProbeResult ? JSON.stringify(Object.assign("
+                                          "JSON.parse(window.__sentinelProbeResult), "
+                                          "{ sentFinal: window.__sentinelProbe.sent })) : 'pending'",
+                [safeThis, logRaw] (juce::WebBrowserComponent::EvaluationResult result) mutable
+                {
+                    if (safeThis == nullptr)
+                        return;
+
+                    if (const auto* value = result.getResult())
+                        safeThis->proc_.logEvent ("SENTINEL_PROBE " + value->toString());
+                    else
+                        safeThis->proc_.logEvent ("SENTINEL_PROBE failed");
+                });
+        });
+    }
 #endif
 }
 
