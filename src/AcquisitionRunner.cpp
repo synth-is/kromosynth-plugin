@@ -75,6 +75,23 @@ bool AcquisitionRunner::start (const kromosynth::acquisition::Request& request,
                                               id = request.artifactId,
                                               ok = result.ok,
                                               verb = request.verb] { handler (id, ok, verb); });
+
+        // The landed push, beside the completion handler above (same
+        // marshalling, same reason): the editor marks the matching activity
+        // entry landed or failed the moment the job finishes, so the bar does
+        // not rely on the page's polling alone.
+        std::function<void (juce::String, bool, juce::String, kromosynth::acquisition::Verb)> landedHandler;
+        {
+            const juce::ScopedLock sl (lock_);
+            landedHandler = onLanded_;
+        }
+
+        if (landedHandler != nullptr)
+            juce::MessageManager::callAsync ([landedHandler,
+                                              id = request.artifactId,
+                                              ok = result.ok,
+                                              name = request.name,
+                                              verb = request.verb] { landedHandler (id, ok, name, verb); });
     });
 
     return true;
@@ -100,6 +117,13 @@ void AcquisitionRunner::setCompletionHandler (
 {
     const juce::ScopedLock sl (lock_);
     onFinished_ = std::move (handler);
+}
+
+void AcquisitionRunner::setLandedHandler (
+    std::function<void (juce::String, bool, juce::String, kromosynth::acquisition::Verb)> handler)
+{
+    const juce::ScopedLock sl (lock_);
+    onLanded_ = std::move (handler);
 }
 
 void AcquisitionRunner::update (const juce::String& artifactId,

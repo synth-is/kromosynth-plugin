@@ -229,6 +229,8 @@ target_sources(KromosynthPlugin PRIVATE
     RenderList.h
     ShellPage.h
     CheckoutSentinel.h
+    ProgressSentinel.h
+    ActivityList.h
     ExternalBrowser.h
     ExternalBrowser.cpp
 )

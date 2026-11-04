@@ -16,6 +16,11 @@
 #include "PluginProcessor.h"
 #include "ArtifactAcquisition.h"
 #include "AuthSentinel.h"
+// The render-progress sentinel and the activity list it feeds
+// (docs/RENDER_PROGRESS_DESIGN.md, synthis-7o3.2). Header-only, like
+// AuthSentinel.h.
+#include "ProgressSentinel.h"
+#include "ActivityList.h"
 // Desktop only inside, and it declares nothing on iOS. See the header for why
 // that is the platform's decision rather than ours.
 #include "RenderList.h"
@@ -59,6 +64,18 @@ private:
     {
     public:
         std::function<void (const kromosynth::auth::State&)> onAuthState;
+
+        /** Set on the site component only: a parsed progress sentinel
+            (synthis-7o3.2). Checked BEFORE the acquisition branch in
+            pageAboutToLoad, like auth's.
+        */
+        std::function<void (const kromosynth::progress::Event&)> onProgress;
+
+        /** Set on the site component only: the site view finished a full load,
+            which means its document was replaced and every follower on it
+            died — every non-terminal activity entry is lost at once.
+        */
+        std::function<void()> onSiteReloaded;
 
         InstrumentedBrowser (const Options& options, KromosynthAudioProcessor& p)
             : juce::WebBrowserComponent (options), proc_ (p) {}
@@ -157,6 +174,33 @@ private:
         every cold start.
     */
     kromosynth::auth::State authState_;
+
+    /** The render-activity list the shell page pulls through getActivity
+        (docs/RENDER_PROGRESS_DESIGN.md §4, synthis-7o3.2). One entry per render
+        job; fed by the progress sentinel and by AcquisitionRunner finishing.
+        Stored by the editor, like authState_ — nothing is pushed from a worker
+        thread. The clock is the plugin's own monotonic milliseconds.
+    */
+    kromosynth::activity::List activity_ { [] { return (int64_t) juce::Time::getMillisecondCounter(); } };
+
+    /** Applies one parsed progress sentinel to the activity list and pushes
+        activityChanged when it changed.
+    */
+    void onProgressEvent (const kromosynth::progress::Event& ev);
+
+    /** The landed push: AcquisitionRunner finished an acquisition. Joins on
+        the artefact id; an acquisition with no known job still lands, titled
+        from the request's name.
+    */
+    void onAcquisitionFinished (const juce::String& artifactId, bool ok,
+                                const juce::String& name,
+                                kromosynth::acquisition::Verb verb);
+
+    /** Content-free push, the same shape as rendersChanged: the page pulls
+        getActivity. A lost or throttled event costs one stale frame, never
+        wrong state.
+    */
+    void pushActivity();
 
     // WebBrowserComponent has no URL getter in JUCE 9 -- goToURL only, no
     // getCurrentURL -- so "has the site been navigated yet" is tracked here
