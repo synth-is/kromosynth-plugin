@@ -1,0 +1,113 @@
+synthis-et4.18: sfizz 1.2.3 without threads, for the single-threaded WCLAP module (webclap/emscripten, sampler).
+Applied with `patch -p1` to a COPY of third_party/sfizz made at configure time; the submodule is never changed.
+Everything is behind SFIZZ_NO_THREADS, so the patched tree builds as upstream without it.
+
+FilePool starts two std::threads in its member initialisers (dispatch, garbage) and a global ThreadPool in its
+constructor. Emscripten without -pthread cannot create a thread (pthread_create fails, std::thread throws), so sfizz
+could not even be constructed. With SFIZZ_NO_THREADS: no threads, no pool; RAM loading is forced on (each sample is
+read whole at load time, so nothing ever streams and the loader queue is never used); setRamLoading(false), which
+Synth::clear() calls on every load, is ignored; the garbage pass frees inline.
+
+external/atomic_queue/include/atomic_queue/defs.h has a spin_loop_pause() for x86 and ARM only and #errors on any
+other CPU ("Unknown CPU architecture."). A __wasm__ branch with an empty pause (single-threaded: nothing spins).
+
+diff --git a/src/sfizz/FilePool.cpp b/src/sfizz/FilePool.cpp
+index 2afcd68..f1415b6 100644
+--- a/src/sfizz/FilePool.cpp
++++ b/src/sfizz/FilePool.cpp
+@@ -141,8 +141,10 @@ void streamFromFile(sfz::AudioReader& reader, sfz::FileAudioBuffer& output, std:
+ }
+ 
+ sfz::FilePool::FilePool()
+-    : filesToLoad(alignedNew<FileQueue>()),
+-      threadPool(globalThreadPool())
++    : filesToLoad(alignedNew<FileQueue>())
++#if !defined(SFIZZ_NO_THREADS)
++    , threadPool(globalThreadPool())
++#endif
+ {
+     loadingJobs.reserve(config::maxVoices);
+     lastUsedFiles.reserve(config::maxVoices);
+@@ -151,6 +153,7 @@ sfz::FilePool::FilePool()
+ 
+ sfz::FilePool::~FilePool()
+ {
++#if !defined(SFIZZ_NO_THREADS)
+     std::error_code ec;
+ 
+     garbageFlag = false;
+@@ -160,6 +163,7 @@ sfz::FilePool::~FilePool()
+     dispatchFlag = false;
+     dispatchBarrier.post(ec);
+     dispatchThread.join();
++#endif
+ 
+     for (auto& job : loadingJobs)
+         job.wait();
+@@ -610,6 +614,9 @@ void sfz::FilePool::raiseCurrentThreadPriority() noexcept
+ 
+ void sfz::FilePool::setRamLoading(bool loadInRam) noexcept
+ {
++#if defined(SFIZZ_NO_THREADS)
++    loadInRam = true; // streaming needs the background loader threads
++#endif
+     if (loadInRam == this->loadInRam)
+         return;
+ 
+@@ -667,7 +674,11 @@ void sfz::FilePool::triggerGarbageCollection() noexcept
+         return true;
+     });
+ 
++#if defined(SFIZZ_NO_THREADS)
++    garbageToCollect.clear(); // no garbage thread: free here (unreachable with RAM loading, which never streams)
++#else
+     std::error_code ec;
+     semGarbageBarrier.post(ec);
+     ASSERT(!ec);
++#endif
+ }
+diff --git a/src/sfizz/FilePool.h b/src/sfizz/FilePool.h
+index 6adbe22..6c3e782 100644
+--- a/src/sfizz/FilePool.h
++++ b/src/sfizz/FilePool.h
+@@ -341,7 +341,12 @@ private:
+     absl::optional<sfz::FileInformation> checkExistingFileInformation(const FileId& fileId) noexcept;
+     fs::path rootDirectory;
+ 
++#if defined(SFIZZ_NO_THREADS)
++    // No threads (a single-threaded wasm module): every sample is read whole at load time, nothing streams.
++    bool loadInRam { true };
++#else
+     bool loadInRam { config::loadInRam };
++#endif
+     uint32_t preloadSize { config::preloadSize };
+ 
+     // Signals
+@@ -368,8 +373,10 @@ private:
+     void loadingJob(const QueuedFileData& data) noexcept;
+     std::mutex loadingJobsMutex;
+     std::vector<std::future<void>> loadingJobs;
++#if !defined(SFIZZ_NO_THREADS)
+     std::thread dispatchThread { &FilePool::dispatchingJob, this };
+     std::thread garbageThread { &FilePool::garbageJob, this };
++#endif
+ 
+     SpinMutex garbageAndLastUsedMutex;
+     std::vector<FileId> lastUsedFiles;
+diff --git a/external/atomic_queue/include/atomic_queue/defs.h b/external/atomic_queue/include/atomic_queue/defs.h
+index a279dcf..a2d958b 100644
+--- a/external/atomic_queue/include/atomic_queue/defs.h
++++ b/external/atomic_queue/include/atomic_queue/defs.h
+@@ -36,6 +36,12 @@ static inline void spin_loop_pause() noexcept {
+ #endif
+ }
+ } // namespace atomic_queue
++#elif defined(__wasm__)
++// synthis-et4.18: wasm has no pause instruction; the module is single-threaded, so nothing ever spins.
++namespace atomic_queue {
++constexpr int CACHE_LINE_SIZE = 64;
++static inline void spin_loop_pause() noexcept {}
++} // namespace atomic_queue
+ #else
+ #error "Unknown CPU architecture."
+ #endif

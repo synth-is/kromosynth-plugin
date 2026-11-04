@@ -46,3 +46,15 @@ add_custom_target(synthis_webclap_faust
             bash "${PROJECT_SOURCE_DIR}/scripts/webclap-faust.sh" build
     COMMENT "Building the Faust spike WCLAP (Emscripten, out of tree) into ${SYNTHIS_WEBCLAP_FAUST_BUILD_DIR}"
     VERBATIM USES_TERMINAL)
+
+# synthis-et4.18: the sampler spike (src/SamplerEngine.cpp on sfizz 1.2.3, patched for no threads, inside the module,
+# with a generated test SFZ + WAV embedded and written into the module's in-memory file system (WasmFS) at activate).
+# Own build directory, as the Faust spike. See docs/PLUGIN_AS_WCLAP_SAMPLER_SPIKE_2026-11-04.md.
+set(SYNTHIS_WEBCLAP_SAMPLER_BUILD_DIR "${CMAKE_BINARY_DIR}/webclap-sampler" CACHE PATH "Where the sampler spike bundle is built")
+add_custom_target(synthis_webclap_sampler
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "SYNTHIS_WEBCLAP_KIT=${SYNTHIS_WEBCLAP_KIT}" "SYNTHIS_WEBCLAP_EMSDK=${SYNTHIS_WEBCLAP_EMSDK}"
+            "SYNTHIS_WEBCLAP_BUILD_DIR=${SYNTHIS_WEBCLAP_SAMPLER_BUILD_DIR}" "SYNTHIS_WEBCLAP_EXNREF=${SYNTHIS_WEBCLAP_EXNREF}"
+            bash "${PROJECT_SOURCE_DIR}/scripts/webclap-sampler.sh" build
+    COMMENT "Building the sampler spike WCLAP (Emscripten, out of tree) into ${SYNTHIS_WEBCLAP_SAMPLER_BUILD_DIR}"
+    VERBATIM USES_TERMINAL)

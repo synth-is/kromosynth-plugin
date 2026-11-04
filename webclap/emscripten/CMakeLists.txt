@@ -22,14 +22,19 @@ set(BUNDLE "${CMAKE_BINARY_DIR}/web/synthis.wclap")
 #   skeleton  SkeletonProcessor.cpp, a sine voice (synthis-et4.9)
 #   faust     FaustProcessor.cpp: src/FaustEngine.cpp on wasm3 compiled into the module, with one Faust artefact
 #             embedded (SYNTHIS_WEBCLAP_FAUST_ARTEFACT, a path without extension) (synthis-et4.17)
-set(SYNTHIS_WEBCLAP_PROCESSOR "skeleton" CACHE STRING "skeleton | faust")
-set_property(CACHE SYNTHIS_WEBCLAP_PROCESSOR PROPERTY STRINGS skeleton faust)
+#   sampler   SamplerProcessor.cpp: src/SamplerEngine.cpp on sfizz (no threads) inside the module, with a generated
+#             test SFZ + WAV embedded (SYNTHIS_WEBCLAP_SAMPLER_DATA, the directory holding them) (synthis-et4.18)
+set(SYNTHIS_WEBCLAP_PROCESSOR "skeleton" CACHE STRING "skeleton | faust | sampler")
+set_property(CACHE SYNTHIS_WEBCLAP_PROCESSOR PROPERTY STRINGS skeleton faust sampler)
 set(SYNTHIS_PLUGIN_NAME "Synth.is skeleton")
 set(SYNTHIS_PROCESSOR_SOURCES SkeletonProcessor.cpp)
 set(SYNTHIS_PROCESSOR_LIBS "")
 set(SYNTHIS_PROCESSOR_LINK_OPTIONS "")
+set(SYNTHIS_STANDALONE_SHIM "${KIT_ROOT}/modules/juce_webclap/juce_webclap_standalone.cpp")
 if(SYNTHIS_WEBCLAP_PROCESSOR STREQUAL "faust")
     set(SYNTHIS_PLUGIN_NAME "Synth.is Faust spike")
+elseif(SYNTHIS_WEBCLAP_PROCESSOR STREQUAL "sampler")
+    set(SYNTHIS_PLUGIN_NAME "Synth.is sampler spike")
 endif()
 
 set(JUCE_WEBCLAP_PLUGIN_DEFINITIONS
@@ -93,10 +98,30 @@ if(SYNTHIS_WEBCLAP_PROCESSOR STREQUAL "faust")
     set(BUNDLE "${CMAKE_BINARY_DIR}/web/synthis-faust.wclap")
 endif()
 
+if(SYNTHIS_WEBCLAP_PROCESSOR STREQUAL "sampler")
+    get_filename_component(PLUGIN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+    if(NOT SYNTHIS_WEBCLAP_SAMPLER_DATA OR NOT EXISTS "${SYNTHIS_WEBCLAP_SAMPLER_DATA}/test.sfz")
+        message(FATAL_ERROR "SYNTHIS_WEBCLAP_PROCESSOR=sampler needs -DSYNTHIS_WEBCLAP_SAMPLER_DATA=<dir> holding test.sfz "
+                            "and tone.wav (node scripts/webclap-sampler-data.mjs <dir>; scripts/webclap-sampler.sh does it)")
+    endif()
+    include(EmbedFiles.cmake)
+    synthis_embed_files("${CMAKE_BINARY_DIR}/gen/synthis_sampler_files.h"
+        "${SYNTHIS_WEBCLAP_SAMPLER_DATA}/test.sfz" "${SYNTHIS_WEBCLAP_SAMPLER_DATA}/tone.wav")
+    add_subdirectory(sfizz)   # sfizz::sfizz, patched for no threads
+
+    set(SYNTHIS_PROCESSOR_SOURCES SamplerProcessor.cpp "${PLUGIN_ROOT}/src/SamplerEngine.cpp")
+    set(SYNTHIS_PROCESSOR_LIBS sfizz::sfizz)
+    # WasmFS: the in-memory file system sfizz and juce::File read from, inside a standalone module (the JS MEMFS
+    # needs Emscripten's JS glue, which a WCLAP does not have).
+    set(SYNTHIS_PROCESSOR_LINK_OPTIONS -sWASMFS=1)
+    set(SYNTHIS_STANDALONE_SHIM StandaloneWasmfs.cpp)   # the kit's shim stubs the file syscalls WasmFS defines
+    set(BUNDLE "${CMAKE_BINARY_DIR}/web/synthis-sampler.wclap")
+endif()
+
 add_executable(module
     ${SYNTHIS_PROCESSOR_SOURCES}
     "${KIT_ROOT}/modules/juce_webclap/juce_webclap_clap.cpp"
-    "${KIT_ROOT}/modules/juce_webclap/juce_webclap_standalone.cpp")
+    "${SYNTHIS_STANDALONE_SHIM}")
 target_include_directories(module PRIVATE "${KIT_ROOT}/external/clap/include")
 target_compile_options(module PRIVATE -Wno-deprecated-declarations -Wno-macro-redefined)
 target_link_libraries(module PRIVATE juce_wasm_dsp ${SYNTHIS_PROCESSOR_LIBS})
@@ -105,4 +130,6 @@ set_target_properties(module PROPERTIES SUFFIX ".wasm" RUNTIME_OUTPUT_DIRECTORY 
 if(SYNTHIS_WEBCLAP_PROCESSOR STREQUAL "faust")
     target_include_directories(module PRIVATE "${PLUGIN_ROOT}/src" "${CMAKE_BINARY_DIR}/gen")
     target_compile_definitions(module PRIVATE KROMOSYNTH_WASM3=1)
+elseif(SYNTHIS_WEBCLAP_PROCESSOR STREQUAL "sampler")
+    target_include_directories(module PRIVATE "${PLUGIN_ROOT}/src" "${CMAKE_BINARY_DIR}/gen")
 endif()
