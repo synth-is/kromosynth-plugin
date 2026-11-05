@@ -499,6 +499,89 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   }
   nav#chrome button.acct.unread #acctdot { display: block; }
 
+  /* THE ACTIVITY CAPSULE (synthis-7o3.3). One capsule for everything in flight,
+     fed by the activityChanged push plus the getActivity pull. It lives in
+     .tabs, so chromeHeight() measures it with the rest of the bar and the
+     34px row is unchanged -- the capsule is 22px tall inside it. */
+  nav#chrome #capsule {
+    flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px;
+    height: 22px; padding: 0 8px; margin-left: 5px;
+    background: var(--surface-panel); border: 1px solid var(--border-subtle);
+    border-radius: 11px; color: var(--text-secondary);
+    font-size: 11.5px; white-space: nowrap; overflow: hidden;
+    max-width: 34%;
+    transition: max-width .3s ease, opacity .3s ease, padding .3s ease, margin .3s ease;
+  }
+  /* display:flex above beats the UA [hidden] rule, so the capsule needs its own */
+  nav#chrome #capsule[hidden] { display: none; }
+  /* The fold: when a landing has been on screen long enough the capsule
+     collapses into the Library tab it sits beside, not vanishes. */
+  nav#chrome #capsule.fold {
+    max-width: 0; opacity: 0; padding-left: 0; padding-right: 0;
+    margin-left: 0; border-width: 0;
+  }
+  nav#chrome #capsule .ring { flex: 0 0 auto; width: 14px; height: 14px; }
+  nav#chrome #capsule .ringbg { fill: none; stroke: var(--border); stroke-width: 2.5; }
+  nav#chrome #capsule .ringfg {
+    fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round;
+    stroke-dasharray: 50.27; stroke-dashoffset: 50.27;
+  }
+  /* Indeterminate (pct unknown, or several jobs at once): a spinning arc. */
+  nav#chrome #capsule .ring.indet { animation: capspin .9s linear infinite; }
+  nav#chrome #capsule .ring.indet .ringfg { stroke-dasharray: 14 36.27; }
+  @keyframes capspin { to { transform: rotate(360deg); } }
+  /* Terminal states: the ring stops and the tick or the warning colour is
+     the whole of it. */
+  nav#chrome #capsule .tick {
+    display: none; fill: none; stroke: var(--success);
+    stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round;
+  }
+  nav#chrome #capsule.landed .tick { display: block; }
+  nav#chrome #capsule.landed .ringbg,
+  nav#chrome #capsule.landed .ringfg { display: none; }
+  nav#chrome #capsule.warn { color: var(--warning); }
+  nav#chrome #capsule.warn .ringfg { stroke: var(--warning); }
+  nav#chrome #capsule #capsuletext {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  nav#chrome #capsule #capsulecount { display: none; }
+
+  /* THE LIBRARY BADGE (synthis-7o3.3). Landed-and-unseen instruments only --
+     while jobs are merely in flight the tab carries a ring dot with no digit,
+     so one number never means two things. */
+  nav#chrome .tab .libbadge {
+    flex: 0 0 auto; min-width: 15px; height: 15px; padding: 0 4px;
+    border-radius: 8px; background: var(--accent); color: var(--on-accent);
+    font-size: 10px; line-height: 15px; text-align: center; font-weight: 600;
+  }
+  nav#chrome .tab .libbadge[hidden] { display: none; }
+  nav#chrome .tab .libbadge.dot {
+    min-width: 0; width: 8px; height: 8px; padding: 0;
+    background: transparent; border: 2px solid var(--accent);
+  }
+  /* The landing pulse: one short scale on the tab the capsule folds into. */
+  nav#chrome .tab.pulse { animation: tabpulse .6s ease; }
+  @keyframes tabpulse {
+    0% { transform: scale(1); } 40% { transform: scale(1.14); } 100% { transform: scale(1); }
+  }
+
+  /* REDUCED MOTION (synthis-7o3.3): no travel and no pulse -- the static tick
+     and the badge are the whole of the landing. */
+  @media (prefers-reduced-motion: reduce) {
+    nav#chrome #capsule .ring.indet { animation: none; }
+    nav#chrome .tab.pulse { animation: none; }
+    nav#chrome #capsule { transition: none; }
+    nav#chrome #capsule.fold { transition: none; }
+  }
+
+  /* NARROW BAR (the same 639px breakpoint that drops the tab labels): the
+     capsule shows the ring and the count only. */
+  @media (max-width: 639px) {
+    nav#chrome #capsule { max-width: none; padding: 0 6px; margin-left: 3px; }
+    nav#chrome #capsule #capsuletext { display: none; }
+    nav#chrome #capsule #capsulecount { display: inline; }
+  }
+
   /* LABELS DROP AT THE FIRST WIDTH THAT CANNOT HOLD THEM, which is the fix for
      "Instrume…". The native bar had no way to do this: it measured a string
      against a rectangle and truncated, so the longest label decided what every
@@ -712,9 +795,13 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
   <div class="tabs">
     <span class="brand"><img src="logo.svg" alt="Synth.is"></span>
 
-    <button class="tab current" data-dest="0" data-path="" title="Instruments downloaded to this device">
+    <button class="tab current" data-dest="0" id="libtab" data-path="" title="Instruments downloaded to this device">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>
       <span class="lbl">Library</span>
+      <!-- Landed-and-unseen count (synthis-7o3.3): the number while something
+           has landed unseen, a ring dot while jobs are merely in flight,
+           cleared when this tab is opened. -->
+      <span class="libbadge" id="libbadge" hidden></span>
     </button>
 
     <button class="tab" data-dest="1" data-path="/network" title="Discover sounds from the community">
@@ -744,6 +831,22 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 14 3 3.3a1 1 0 0 1-.7 1.7H4.7a1 1 0 0 1-.7-1.7L7 14h-.3a1 1 0 0 1-.7-1.7L9 9h-.2A1 1 0 0 1 8 7.3L12 3l4 4.3a1 1 0 0 1-.8 1.7H15l3 3.3a1 1 0 0 1-.7 1.7H17Z"/><path d="M12 22v-3"/></svg>
       <span class="lbl">Biomes</span>
     </button>
+
+    <!-- THE ACTIVITY CAPSULE (synthis-7o3.3). One capsule for everything in
+         flight, beside the tabs and before Panic, inside .tabs so
+         chromeHeight() measures it with the rest of the bar. Ring plus text
+         while work is active ("Rendering 2"), "Added" briefly on a landing,
+         hidden when idle; in a narrow bar the ring and the count only. The
+         tooltip lists the jobs oldest first. -->
+    <div id="capsule" hidden>
+      <svg class="ring" id="capring" viewBox="0 0 20 20" aria-hidden="true">
+        <circle class="ringbg" cx="10" cy="10" r="8"></circle>
+        <circle class="ringfg" id="ringfg" cx="10" cy="10" r="8" transform="rotate(-90 10 10)"></circle>
+        <path class="tick" d="M6 10.6l2.6 2.6 5.4-5.8"></path>
+      </svg>
+      <span id="capsuletext"></span>
+      <span id="capsulecount"></span>
+    </div>
 
     <!-- id="panic" moved HERE from the header rather than added alongside it.
          The header's copy was unreachable the moment the site filled the view,
@@ -2470,9 +2573,12 @@ for (let i = 0; i < navTabs.length; i++) {
     const path = this.dataset.path;
 
     // Empty path is the plugin's own library: no navigation, just give the
-    // shell the whole rectangle back.
+    // shell the whole rectangle back. Opening the Library is what the landed
+    // badge counts as "seen", so it clears here (showLibrary clears it
+    // natively and pushes activityChanged, which re-renders from getActivity).
     if (!path) {
       setStrip(false, 0);
+      clearLibraryBadge();
       call('showLibrary').catch(function (e) { setStatus(String(e), 'err'); });
       return;
     }
@@ -2513,6 +2619,189 @@ for (let i = 0; i < navTabs.length; i++) {
 // which is the same surface. Removed 2026-10-26 on the owner's call; a
 // half-finished sign-in is now resumed by the Feed tab, not a dedicated button.
 
+// ── The activity capsule and the Library badge (synthis-7o3.3) ─────────────
+//
+// The page is fed by the activityChanged push plus a getActivity pull: the
+// event carries no data, so a lost or throttled push costs one stale frame,
+// never wrong state. While anything is active the page also pulls every 2 s
+// -- WKWebView throttles timers in a hidden view and the push is "if the
+// browser is visible", so the pull is the safety net. The page never reads
+// site state; getActivity is the ground truth (design §4).
+const ACTIVITY_PULL_MS = 2000;
+const LANDING_COALESCE_MS = 1000;   // landings within 1 s show as one "Added N"
+const LANDING_HOLD_MS = 1200;       // a landing is held on screen at least 1.2 s
+const RING_LEN = 50.27;             // 2*pi*8, the ring circle's circumference
+
+let activityActive = 0;
+let landedFlash = null;             // { count, firstMs, lastMs } while a landing shows
+
+function reasonText (r) {
+  return ({ quota: 'quota reached', signed_out: 'signed out',
+            render_failed: 'render failed', timeout: 'timed out',
+            handover_failed: 'hand-over failed', network: 'network' })[r] || 'failed';
+}
+
+function pulseLibraryTab () {
+  const libtab = document.getElementById('libtab');
+  if (!libtab) return;
+  libtab.classList.add('pulse');
+  setTimeout(function () { libtab.classList.remove('pulse'); }, 700);
+}
+
+function clearLibraryBadge () {
+  const b = document.getElementById('libbadge');
+  if (b) b.hidden = true;
+}
+
+function renderActivity (a) {
+  if (!a) return;
+  const now = typeof a.now === 'number' ? a.now : Date.now();
+  activityActive = a.active || 0;
+  const entries = a.entries || [];
+
+  const capsule = document.getElementById('capsule');
+  if (!capsule) return;
+  const captext = document.getElementById('capsuletext');
+  const capcount = document.getElementById('capsulecount');
+  const capring = document.getElementById('capring');
+  const ringfg = document.getElementById('ringfg');
+  const badge = document.getElementById('libbadge');
+
+  const terminal = function (p) { return p === 'landed' || p === 'failed' || p === 'lost'; };
+  const active = entries.filter(function (e) { return !terminal(e.phase); });
+  const landed = entries.filter(function (e) { return e.phase === 'landed'; });
+  const failed = entries.filter(function (e) { return e.phase === 'failed'; });
+  const lost = entries.filter(function (e) { return e.phase === 'lost'; });
+
+  // Landings within 1 s of each other coalesce into one "Added N"; the flash
+  // is held for at least 1.2 s even if the entries expire sooner. A new flash
+  // only starts once the current one has been on screen for the full hold --
+  // a landing that arrives sooner merges into it, so the hold is never
+  // truncated (landings 1.0-1.2 s apart would otherwise restart the clock).
+  if (landed.length) {
+    const newest = Math.max.apply(null, landed.map(function (e) { return e.updatedMs || 0; }));
+    const recent = landed.filter(function (e) { return newest - (e.updatedMs || 0) <= LANDING_COALESCE_MS; });
+    const fresh = !landedFlash
+      || ((now - landedFlash.firstMs >= LANDING_HOLD_MS)
+          && newest - landedFlash.lastMs > LANDING_COALESCE_MS);
+    if (fresh) {
+      landedFlash = { count: recent.length, firstMs: now, lastMs: newest };
+      pulseLibraryTab();
+    } else {
+      landedFlash.count = recent.length;
+      landedFlash.lastMs = newest;
+    }
+  } else if (landedFlash && now - landedFlash.firstMs >= LANDING_HOLD_MS) {
+    landedFlash = null;
+  }
+
+  // Tooltip: the jobs, oldest first.
+  capsule.title = entries.slice()
+    .sort(function (x, y) { return (x.startedMs || 0) - (y.startedMs || 0); })
+    .map(function (e) { return (e.title || e.job || '?') + ' \u2014 ' + e.phase; })
+    .join('\n');
+
+  // What the capsule says. One job in flight: "Rendering" plus the title, the
+  // ring determinate when pct >= 0. Two or more: "Rendering N", indeterminate.
+  // A landing: "Added" plus the title, or the coalesced count. lost and failed
+  // show in the warning colour for the 8 s the entry lives.
+  let text = '';
+  let count = '';
+  let cls = '';
+  let indet = false;
+  let pct = -1;
+
+  if (lost.length) {
+    cls = 'warn';
+    text = 'Lost track of ' + (lost[0].title || lost[0].job || '');
+  } else if (failed.length) {
+    cls = 'warn';
+    text = 'Failed \u00b7 ' + reasonText(failed[0].reason);
+  } else if (landedFlash) {
+    cls = 'landed';
+    const t = landed.length
+      ? (landed[landed.length - 1].title || landed[landed.length - 1].job || '') : '';
+    text = landedFlash.count > 1 ? 'Added ' + landedFlash.count : 'Added ' + t;
+  } else if (active.length >= 2) {
+    text = 'Rendering ' + active.length;
+    indet = true;
+  } else if (active.length === 1) {
+    text = 'Rendering ' + (active[0].title || active[0].job || '');
+    pct = active[0].pct;
+    if (!(pct >= 0)) indet = true;   // pct -1: indeterminate, never a frozen number
+  }
+
+  if (active.length > 0) count = String(active.length);
+  else if (landedFlash) count = String(landedFlash.count);
+
+  const show = entries.length > 0 || landedFlash;
+  const wasLanded = capsule.classList.contains('landed');
+
+  if (show) {
+    capsule.hidden = false;
+    // A landing or job that arrived while the capsule was folding removes
+    // the fold here, so the pending fold timeout must not hide it.
+    capsule.classList.remove('fold');
+    capsule.classList.toggle('landed', cls === 'landed');
+    capsule.classList.toggle('warn', cls === 'warn');
+    if (captext) captext.textContent = text;
+    if (capcount) capcount.textContent = count;
+    if (capring) capring.classList.toggle('indet', indet);
+    if (ringfg) {
+      if (cls === 'warn') ringfg.setAttribute('stroke-dashoffset', '0');
+      else if (!indet && pct >= 0) ringfg.setAttribute('stroke-dashoffset', String(RING_LEN * (1 - pct / 100)));
+      else ringfg.setAttribute('stroke-dashoffset', String(RING_LEN));
+    }
+  } else if (wasLanded) {
+    // The landing has been on screen long enough: fold the capsule into the
+    // Library tab rather than dropping it. The timeout only hides when the
+    // fold is still current -- a frame that arrived during the 320 ms removed
+    // 'fold' in the show branch above and must stay visible.
+    capsule.classList.add('fold');
+    setTimeout(function () {
+      if (capsule.classList.contains('fold')) {
+        capsule.hidden = true;
+        capsule.classList.remove('fold');
+      }
+    }, 320);
+  } else {
+    capsule.hidden = true;
+  }
+
+  // The badge counts landed-and-unseen instruments only. While jobs are in
+  // flight the tab carries a ring dot with no digit.
+  if (badge) {
+    const unseen = a.unseenLanded || 0;
+    if (unseen > 0) {
+      badge.hidden = false;
+      badge.textContent = String(unseen);
+      badge.classList.remove('dot');
+    } else if (activityActive > 0) {
+      badge.hidden = false;
+      badge.textContent = '';
+      badge.classList.add('dot');
+    } else {
+      badge.hidden = true;
+      badge.classList.remove('dot');
+    }
+  }
+}
+
+async function pullActivity () {
+  if (!backend) return;
+  try {
+    renderActivity(await call('getActivity'));
+  } catch (e) { /* editor closing */ }
+}
+
+function pollActivityTimer () {
+  if (activityActive > 0) pullActivity();
+}
+
+if (backend) backend.addEventListener('activityChanged', pullActivity);
+setInterval(pollActivityTimer, ACTIVITY_PULL_MS);
+pullActivity();
+
 // Downloads are polled, not pushed. They run on a pool thread owned by the
 // processor and outlive this editor, so there is nothing for them to push to.
 // One second is well inside human patience and nowhere near often enough to
@@ -2534,32 +2823,17 @@ async function pollAcquisitions () {
     const jobs = await call('getAcquisitions');
     if (!jobs || !jobs.length) return;
 
-    const active = jobs.filter(function (j) { return !j.finished; });
+    // In flight: the capsule in the bar owns progress now (synthis-7o3.3), so
+    // there is no status line for it here.
+    if (jobs.some(function (j) { return !j.finished; })) return;
 
-    if (active.length) {
-      const j = active[0];
-      const pct = j.progress >= 0 ? ' ' + Math.round(j.progress * 100) + '%' : '';
-      setStatus('Downloading ' + j.id + pct);
-      return;
-    }
-
-    // Everything finished. Report the outcomes once, then clear them so the
-    // list does not grow for the life of the session.
+    // Everything finished. Failures keep their message; arrivals no longer
+    // get a status line -- the capsule and the Library badge report them, and
+    // the top status line is not part of the success path (design §1). Clear
+    // them so the list does not grow for the life of the session.
     const failed = jobs.filter(function (j) { return !j.ok; });
+    if (failed.length) setStatus(failed[0].message, 'err');
 
-    // Worded per KIND, because the two jobs end somewhere different. A single
-    // 'Downloaded N instrument(s)' covering both would report a WAV sitting in
-    // the render outbox as an instrument added to the library -- a line
-    // asserting an outcome it did not observe, which is the failure shape this
-    // project keeps rediscovering.
-    const renders = jobs.filter(function (j) { return j.kind === 'render'; }).length;
-    const added = jobs.length - renders;
-    const parts = [];
-    if (added) parts.push('Added ' + added + ' instrument' + (added === 1 ? '' : 's'));
-    if (renders) parts.push('Saved ' + renders + ' render' + (renders === 1 ? '' : 's'));
-
-    setStatus(failed.length ? failed[0].message : parts.join(', ') + '.',
-              failed.length ? 'err' : undefined);
     await call('clearFinishedAcquisitions');
 
     refresh();
@@ -2567,7 +2841,7 @@ async function pollAcquisitions () {
     // A take that just finished put a file in the outbox, so the list is now
     // out of date. Refreshed HERE rather than on a timer: this is the one
     // moment the page knows the folder changed.
-    if (renders) refreshRenders();
+    if (jobs.some(function (j) { return j.kind === 'render'; })) refreshRenders();
   } catch (e) { /* a poll that fails is not worth a visible error */ }
 }
 
