@@ -95,6 +95,28 @@ grep -q 'setInterval(pollControls, CC_POLL_MS)' "$S" \
   && ok "the poll runs on a timer" \
   || bad "the poll runs on a timer"
 
+# ── 3b. the row slider is a disabled live read-out ──────────────────────────
+# No native setter moves a parameter from the panel, so the slider must be
+# built disabled (with a CSS rule keeping it readable) and updateControls
+# must always write its value -- otherwise a click or drag leaves it showing
+# the dragged position while the real value (host, OSC, MIDI) moves on.
+grep -q 'slider\.disabled = true' "$S" \
+  && ok "the row slider is built disabled (live read-out, not a control)" \
+  || bad "the row slider is built disabled (live read-out, not a control)"
+grep -qF '.crow .cslider:disabled { opacity: 1; cursor: default; }' "$S" \
+  && ok "a disabled slider stays readable (opacity/cursor CSS rule)" \
+  || bad "a disabled slider stays readable (opacity/cursor CSS rule)"
+if awk '
+  /^function updateControls/ { infn = 1; next }
+  infn && /^function /        { infn = 0 }
+  infn && /activeElement/    { hit = 1 }
+  END { exit hit ? 0 : 1 }
+' "$S"; then
+  bad "updateControls no longer exempts the focused slider (still mentions activeElement)"
+else
+  ok "updateControls always writes the slider value (no activeElement exemption)"
+fi
+
 # ── 4. the expandable range / smoothing / invert editor ─────────────────────
 grep -q 'cedit' "$S" \
   && ok "each row has an expandable editor (.cedit)" \

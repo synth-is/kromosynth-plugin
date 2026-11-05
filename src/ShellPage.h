@@ -643,6 +643,7 @@ inline constexpr const char* kIndexHtml = R"HTML(<!DOCTYPE html>
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .crow .cslider { flex: 1 1 auto; min-width: 48px; accent-color: var(--accent); }
+  .crow .cslider:disabled { opacity: 1; cursor: default; }
   .crow .cval {
     flex: 0 0 42px; text-align: right; font-size: 11.5px;
     font-variant-numeric: tabular-nums; color: var(--text-muted);
@@ -1915,14 +1916,18 @@ function buildControlRow (m) {
   name.textContent = m.name;
   name.title = m.name;
 
-  // The slider carries the live value in the target's own (normalised)
-  // units; the poll below keeps it following host or OSC changes.
+  // The slider is a live read-out of the value in the target's own
+  // (normalised) units, not a control: no native setter exists for it, so
+  // it is disabled and the poll below always keeps it following host or
+  // OSC changes.
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.className = 'cslider';
   slider.min = '0';
   slider.max = '1';
   slider.step = '0.001';
+  slider.disabled = true;
+  slider.title = 'Live value; move it with MIDI, OSC or the host';
 
   const val = document.createElement('span');
   val.className = 'cval';
@@ -2039,9 +2044,10 @@ function updateControls (rows) {
       (isEnv ? envList : list).appendChild(els.row);
     }
 
-    // The live value: slider and readout follow the polled native value.
+    // The live value: slider and readout always follow the polled native
+    // value (the slider is disabled, so nothing can hold it back).
     const v = typeof m.value === 'number' ? m.value : 0;
-    if (document.activeElement !== els.slider) els.slider.value = String(v);
+    els.slider.value = String(v);
     els.val.textContent = v.toFixed(3);
 
     const chip = chipText(m);
