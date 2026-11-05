@@ -82,9 +82,22 @@ const rootBlock = '<style>\n  :root {\n    color-scheme: dark;\n'
 const stub = [
 '<script>',
 'var listeners = {};',
+// The activity list the page pulls through getActivity (synthis-7o3.3). Kept
+// in a variable so the check can drive the capsule with fake events:
+// window.__fireActivity(payload) replaces it and fires activityChanged, the
+// way the native editor does. showLibrary clears unseenLanded and pushes,
+// mirroring PluginEditor.cpp.
+'var activityState = { now: 1000, active: 0, unseenLanded: 0, entries: [] };',
 'window.__JUCE__ = {',
 '  backend: {',
 '    emitEvent: function (event, payload) {',
+'      if (payload.name === "showLibrary") {',
+'        activityState = { now: activityState.now + 1, active: activityState.active,',
+'          unseenLanded: 0, entries: activityState.entries };',
+'        setTimeout(function () {',
+'          (listeners["activityChanged"] || []).forEach(function (fn) { fn(true); });',
+'        }, 0);',
+'      }',
 '      var answers = {',
 '        getRenders: [',
 '          { file: "WCM9MKA 9.0s 4T09A.wav", name: "WCM9MKA 9.0s 4T09A",',
@@ -106,6 +119,8 @@ const stub = [
 '        engineState: {}, getLoadState: {}, getStatus: {},',
 '        getSpectrogram: null, chromeHeight: 0,',
 '        getAcquisitions: [],',
+'        getActivity: activityState,',
+'        showLibrary: true,',
 '        getAuthState: { state: "registered", label: "amplitudesigner" },',
 '        getLibraryRoot: "/Users/you/Music/Synth.is/Instruments",',
 '        getSurface: { site: false },',
@@ -157,6 +172,10 @@ const stub = [
 '    },',
 '    removeEventListener: function () {}',
 '  }',
+'};',
+'window.__fireActivity = function (a) {',
+'  activityState = a;',
+'  (listeners["activityChanged"] || []).forEach(function (fn) { fn(true); });',
 '};',
 '</script>'
 ].join('\n');
