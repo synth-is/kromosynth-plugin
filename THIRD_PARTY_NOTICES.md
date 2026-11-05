@@ -123,8 +123,8 @@ WebAssembly elsewhere and only the wasm bytes are executed (wasmtime / wasm3).
 components above (copied from the paths in this file, including
 `third-party/wasm3.txt`) into `/Library/Application Support/Synth.is/Licences/`,
 plus `SOURCE_OFFER.txt`, the AGPL source offer. It names the public repository
-URL once `SOURCE_URL` is set in `scripts/package.sh`'s environment; the README
-Licence section should carry the same URL when the repo is public.
+(`SOURCE_URL` in `scripts/package.sh`, default
+`https://github.com/synth-is/kromosynth-plugin`) and the release tag.
 
 `cmake/JuceLicenceCheck.cmake` carries no SPDX header on purpose: it is the
 configure-time licence guard and is kept byte-for-byte unchanged; it is

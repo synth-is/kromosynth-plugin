@@ -183,10 +183,9 @@ LIC="$STAGING/licences/Licences"
 [ -f THIRD_PARTY_NOTICES.md ] || fail "no THIRD_PARTY_NOTICES.md at the repo root"
 cp -X LICENSE THIRD_PARTY_NOTICES.md "$LIC/"
 
-# AGPL source offer. The public repo URL is not decided yet, so SOURCE_URL is
-# empty until it is: set it (env or edit) and the offer names it. Until then
-# the offer points at the contact address only.
-SOURCE_URL="${SOURCE_URL:-}"
+# AGPL source offer. The public repository; each release is tagged v<version>
+# there. Override with SOURCE_URL in the environment for a fork or a mirror.
+SOURCE_URL="${SOURCE_URL:-https://github.com/synth-is/kromosynth-plugin}"
 {
   echo "Synth.is plugin $VERSION - source offer"
   echo
