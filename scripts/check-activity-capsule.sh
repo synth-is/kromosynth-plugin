@@ -50,6 +50,24 @@ awk '
   && ok "capsule has the ring svg (ringfg circle, tick path), text and count spans" \
   || bad "capsule has the ring svg (ringfg circle, tick path), text and count spans"
 
+# ── 2b. the ring's fill is written as an inline style, not a presentation
+#       attribute: the stylesheet rule "stroke-dashoffset: 50.27" on .ringfg
+#       beats any presentation attribute, so a setAttribute write would leave
+#       the determinate ring (and the warn ring) empty ────────────────────────
+awk '
+  /function renderActivity/ { infn = 1; next }
+  infn && !done && /^}/ { done = 1; exit !inline }
+  infn && /ringfg\.style\.strokeDashoffset/ { inline = 1 }
+  END { if (!done) exit 1 }
+' "$S" \
+  && ok "renderActivity drives the ring fill through ringfg.style.strokeDashoffset (inline style beats the stylesheet rule)" \
+  || bad "renderActivity drives the ring fill through ringfg.style.strokeDashoffset (inline style beats the stylesheet rule)"
+if grep -q "setAttribute('stroke-dashoffset'" "$S"; then
+  bad "no setAttribute('stroke-dashoffset' left in ShellPage.h (a presentation attribute loses to the CSS rule)"
+else
+  ok "no setAttribute('stroke-dashoffset' left in ShellPage.h (a presentation attribute loses to the CSS rule)"
+fi
+
 # ── 3. the Library tab (data-dest="0") carries the badge ────────────────────
 awk '
   /data-dest="0"/ && /id="libtab"/ { lib = NR }
@@ -307,6 +325,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const capsule = byId.get('capsule');
   const captext = byId.get('capsuletext');
   const capring = byId.get('capring');
+  const ringfg = byId.get('ringfg');
   const badge = byId.get('libbadge');
   const libtab = tabs.find(function (t) { return t.dataset.dest === '0'; });
 
@@ -330,6 +349,20 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       + JSON.stringify(captext && captext.textContent));
   if (capring && capring.classList.contains('indet'))
     problems.push('ring should be determinate when pct >= 0');
+
+  // The ring fill must land in the inline style: the stylesheet rule
+  // stroke-dashoffset: 50.27 beats a presentation attribute, so a
+  // setAttribute write would leave the ring empty in a real browser. The vm
+  // harness has no CSS engine, so this reads the inline style the page
+  // writes -- pct 40 -> 50.27 * (1 - 0.40) = 30.162.
+  fire({ now: 1500, active: 1, unseenLanded: 0, entries: [
+    { job: 'j1', title: 'Pluck 14', phase: 'rendering', pct: 40,
+      startedMs: 900, updatedMs: 1500 } ] });
+  await wait(60);
+  const off40 = ringfg ? Number(ringfg.style.strokeDashoffset) : NaN;
+  if (!(Math.abs(off40 - 30.16) <= 0.01))
+    problems.push('ring inline stroke-dashoffset for pct 40 should be ~30.16, got '
+      + JSON.stringify(ringfg && ringfg.style.strokeDashoffset));
 
   // two jobs in flight: "Rendering 2", indeterminate ring, dot on the tab
   fire({ now: 2000, active: 2, unseenLanded: 0, entries: [

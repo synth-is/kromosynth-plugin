@@ -2748,9 +2748,12 @@ function renderActivity (a) {
     if (capcount) capcount.textContent = count;
     if (capring) capring.classList.toggle('indet', indet);
     if (ringfg) {
-      if (cls === 'warn') ringfg.setAttribute('stroke-dashoffset', '0');
-      else if (!indet && pct >= 0) ringfg.setAttribute('stroke-dashoffset', String(RING_LEN * (1 - pct / 100)));
-      else ringfg.setAttribute('stroke-dashoffset', String(RING_LEN));
+      // Inline style, not setAttribute: the stylesheet rule
+      // "stroke-dashoffset: 50.27" on .ringfg beats any presentation
+      // attribute, so setAttribute would leave the ring empty.
+      if (cls === 'warn') ringfg.style.strokeDashoffset = '0';
+      else if (!indet && pct >= 0) ringfg.style.strokeDashoffset = String(RING_LEN * (1 - pct / 100));
+      else ringfg.style.strokeDashoffset = String(RING_LEN);
     }
   } else if (wasLanded) {
     // The landing has been on screen long enough: fold the capsule into the
